@@ -215,6 +215,10 @@ components:
       type: object
       additionalProperties: true
 
+    Fingerprint:
+      type: object
+      additionalProperties: true
+
     UETimePoint:
       type: object
       properties:
@@ -855,7 +859,7 @@ components:
             type: string
 
 paths:
-  /boards:
+  /api/v1/boards:
     get:
       tags:
         - Boards
@@ -907,7 +911,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /board/{id}:
+  /api/v1/board/{id}:
     get:
       tags:
         - Boards
@@ -1016,7 +1020,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /board/{id}/devices:
+  /api/v1/board/{id}/devices:
     get:
       tags:
         - Board Devices
@@ -1044,7 +1048,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /board/{id}/timepoints:
+  /api/v1/board/{id}/timepoints:
     get:
       tags:
         - Board data
@@ -1138,7 +1142,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /wifiClientHistory:
+  /api/v1/wifiClientHistory:
     get:
       tags:
         - WiFiClientHistory
@@ -1208,7 +1212,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /wifiClientHistory/{client}:
+  /api/v1/wifiClientHistory/{client}:
     get:
       tags:
         - WiFiClientHistory
@@ -1333,7 +1337,7 @@ paths:
   ## These are endpoints that all services in the OpenWiFi stack must provide
   ##
   #########################################################################################
-  /system:
+  /api/v1/system:
     post:
       tags:
         - System Commands
@@ -1394,7 +1398,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /systemConfiguration:
+  /api/v1/systemConfiguration:
     get:
       tags:
         - SystemConfiguration
