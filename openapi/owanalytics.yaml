@@ -5,7 +5,11 @@ info:
   version: 2.6.0
   license:
     name: BSD3
+<<<<<<< HEAD
     url: https://github.com/routerarchitects/ra-wlan-cloud-analytics/blob/main/LICENSE
+=======
+    url: https://github.com/routerarchitects/wlan-cloud-ucentralgw/blob/master/LICENSE
+>>>>>>> 92c1535 (Update OpenAPI YAML and README Documentation to Match Latest API Changes )
 
 servers:
   - url: 'https://openwifi.wlan.local:16009/api/v1'
@@ -27,6 +31,7 @@ components:
 
   responses:
     NotFound:
+<<<<<<< HEAD
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/NotFound'
     Unauthorized:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Unauthorized'
@@ -34,6 +39,15 @@ components:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Success'
     BadRequest:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/BadRequest'
+=======
+      $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/NotFound'
+    Unauthorized:
+      $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/Unauthorized'
+    Success:
+      $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/Success'
+    BadRequest:
+      $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/BadRequest'
+>>>>>>> 92c1535 (Update OpenAPI YAML and README Documentation to Match Latest API Changes )
 
   schemas:
     ObjectInfo:
@@ -1426,4 +1440,8 @@ paths:
         403:
           $ref: '#/components/responses/Unauthorized'
         404:
+<<<<<<< HEAD
           $ref: '#/components/responses/NotFound'
+=======
+          $ref: '#/components/responses/NotFound'
+>>>>>>> 92c1535 (Update OpenAPI YAML and README Documentation to Match Latest API Changes )
