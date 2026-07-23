@@ -229,10 +229,6 @@ components:
       type: object
       additionalProperties: true
 
-    Fingerprint:
-      type: object
-      additionalProperties: true
-
     UETimePoint:
       type: object
       properties:
