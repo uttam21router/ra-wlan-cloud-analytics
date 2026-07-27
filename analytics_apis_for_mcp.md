@@ -17,16 +17,26 @@ The API contracts match the MCP tool names and response fields from the provided
 Each MCP tool receives:
 
 ```text
-serial_number: str
+router_id: str
 timestamp_till: str
 lookback_hours: int
+```
+
+`router_id` is the gateway serial number value from the CSV. Analytics APIs expose the same value as the path variable `routerId`.
+
+```text
+MCP input:              router_id
+Analytics path variable: routerId
+routerId = router_id
+Internal storage field: serialNumber
+serialNumber = routerId
 ```
 
 The Analytics API should calculate the requested time range as:
 
 ```text
 end_time = parse(timestamp_till)
-start_time = end_time - lookback_hours
+start_time = end_time - (lookback_hours * 3600)
 ```
 
 Example:
@@ -97,29 +107,29 @@ wificlienthistory
   ...
 ```
 
-Gateway-scoped APIs should accept only `serialNumber` publicly. The handler must resolve the internal `boardId` before loading `TimePointDB` records.
+Gateway-scoped APIs should accept only `routerId` publicly. The handler must map `routerId` to the existing internal `serialNumber` field and resolve the internal `boardId` before loading `TimePointDB` records. Do not rename the existing `timepoints.serialNumber` field or its indexes to `routerId`.
 
-### Serial Number Resolution
+### RouterId Resolution
 
-The MCP tool cannot pass `boardId`, so Analytics must resolve it from the gateway serial number.
+The MCP tool cannot pass `boardId`, so Analytics must resolve it from `routerId`, which is the gateway serial number.
 
 Resolution flow:
 
 ```text
-1. Validate serialNumber.
+1. Validate routerId.
 2. Call OWPROV inventory for the serial number with status-aware handling:
-     GET /api/v1/inventory/{serialNumber}
+     GET /api/v1/inventory/{routerId}
 3. Read inventoryTag.venue as venueId.
-4. Find the Analytics board that currently owns serialNumber.
+4. Find the Analytics board that currently owns routerId.
 5. Use that board's BoardInfo.info.id as resolvedBoardId.
-6. Query Analytics storage with resolvedBoardId and serialNumber.
+6. Query Analytics storage with resolvedBoardId and serialNumber = routerId.
 ```
 
 Implementation notes:
 
 ```text
 OWPROV source:
-  /api/v1/inventory/{serialNumber}
+  /api/v1/inventory/{routerId}
 
 OWPROV response field:
   InventoryTag.venue
@@ -144,7 +154,7 @@ For each local BoardInfo record:
       venueDeviceList,
       venueExists)
 
-    if serialNumber is present in venueDeviceList.devices:
+    if routerId is present in venueDeviceList.devices:
       add BoardInfo.info.id as a candidate board
 
 If exactly one candidate exists:
@@ -156,7 +166,7 @@ This mirrors the existing watcher behavior, where board devices are fetched from
 Alternative implementation:
 
 ```text
-Expose a current serialNumber -> boardId map from VenueCoordinator.
+Expose a current routerId -> boardId map from VenueCoordinator.
 The map must be maintained from the same device lists used by VenueWatcher.
 The resolver may use this map instead of scanning OWPROV for every request.
 ```
@@ -174,9 +184,9 @@ OWPROV unavailable or invalid response  -> 502 Bad Gateway
 The resolver must return a status-bearing result, not a boolean, so handlers can map each failure to the correct HTTP response.
 
 ```cpp
-enum class SerialResolutionStatus {
+enum class RouterIdResolutionStatus {
     Success,
-    InvalidSerialNumber,
+    InvalidRouterId,
     InventoryNotFound,
     EmptyVenue,
     BoardNotConfigured,
@@ -185,9 +195,9 @@ enum class SerialResolutionStatus {
     OwprovInvalidResponse
 };
 
-struct SerialResolutionResult {
-    SerialResolutionStatus status = SerialResolutionStatus::OwprovUnavailable;
-    std::string serialNumber;
+struct RouterIdResolutionResult {
+    RouterIdResolutionStatus status = RouterIdResolutionStatus::OwprovUnavailable;
+    std::string routerId;
     std::string venueId;
     std::string resolvedBoardId;
     std::string message;
@@ -198,7 +208,7 @@ Status mapping:
 
 ```text
 Success               -> continue request
-InvalidSerialNumber   -> 400 Bad Request
+InvalidRouterId   -> 400 Bad Request
 InventoryNotFound     -> 404 Not Found
 EmptyVenue            -> 404 Not Found
 BoardNotConfigured    -> 404 Not Found
@@ -215,11 +225,11 @@ Option A:
     SDK::Prov::Device::GetWithStatus(...)
 
 Option B:
-  Call OpenAPIRequestGet(uSERVICE_PROVISIONING, "/api/v1/inventory/{serialNumber}", ...)
-  directly from ResolveSerialNumberContext and inspect the HTTP response status.
+  Call OpenAPIRequestGet(uSERVICE_PROVISIONING, "/api/v1/inventory/{routerId}", ...)
+  directly from ResolveRouterIdContext and inspect the HTTP response status.
 ```
 
-Handlers may cache `serialNumber -> venueId -> boardId` for a short TTL, but must refresh or invalidate the cache when OWPROV reports a different venue.
+Handlers may cache `routerId -> venueId -> boardId` for a short TTL, but must refresh or invalidate the cache when OWPROV reports a different venue.
 
 ---
 
@@ -229,7 +239,7 @@ Handlers may cache `serialNumber -> venueId -> boardId` for a short TTL, but mus
 
 ```text
 get_gateway_free_memory(
-    serial_number: str,
+    router_id: str,
     timestamp_till: str,
     lookback_hours: int
 )
@@ -238,7 +248,7 @@ get_gateway_free_memory(
 ## Recommended API
 
 ```http
-GET /api/v1/devices/{serialNumber}/memory-summary
+GET /api/v1/devices/{routerId}/memory-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
 ```
@@ -341,7 +351,7 @@ Use the current `timepoints` table plus parsed JSON fields:
 ```text
 Load TimePointDB records where:
   boardId == resolvedBoardId
-  serialNumber == serialNumber
+  stored serialNumber == request routerId
   timestamp >= startTime
   timestamp <= endTime
 
@@ -361,11 +371,11 @@ Do not query `device_timepoints.memory_free` unless a separate normalized table 
 ### Handler Flow
 
 ```text
-Validate serialNumber
+Validate routerId
     ↓
-Call ResolveSerialNumberContext(client, serialNumber)
+Call ResolveRouterIdContext(client, routerId)
     ↓
-If status is not Success, map SerialResolutionStatus to HTTP response
+If status is not Success, map RouterIdResolutionStatus to HTTP response
     ↓
 Use result.venueId and result.resolvedBoardId
     ↓
@@ -400,7 +410,7 @@ Use HTTP `200 OK` when the query succeeds but no data exists.
 
 ```text
 get_gateway_wifi_temp(
-    serial_number: str,
+    router_id: str,
     timestamp_till: str,
     lookback_hours: int
 )
@@ -409,7 +419,7 @@ get_gateway_wifi_temp(
 ## Recommended API
 
 ```http
-GET /api/v1/devices/{serialNumber}/radio-temperature-summary
+GET /api/v1/devices/{routerId}/radio-temperature-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
 ```
@@ -471,7 +481,7 @@ Use the current `timepoints.radio_data` JSON array:
 ```text
 Load TimePointDB records where:
   boardId == resolvedBoardId
-  serialNumber == serialNumber
+  stored serialNumber == request routerId
   timestamp >= startTime
   timestamp <= endTime
 
@@ -526,7 +536,7 @@ if (radio.band == 5) {
 
 ```text
 get_device_bandwidth_consumption(
-    serial_number: str,
+    router_id: str,
     timestamp_till: str,
     lookback_hours: int
 )
@@ -535,7 +545,7 @@ get_device_bandwidth_consumption(
 ## Recommended API
 
 ```http
-GET /api/v1/devices/{serialNumber}/wifi-clients/usage-summary
+GET /api/v1/devices/{routerId}/wifi-clients/usage-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
 ```
@@ -592,7 +602,7 @@ radio information
 Alternative implementation:
 
 ```text
-If wificlienthistory is preferred for performance, first add serialNumber to:
+If wificlienthistory is preferred for performance, first add the gateway `serialNumber` to:
   AnalyticsObjects::WifiClientHistory
   WifiClientHistoryDBRecordType
   storage_wificlients.cpp fields and converters
@@ -688,9 +698,9 @@ fmt::format("{:.2f} Mb", value);
 ### Query Flow
 
 ```text
-Resolve boardId from serialNumber
+Resolve boardId from routerId
     ↓
-Load TimePointDB records for resolvedBoardId and serialNumber
+Load TimePointDB records for resolvedBoardId and stored serialNumber == request routerId
     ↓
 Include records from startTime through endTime
     ↓
@@ -717,7 +727,7 @@ Return array
 
 ```text
 get_device_rssi_quality(
-    serial_number: str,
+    router_id: str,
     timestamp_till: str,
     lookback_hours: int
 )
@@ -726,7 +736,7 @@ get_device_rssi_quality(
 ## Recommended API
 
 ```http
-GET /api/v1/devices/{serialNumber}/wifi-clients/rssi-summary
+GET /api/v1/devices/{routerId}/wifi-clients/rssi-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
 ```
@@ -828,7 +838,7 @@ Round percentages to two decimal places.
 ```text
 Load TimePointDB records where:
   boardId == resolvedBoardId
-  serialNumber == serialNumber
+  stored serialNumber == request routerId
   timestamp >= startTime
   timestamp <= endTime
 
@@ -845,7 +855,7 @@ For each station_id:
   calculate percentages from total_samples
 ```
 
-Do not query `wifi_client_history.board_id`, `wifi_client_history.serial_number`, or `wifi_client_history.created`; those fields do not exist in the current schema.
+Do not query `wifi_client_history.board_id`, `wifi_client_history.serialNumber`, or `wifi_client_history.created`; those fields do not exist in the current schema.
 
 The API should return the final percentages directly. The MCP server should not need to perform additional RSSI summarisation.
 
@@ -857,7 +867,7 @@ The API should return the final percentages directly. The MCP server should not 
 
 ```text
 get_gateway_offline_count(
-    serial_number: str,
+    router_id: str,
     timestamp_till: str,
     lookback_hours: int
 )
@@ -866,7 +876,7 @@ get_gateway_offline_count(
 ## Recommended API
 
 ```http
-GET /api/v1/devices/{serialNumber}/availability-summary
+GET /api/v1/devices/{routerId}/availability-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
 ```
@@ -925,7 +935,7 @@ device_availability_events
 --------------------------
 id
 board_id
-serial_number
+serialNumber
 event_type
 event_time
 reason
@@ -950,7 +960,7 @@ Required ORM fields and indexes:
 Fields:
   id              TEXT primary id
   board_id        TEXT
-  serial_number   TEXT
+  serialNumber    TEXT
   event_type      TEXT
   event_time      BIGINT
   reason          TEXT
@@ -961,12 +971,12 @@ Fields:
 
 Indexes:
   availability_serial_time_index:
-    serial_number ASC
+    serialNumber ASC
     event_time ASC
 
   availability_board_serial_time_index:
     board_id ASC
-    serial_number ASC
+    serialNumber ASC
     event_time ASC
 
   availability_event_id_index:
@@ -1019,7 +1029,7 @@ On ping/capabilities:
 Do not store online events for every ping.
 ```
 
-The event writer must include `resolvedBoardId`/`board_id`, `serial_number`, `event_type`, and the event timestamp. If the incoming connection message has a stable event id or session id, persist it and use `event_id` for idempotency.
+The event writer must include `resolvedBoardId`/`board_id`, `serialNumber` set from request `routerId`, `event_type`, and the event timestamp. If the incoming connection message has a stable event id or session id, persist it and use `event_id` for idempotency.
 
 ### Store Only State Transitions
 
@@ -1051,7 +1061,7 @@ offline_count =
 SELECT COUNT(*) AS offline_count
 FROM device_availability_events
 WHERE board_id = :board_id
-  AND serial_number = :serial_number
+  AND serialNumber = :router_id
   AND event_type = 'offline'
   AND event_time >= :start_time
   AND event_time <= :end_time;
@@ -1105,11 +1115,11 @@ openapi/owanalytics.yaml
 Add:
 
 ```yaml
-/devices/{serialNumber}/memory-summary:
-/devices/{serialNumber}/radio-temperature-summary:
-/devices/{serialNumber}/availability-summary:
-/devices/{serialNumber}/wifi-clients/usage-summary:
-/devices/{serialNumber}/wifi-clients/rssi-summary:
+/devices/{routerId}/memory-summary:
+/devices/{routerId}/radio-temperature-summary:
+/devices/{routerId}/availability-summary:
+/devices/{routerId}/wifi-clients/usage-summary:
+/devices/{routerId}/wifi-clients/rssi-summary:
 ```
 
 ---
@@ -1167,12 +1177,12 @@ rssi-summary
 All handlers must call a shared serial-resolution helper before storage access:
 
 ```cpp
-SerialResolutionResult ResolveSerialNumberContext(
+RouterIdResolutionResult ResolveRouterIdContext(
     RESTAPIHandler* client,
-    const std::string& serialNumber);
+    const std::string& routerId);
 ```
 
-The helper must use status-aware OWPROV inventory lookup, read `InventoryTag.venue`, and resolve board ownership with `monitorSubVenues` support. It can either scan candidate board device lists through `SDK::Prov::Venue::GetDevices(..., VenueInfo.monitorSubVenues, ...)` or use a current `serialNumber -> boardId` map maintained by `VenueCoordinator`.
+The helper must use status-aware OWPROV inventory lookup, read `InventoryTag.venue`, and resolve board ownership with `monitorSubVenues` support. It can either scan candidate board device lists through `SDK::Prov::Venue::GetDevices(..., VenueInfo.monitorSubVenues, ...)` or use a current `routerId -> boardId` map maintained by `VenueCoordinator`.
 
 ---
 
@@ -1220,14 +1230,14 @@ src/StorageService.h
 src/StorageService.cpp
 ```
 
-`storage_wificlients.*` only needs changes if the implementation chooses to add `serialNumber` to `wificlienthistory`. The default implementation for gateway-scoped client summaries should aggregate `timepoints.ssid_data` to avoid that migration.
+`storage_wificlients.*` only needs changes if the implementation chooses to add gateway `serialNumber` to `wificlienthistory`. The default implementation for gateway-scoped client summaries should aggregate `timepoints.ssid_data` to avoid that migration.
 
 Suggested functions:
 
 ```cpp
 bool GetMemorySummary(
     const std::string& resolvedBoardId,
-    const std::string& serialNumber,
+    const std::string& routerId,
     uint64_t startTime,
     uint64_t endTime,
     AnalyticsObjects::GatewayMemorySummary& result);
@@ -1247,11 +1257,11 @@ bool GetGatewayAvailabilitySummary(...);
 
 | MCP Tool | Analytics API | Data Source | Implementation Status |
 |---|---|---|---|
-| `get_gateway_free_memory` | `GET /devices/{serialNumber}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve serial to venueId and boardId, then aggregate `timepoints` |
-| `get_gateway_wifi_temp` | `GET /devices/{serialNumber}/radio-temperature-summary` | `timepoints.radio_data[].temperature` | Resolve serial to venueId and boardId, then aggregate `timepoints` |
-| `get_device_bandwidth_consumption` | `GET /devices/{serialNumber}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve serial to venueId and boardId, then reset-safe delta aggregation with pre-window baseline |
-| `get_device_rssi_quality` | `GET /devices/{serialNumber}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve serial to venueId and boardId, then classify RSSI samples |
-| `get_gateway_offline_count` | `GET /devices/{serialNumber}/availability-summary` | Existing gateway `connection` topic | Resolve serial to venueId and boardId, then aggregate persisted offline state transitions |
+| `get_gateway_free_memory` | `GET /devices/{routerId}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
+| `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].temperature` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
+| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then reset-safe delta aggregation with pre-window baseline |
+| `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
+| `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic | Resolve routerId to venueId and boardId, then aggregate persisted offline state transitions |
 
 ---
 
