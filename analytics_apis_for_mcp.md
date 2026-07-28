@@ -117,12 +117,15 @@ Resolution flow:
 
 ```text
 1. Validate routerId.
-2. Call OWPROV inventory for the serial number with status-aware handling:
+2. Check the request-scoped routerId resolution cache.
+3. Resolve board ownership from the maintained routerId -> boardId map.
+4. If the map has a current entry, use it as resolvedBoardId.
+5. On cache/map miss, call OWPROV inventory with status-aware handling:
      GET /api/v1/inventory/{routerId}
-3. Read inventoryTag.venue as venueId.
-4. Find the Analytics board that currently owns routerId.
-5. Use that board's BoardInfo.info.id as resolvedBoardId.
-6. Query Analytics storage with resolvedBoardId and serialNumber = routerId.
+6. Read inventoryTag.venue as venueId.
+7. Use the OWPROV venue result to verify or refresh board ownership.
+8. Store the resolved result in the request-scoped cache.
+9. Query Analytics storage with resolvedBoardId and serialNumber = routerId.
 ```
 
 Implementation notes:
@@ -135,17 +138,38 @@ OWPROV response field:
   InventoryTag.venue
 
 Analytics local source:
-  BoardsDB records
+  VenueCoordinator maintained routerId -> boardId map
+  BoardInfo records for venue metadata and validation
   BoardInfo.venueList[].id
   BoardInfo.venueList[].monitorSubVenues
 ```
 
-Board ownership resolution must account for child venues. Do not only check whether `inventoryTag.venue` is directly present in `BoardInfo.venueList`.
+Board ownership resolution must use the maintained `routerId -> boardId` map as the primary design. `VenueCoordinator` should maintain this map from the same board device lists used by `VenueWatcher`, updating it when boards start, reconcile, or change device membership.
 
-Preferred ownership algorithm:
+OWPROV inventory lookup is not the normal path for every metric query. It is used when the local map has no entry, when the entry needs verification, or when ownership may be stale. Board ownership refresh must account for child venues. Do not only check whether `inventoryTag.venue` is directly present in `BoardInfo.venueList`.
+
+Primary ownership algorithm:
 
 ```text
-For each local BoardInfo record:
+Look up routerId in VenueCoordinator's maintained routerId -> boardId map.
+
+If exactly one current board mapping exists:
+  resolvedBoardId = mapped boardId
+  return Success
+
+If no mapping exists:
+  perform status-aware OWPROV inventory lookup
+  read InventoryTag.venue
+  refresh candidate board ownership from current venue device lists
+  update the maintained routerId -> boardId map when ownership is determined
+```
+
+This mirrors the existing watcher behavior, where board devices are fetched from OWPROV with the board venue's `monitorSubVenues` setting.
+
+Refresh algorithm for cache/map misses:
+
+```text
+For each local BoardInfo record that can own the inventory venue:
   for each VenueInfo in BoardInfo.venueList:
     call SDK::Prov::Venue::GetDevices(
       client,
@@ -159,17 +183,10 @@ For each local BoardInfo record:
 
 If exactly one candidate exists:
   resolvedBoardId = candidate board
+  update routerId -> boardId map
 ```
 
-This mirrors the existing watcher behavior, where board devices are fetched from OWPROV with the board venue's `monitorSubVenues` setting.
-
-Alternative implementation:
-
-```text
-Expose a current routerId -> boardId map from VenueCoordinator.
-The map must be maintained from the same device lists used by VenueWatcher.
-The resolver may use this map instead of scanning OWPROV for every request.
-```
+Request-scoped reuse is required. A single MCP request that asks for multiple metrics for the same router must resolve `routerId` once, then reuse the same `RouterIdResolutionResult` for all handlers in that request. For example, five MCP metric queries in one request must not repeat the full resolution process five times.
 
 Failure handling:
 
@@ -229,7 +246,7 @@ Option B:
   directly from ResolveRouterIdContext and inspect the HTTP response status.
 ```
 
-Handlers may cache `routerId -> venueId -> boardId` for a short TTL, but must refresh or invalidate the cache when OWPROV reports a different venue.
+Handlers may keep a short-lived process cache for `routerId -> venueId -> boardId`, but it is secondary to the maintained `VenueCoordinator` ownership map. Any cache must refresh or invalidate entries when OWPROV reports a different venue or when `VenueCoordinator` reports changed board membership.
 
 ---
 
@@ -459,6 +476,35 @@ radios[].band
 radios[].temperature
 ```
 
+Temperature samples need explicit validity handling. Current ingestion in `APStats.cpp` defaults a missing radio temperature to `20` and also rewrites a reported `0` to `20`. Those fallback values must not be treated as genuine measurements.
+
+Required ingestion rule:
+
+```text
+If radios[].temperature is present, non-null, and accepted as a measured value:
+  store the measured temperature
+  store temperature_valid = true
+
+If radios[].temperature is missing, null, or rejected as invalid:
+  keep temperature missing/null
+  store temperature_valid = false
+
+Do not synthesize a numeric fallback temperature for missing data.
+Do not store 20, 0, or any other placeholder for a missing temperature.
+For all newly ingested records, temperature_valid must be present.
+```
+
+Historical data rule:
+
+```text
+Existing stored temperature == 20 is ambiguous because it may be either:
+  a genuine measured 20, or
+  the synthetic fallback for missing/zero input
+
+Unless a migration can prove the value came from a real measured source, do not use
+historical 20 values in min/max/average temperature summaries.
+```
+
 The current radio-band mapping is:
 
 ```text
@@ -489,13 +535,28 @@ For each record:
   parse radio_data
   for each radio in radio_data:
     if radio.band is 2 or 5:
-      add radio.temperature to that band's sample list
+      if radio.temperature_valid is true and radio.temperature is present:
+        add radio.temperature to that band's sample list
 
 For each band:
   min_temperature = min(samples)
   max_temperature = max(samples)
   avg_temperature = sum(samples) / sample_count
 ```
+
+A valid temperature sample is:
+
+```text
+New records:
+  temperature is present and non-null
+  and temperature_valid == true
+
+Historical records from the current ingestion behavior:
+  temperature is present
+  and temperature != 20
+```
+
+If all samples for a band are invalid or missing, return `null` for that band's min, max, and average fields.
 
 Do not query `radio_timepoints` unless a separate normalized table and migration are introduced.
 
@@ -615,44 +676,82 @@ The values are cumulative counters, so they must not be summed directly.
 ### Correct Calculation
 
 ```text
-baseline = last sample before start_time for the same client, if available
+stream_key = association/session id when available, otherwise:
+  station MAC
+  BSSID
+  SSID
+  band/radio when present
+
+baseline = last sample before start_time for the same stream_key, if available
 
 first in-window delta:
   if baseline exists:
-    resetSafeDelta(first.rx_bytes, baseline.rx_bytes)
+    counterDelta(first.rx_bytes, baseline.rx_bytes)
   else:
     0
 
 subsequent deltas:
-  resetSafeDelta(current.rx_bytes, previous.rx_bytes)
+  counterDelta(current.rx_bytes, previous.rx_bytes)
 
 data_consume_rx = SUM(reset-safe rx_bytes deltas)
 data_consume_tx = SUM(reset-safe tx_bytes deltas)
 total_data_usage = data_consume_rx + data_consume_tx
 ```
 
+Calculate counter deltas per `stream_key`. After stream-level deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response.
+
 ### Reset-Safe Delta Logic
 
 ```cpp
-uint64_t resetSafeDelta(uint64_t current, uint64_t previous) {
+uint64_t counterDelta(uint64_t current, uint64_t previous,
+                      bool confirmedFixedWidthRollover,
+                      uint64_t counterMax) {
     if (current >= previous) {
         return current - previous;
     }
 
-    return current;
+    if (confirmedFixedWidthRollover) {
+        return (counterMax - previous) + current + 1;
+    }
+
+    return 0;
 }
 ```
 
-This handles:
+Do not treat every lower counter as a reset where `current` should be added. A lower value can mean a new association session, movement between radios/BSSIDs, stale or out-of-order telemetry, duplicate station records inside one timepoint, or counter-width rollover. Adding `current` on every decrease can overcount traffic by attributing unknown pre-window traffic to the requested window.
+
+Required sample handling:
 
 ```text
-client reconnection
-counter reset
-gateway reboot
-counter rollover
+Build a deterministic sample key from the stable fields available in the association:
+  station MAC
+  timestamp
+  BSSID, SSID, band/radio when present
+
+Sort samples by:
+  station MAC
+  timestamp ASC
+  BSSID/SSID/band/radio tie-breakers
+
+Deduplicate exact duplicate samples before calculating deltas.
+
+Discard out-of-order samples for the same calculated stream.
+
+When an association/session identifier is available:
+  calculate deltas only within the same session.
+
+When no session identifier is available:
+  use station MAC as the result grouping key,
+  but use BSSID/SSID/band/radio changes as stream boundaries when possible.
+
+If current < previous:
+  if fixed-width rollover is known and can be confirmed:
+    apply rollover math
+  else:
+    treat current as the new baseline and add delta 0
 ```
 
-Without the pre-window baseline, the first sample inside the requested window can include traffic that occurred before `start_time`. Do not add the first in-window cumulative counter directly unless it is known to be a fresh association/reset.
+Without the pre-window baseline for the same calculated stream, the first sample inside the requested window can include traffic that occurred before `start_time`. Do not add the first in-window cumulative counter directly unless it is known to be a fresh association/reset for that same stream.
 
 ### Incorrect Calculation
 
@@ -669,7 +768,7 @@ This would overcount cumulative values.
 GROUP BY station_id
 ```
 
-A client moving between BSSIDs should remain one client unless a per-BSSID result is explicitly required.
+A client moving between BSSIDs should remain one client in the final response unless a per-BSSID result is explicitly required. However, BSSID/SSID/band/radio changes must define separate calculation streams for counter deltas unless a reliable association/session identifier says they are the same counter stream.
 
 ### Unit Conversion
 
@@ -704,15 +803,15 @@ Load TimePointDB records for resolvedBoardId and stored serialNumber == request 
     ↓
 Include records from startTime through endTime
     ↓
-Also load the latest pre-window association sample for each station MAC
+Also load the latest pre-window association sample for each calculated stream_key
     ↓
 Parse ssid_data associations
     ↓
-Group by station MAC and sort by timestamp
+Build stream_key values and sort samples by stream_key and timestamp
     ↓
 Calculate reset-safe RX/TX deltas
     ↓
-Sum values by MAC
+Aggregate stream-level deltas by station MAC
     ↓
 Convert bytes to megabits
     ↓
@@ -942,6 +1041,7 @@ reason
 connection_ip
 session_id
 event_id
+idempotency_key
 metadata
 ```
 
@@ -952,6 +1052,8 @@ Add a dedicated storage class for availability events:
 ```text
 src/storage/storage_device_availability_events.h
 src/storage/storage_device_availability_events.cpp
+src/storage/storage_device_availability_state.h
+src/storage/storage_device_availability_state.cpp
 ```
 
 Required ORM fields and indexes:
@@ -959,7 +1061,7 @@ Required ORM fields and indexes:
 ```text
 Fields:
   id              TEXT primary id
-  board_id        TEXT
+  board_id        TEXT NULL
   serialNumber    TEXT
   event_type      TEXT
   event_time      BIGINT
@@ -967,6 +1069,7 @@ Fields:
   connection_ip   TEXT
   session_id      TEXT
   event_id        TEXT
+  idempotency_key TEXT NOT NULL
   metadata        TEXT
 
 Indexes:
@@ -979,8 +1082,51 @@ Indexes:
     serialNumber ASC
     event_time ASC
 
+Unique constraints:
+  availability_idempotency_key_unique:
+    idempotency_key ASC
+
+Optional indexes:
   availability_event_id_index:
     event_id ASC
+```
+
+`event_id` stores the normalized source event id when the payload provides one, using `payload.ping.uuid`, `payload.uuid`, or `payload.disconnection.uuid` only when that `uuid` is stable for the same logical source event.
+
+`serialNumber` is the durable identity for availability history. `board_id` is event-time context only and must be nullable because connection events can arrive when the router is not currently assigned to an Analytics board, when OWPROV is unavailable, or after ownership has changed. Do not drop availability events only because current board ownership cannot be resolved.
+
+Add a persisted current-state table for restart-safe transition detection:
+
+```text
+device_availability_state
+-------------------------
+serialNumber
+board_id
+current_state
+last_event_time
+last_idempotency_key
+updated_at
+metadata
+```
+
+Required fields and constraints:
+
+```text
+Fields:
+  serialNumber         TEXT primary id
+  board_id             TEXT NULL
+  current_state        TEXT
+  last_event_time      BIGINT
+  last_idempotency_key TEXT
+  updated_at           BIGINT
+  metadata             TEXT
+
+Indexes:
+  availability_state_board_index:
+    board_id ASC
+
+Constraints:
+  current_state must be one of: online, offline, unknown
 ```
 
 Add a `DeviceAvailabilityEvent` REST/storage object with `to_json` and `from_json` support in:
@@ -995,12 +1141,17 @@ Update `StorageService`:
 ```text
 src/StorageService.h
   include storage/storage_device_availability_events.h
+  include storage/storage_device_availability_state.h
   add DeviceAvailabilityEventsDB accessor
+  add DeviceAvailabilityStateDB accessor
   add std::unique_ptr<DeviceAvailabilityEventsDB>
+  add std::unique_ptr<DeviceAvailabilityStateDB>
 
 src/StorageService.cpp
   construct DeviceAvailabilityEventsDB
+  construct DeviceAvailabilityStateDB
   call DeviceAvailabilityEventsDB->Create()
+  call DeviceAvailabilityStateDB->Create()
   include availability retention cleanup if retention should match board timepoint cleanup
 ```
 
@@ -1017,6 +1168,21 @@ src/APStats.cpp
   AP::UpdateConnection(...)
 ```
 
+Ingestion-time board source:
+
+```text
+1. Read board ownership from VenueCoordinator's maintained routerId -> boardId map.
+2. If a current mapping exists:
+     set board_id to the mapped board id.
+3. If no current mapping exists:
+     set board_id to NULL.
+     still persist the availability state/event by serialNumber when the message is otherwise valid.
+4. Do not perform a full OWPROV inventory lookup or board scan for every connection event.
+5. A background refresh or later request-time resolution may update current ownership, but it must not rewrite historical event ownership blindly.
+```
+
+The ingestion path must not depend on HTTP request-time `ResolveRouterIdContext`. That resolver can use OWPROV to verify or refresh ownership for API requests, but Kafka connection ingestion should use the maintained `VenueCoordinator` ownership map and tolerate missing current board ownership.
+
 Rules:
 
 ```text
@@ -1029,7 +1195,200 @@ On ping/capabilities:
 Do not store online events for every ping.
 ```
 
-The event writer must include `resolvedBoardId`/`board_id`, `serialNumber` set from request `routerId`, `event_type`, and the event timestamp. If the incoming connection message has a stable event id or session id, persist it and use `event_id` for idempotency.
+Bootstrap rule when no persisted state exists:
+
+```text
+First observed disconnection:
+  insert one offline event
+  set current_state = offline
+
+First observed ping/capabilities:
+  set current_state = online
+  do not insert an online event
+
+First observed unrecognized connection message:
+  set current_state = unknown
+  do not insert a counted event
+```
+
+In-memory transition checking is only an optimization. It is not sufficient for correctness because Kafka can redeliver messages and the service can restart after losing in-memory state. Transition detection must use `device_availability_state` or derive the latest known state from `device_availability_events` under the same transaction before writing. Duplicate connection messages must be rejected by storage-level idempotency before they can affect `offline_count`.
+
+Normalize connection messages before transition processing:
+
+```text
+If payload.ping exists:
+  message_type = ping
+  event_type = online
+  serialNumber = payload.ping.serialNumber
+  event_time = payload.ping.timestamp
+  source_event_uuid = payload.ping.uuid
+  connection_ip = payload.ping.connectionIp
+
+If payload.capabilities exists:
+  message_type = capabilities
+  event_type = online
+  serialNumber = payload.serial
+  event_time = payload.timestamp
+  source_event_uuid = payload.uuid
+  connection_ip = payload.connectionIp
+  reason = payload.reason
+
+If payload.disconnection exists:
+  message_type = disconnection
+  event_type = offline
+  serialNumber = payload.disconnection.serialNumber
+  event_time = payload.disconnection.timestamp
+  source_event_uuid = payload.disconnection.uuid
+```
+
+The event writer must include `board_id` from the ingestion-time ownership map when available, normalized `serialNumber`, `event_type`, normalized `event_time`, and a stable `idempotency_key`.
+
+Idempotency key rule:
+
+```text
+If the incoming connection message contains a stable source event id:
+  source_event_id = payload.ping.uuid
+    or payload.uuid
+    or payload.disconnection.uuid
+  idempotency_key = deterministic hash of:
+    system.host
+    system.id
+    serialNumber
+    message_type
+    source_event_id
+
+Else if the message contains a stable session id plus event timestamp:
+  idempotency_key = deterministic hash of:
+    serialNumber
+    message_type
+    event_type
+    event_time
+    session_id
+
+Else if connection_ip or reason is available:
+  idempotency_key = deterministic hash of the stable logical message identity:
+    serialNumber
+    message_type
+    event_type
+    event_time
+    reason
+    connection_ip
+
+Else:
+  idempotency_key = deterministic hash of the minimum stable logical identity:
+    serialNumber
+    message_type
+    event_type
+    event_time
+```
+
+Treat `uuid` as a source event id only if it is stable for the same logical connection message across Kafka redelivery and unique within the source namespace identified by `system.host` and `system.id`. If `uuid` is only a random per-delivery value, do not use it as `source_event_id`.
+
+Minimum fields for derived idempotency keys:
+
+```text
+All counted availability events:
+  serialNumber is required
+  event_type is required
+  event_time is required and must have the highest precision available from the source
+
+Offline events derived from disconnection:
+  reason or source disconnect cause is required when available
+  if reason/cause and connection_ip are missing:
+    prefer stable source_event_id from payload.disconnection.uuid
+    otherwise derive the key from serialNumber, message_type, event_type, and event_time
+  if reason/cause and connection_ip are missing and event_time precision is coarser than seconds:
+    do not write a counted offline event unless a stable source_event_id or session_id exists
+
+Online events derived from ping/capabilities:
+  session_id is required when available
+  if session_id is unavailable:
+    event_time plus message type must be precise enough to distinguish separate logical reconnects
+  if event_time is missing or too coarse to distinguish separate reconnects:
+    update current-state metadata only; do not write a counted online transition event
+
+Unrecognized connection messages:
+  do not write counted availability events
+  store only current-state metadata when useful
+```
+
+If the minimum fields for the event type are not present, the implementation must not create a counted `device_availability_events` row. It may update non-counted metadata only when doing so cannot move `device_availability_state` backward or create a false transition.
+
+Do not include `board_id` in the idempotency key unless it is part of a stable source event id. Board ownership can change between delivery and redelivery, and including current ownership in a derived key can turn one logical event into multiple stored events.
+
+Do not include Kafka topic, partition, or offset in the derived logical `idempotency_key`. Kafka coordinates identify a broker record, not the logical connection event. They dedupe redelivery of the same Kafka record, but they do not dedupe the same logical connection event produced as a second Kafka record with a different offset. Store topic, partition, offset, message key, and consumer timestamp in `metadata` for tracing only.
+
+The same delivered logical connection event must always produce the same `idempotency_key`. If the implementation cannot build a stable or deterministic key for an event, it must not write that event as a counted availability transition; log it as an ingestion error instead.
+
+Atomic transition and insert rule:
+
+```text
+For each valid connection message:
+  begin transaction
+  load the persisted state row for serialNumber with write/transaction isolation
+  if no state row exists:
+    treat previous state as unknown
+  determine the new state from the message
+  if state row exists and event_time is older than last_event_time:
+    treat the message as stale
+    do not insert an availability event
+    do not update device_availability_state
+    commit transaction
+    stop processing this message
+  if state row exists and event_time equals last_event_time and no reliable tie-breaker proves this event is later:
+    treat the message as duplicate or non-advancing
+    do not insert a counted availability event
+    do not update device_availability_state
+    commit transaction
+    stop processing this message
+  if previous state is unknown:
+    if new state is offline:
+      insert one offline event with conflict-safe semantics
+      if the insert created a row:
+        update device_availability_state to offline and last_event_time
+      else:
+        do not update device_availability_state
+    else if new state is online:
+      update device_availability_state to online and last_event_time
+      do not insert an online event
+    else:
+      update device_availability_state to unknown and last_event_time
+      do not insert a counted event
+  else if previous state differs from new state:
+    insert availability event with conflict-safe semantics:
+      INSERT ... ON CONFLICT(idempotency_key) DO NOTHING
+    if the insert created a row:
+      update device_availability_state to the new state and last_event_time
+    else:
+      treat it as a duplicate
+      do not update device_availability_state
+  else if previous state equals new state:
+    update last contact metadata only when event_time is newer than last_event_time
+    do not insert a counted transition event
+  commit transaction
+
+or the equivalent database-specific "insert if absent" operation.
+
+The storage method must return whether a row was inserted. Duplicate events that hit
+the unique idempotency constraint must not be treated as new offline transitions and
+must not move `device_availability_state` backward or forward.
+```
+
+Staleness rule:
+
+```text
+An event is stale when its event_time is older than the persisted state's
+last_event_time for the same serialNumber. An event with the same event_time is
+non-advancing unless a deterministic source tie-breaker proves it happened later.
+
+Stale or non-advancing events must not insert counted availability events and must
+not update device_availability_state, even if their idempotency_key has not been
+seen before.
+
+For equal timestamps, use deterministic tie-breakers if the source provides them.
+If no reliable tie-breaker exists, process at most one state-changing event for that
+serialNumber and timestamp.
+```
 
 ### Store Only State Transitions
 
@@ -1060,12 +1419,13 @@ offline_count =
 ```sql
 SELECT COUNT(*) AS offline_count
 FROM device_availability_events
-WHERE board_id = :board_id
-  AND serialNumber = :router_id
+WHERE serialNumber = :router_id
   AND event_type = 'offline'
   AND event_time >= :start_time
   AND event_time <= :end_time;
 ```
+
+Do not require `board_id = :resolvedBoardId` for the availability count. `board_id` is nullable event-time context and can differ from the router's current board after reassignment. The durable query identity for gateway availability history is `serialNumber`.
 
 ### Success Response with No Offline Events
 
@@ -1174,7 +1534,7 @@ usage-summary
 rssi-summary
 ```
 
-All handlers must call a shared serial-resolution helper before storage access:
+Timepoint-backed handlers must call a shared serial-resolution helper before storage access:
 
 ```cpp
 RouterIdResolutionResult ResolveRouterIdContext(
@@ -1182,7 +1542,18 @@ RouterIdResolutionResult ResolveRouterIdContext(
     const std::string& routerId);
 ```
 
-The helper must use status-aware OWPROV inventory lookup, read `InventoryTag.venue`, and resolve board ownership with `monitorSubVenues` support. It can either scan candidate board device lists through `SDK::Prov::Venue::GetDevices(..., VenueInfo.monitorSubVenues, ...)` or use a current `routerId -> boardId` map maintained by `VenueCoordinator`.
+The timepoint-backed handlers are:
+
+```text
+memory-summary
+radio-temperature-summary
+usage-summary
+rssi-summary
+```
+
+The helper must use the current `routerId -> boardId` map maintained by `VenueCoordinator` as the primary ownership source. OWPROV inventory lookup must be status-aware and is used to verify or refresh ownership on cache/map misses. Any refresh path must read `InventoryTag.venue` and resolve board ownership with `monitorSubVenues` support, using candidate board device lists through `SDK::Prov::Venue::GetDevices(..., VenueInfo.monitorSubVenues, ...)` when needed. A single MCP request must reuse one `RouterIdResolutionResult` for repeated metrics targeting the same `routerId`.
+
+`availability-summary` is the exception. It must validate `routerId` and authorization, but it must not require successful current `resolvedBoardId` resolution before reading availability storage. Request-time resolution may be used only for current context or authorization hints. The historical count must query availability storage by durable `serialNumber`, not by mandatory current `resolvedBoardId`.
 
 ---
 
@@ -1226,6 +1597,8 @@ src/storage/storage_wificlients.h
 src/storage/storage_wificlients.cpp
 src/storage/storage_device_availability_events.h
 src/storage/storage_device_availability_events.cpp
+src/storage/storage_device_availability_state.h
+src/storage/storage_device_availability_state.cpp
 src/StorageService.h
 src/StorageService.cpp
 ```
@@ -1261,7 +1634,7 @@ bool GetGatewayAvailabilitySummary(...);
 | `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].temperature` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
 | `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then reset-safe delta aggregation with pre-window baseline |
 | `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
-| `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic | Resolve routerId to venueId and boardId, then aggregate persisted offline state transitions |
+| `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic plus `device_availability_events` | Use routerId as durable serialNumber, persist restart-safe state transitions, then count offline events by serialNumber |
 
 ---
 
