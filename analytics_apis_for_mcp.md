@@ -73,11 +73,124 @@ Validation rules:
 ```text
 timestampTill must parse as a valid timestamp.
 lookbackHours must be greater than 0.
-lookbackHours should have a bounded maximum, for example 24 * 31.
+maxLookbackHours = floor(configured monitoringDuration / 3600).
+lookbackHours must be less than or equal to maxLookbackHours.
 startTime must be less than endTime.
 ```
 
-Return `400 Bad Request` for invalid timestamps, unsupported timezones, non-positive `lookbackHours`, or values above the configured maximum. Internally, query `timepoints.timestamp` and `wificlienthistory.timestamp` using epoch seconds.
+All APIs in this document derive `maxLookbackHours` from the configured `monitoringDuration` for the resolved router ownership scope. All APIs share this limit unless an endpoint section explicitly names a stricter limit. No endpoint currently defines a separate limit.
+
+For a one-year monitoring configuration, `maxLookbackHours` is `365 * 24` only when the configured monitoring duration is exactly 365 days. Do not assume every calendar year is 8760 hours; use the configured duration and effective retention timestamps when validating the request.
+
+Return `400 Bad Request` for invalid timestamps, unsupported timezones, non-positive `lookbackHours`, or values above the applicable maximum. Internally, query `timepoints.timestamp` and `wificlienthistory.timestamp` using epoch seconds.
+
+### Monitoring Configuration
+
+Handlers must load the monitoring configuration for the resolved router ownership scope before querying metric storage.
+
+```text
+monitoringDuration = configured monitoring retention duration
+retentionEnd = min(currentTime, monitoringConfigurationExpiry)
+retentionStart = retentionEnd - monitoringDuration
+
+If monitoring has been enabled for less time than monitoringDuration:
+  retentionStart = max(monitoringEnabledAt, retentionEnd - monitoringDuration)
+```
+
+Use the configured duration and effective retention timestamps instead of calendar assumptions so leap years, partial-year retention, recently enabled monitoring, and changed retention policies behave consistently.
+
+The requested half-open range must fit inside the configured retention window:
+
+```text
+startTime >= retentionStart
+endTime <= retentionEnd
+```
+
+If the requested range is outside the configured retention window, return `400 Bad Request` with `error: "lookback_outside_retention"`.
+
+When monitoring is disabled:
+
+```text
+stop ingesting new metric and availability records
+retain existing records until their existing expiry timestamp
+return 409 Conflict for all summary requests
+```
+
+Error response:
+
+```json
+{
+  "error": "monitoring_disabled",
+  "message": "Monitoring is disabled for this router scope"
+}
+```
+
+When monitoring is not configured for the resolved router scope, return:
+
+```http
+404 Not Found
+```
+
+```json
+{
+  "error": "monitoring_not_configured",
+  "message": "Monitoring is not configured for this router scope"
+}
+```
+
+### Time Window Semantics
+
+All summary APIs must use a half-open time interval:
+
+```text
+[startTime, endTime)
+
+timestamp >= startTime
+timestamp < endTime
+```
+
+`timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
+
+Example:
+
+```text
+Request 1: 10:00 <= timestamp < 11:00
+Request 2: 11:00 <= timestamp < 12:00
+```
+
+A sample exactly at `11:00` belongs only to Request 2.
+
+### Authorization
+
+All device metric handlers must enforce authorization before returning data:
+
+```text
+1. Authenticate the bearer token.
+   If the token is missing, invalid, or expired, return 401 Unauthorized.
+2. Resolve the caller's accessible entity, venue, and board scope from the token.
+3. Resolve routerId to its current router ownership context.
+4. Verify that the resolved router belongs to a board or venue the caller may read.
+5. Return 404 Not Found when the router exists but the caller cannot access it.
+6. Return 404 Not Found when the router does not exist.
+```
+
+Required permission:
+
+```text
+analytics.gateway_metrics.read
+```
+
+The permission is evaluated against the resolved board first, then the resolved venue, then the parent entity. Child-venue access is allowed only when the caller's venue permission explicitly includes descendant venues according to the same venue hierarchy rules used by OWPROV and `VenueCoordinator`; otherwise access is limited to the exact resolved venue or board.
+
+Authorization must not rely on the caller-supplied `routerId` alone. A caller must not be able to request an arbitrary gateway serial number and retrieve metrics without proving access to the router's current ownership scope. The external API intentionally returns `404 Not Found` for both nonexistent routers and routers outside the caller's authorized scope to avoid exposing router existence. Internal logs and metrics should preserve the exact reason.
+
+For historical availability, authorize by current router ownership before querying `device_availability_events` by `serialNumber`. The event-time `board_id` field is historical context only and must not be the sole authorization source. If current ownership cannot be resolved for a non-operator caller, do not serve serial-number-only availability history. A privileged operator-level permission may bypass current ownership resolution only if explicitly implemented and audited.
+
+Privileged operator bypass, if implemented, must use a separate permission:
+
+```text
+analytics.gateway_metrics.read_any
+```
 
 ### Current Storage Model
 
@@ -117,16 +230,21 @@ Resolution flow:
 
 ```text
 1. Validate routerId.
-2. Check the request-scoped routerId resolution cache.
-3. Resolve board ownership from the maintained routerId -> boardId map.
-4. If the map has a current entry, use it as resolvedBoardId.
-5. On cache/map miss, call OWPROV inventory with status-aware handling:
+2. Read the current VenueCoordinator ownershipVersion.
+3. Check the process-level router resolution cache.
+4. Use an unexpired positive cache entry only if its ownershipVersion matches
+   the current VenueCoordinator ownershipVersion.
+5. Resolve board ownership from the maintained routerId -> boardId map.
+6. If the map has a current entry, use it as resolvedBoardId.
+7. On cache/map miss or expired cache entry, call OWPROV inventory with status-aware handling:
      GET /api/v1/inventory/{routerId}
-6. Read inventoryTag.venue as venueId.
-7. Use the OWPROV venue result to verify or refresh board ownership.
-8. Store the resolved result in the request-scoped cache.
-9. Query Analytics storage with resolvedBoardId and serialNumber = routerId.
+8. Read inventoryTag.venue as venueId.
+9. Use the OWPROV venue result to verify or refresh board ownership.
+10. Store the resolved result in the process-level cache.
+11. Query Analytics storage with resolvedBoardId and serialNumber = routerId.
 ```
+
+Separate MCP metric calls are separate HTTP requests. They do not share an HTTP request context, so router resolution reuse across different metric endpoints must come from the maintained `VenueCoordinator` ownership map or the process-level cache, not from request-scoped state.
 
 Implementation notes:
 
@@ -157,6 +275,10 @@ If exactly one current board mapping exists:
   resolvedBoardId = mapped boardId
   return Success
 
+If multiple current board mappings exist:
+  return MultipleBoards
+  log a configuration error
+
 If no mapping exists:
   perform status-aware OWPROV inventory lookup
   read InventoryTag.venue
@@ -165,6 +287,8 @@ If no mapping exists:
 ```
 
 This mirrors the existing watcher behavior, where board devices are fetched from OWPROV with the board venue's `monitorSubVenues` setting.
+
+A router must have exactly one authoritative board mapping. Never resolve multiple candidates by list order, oldest board, most recently updated board, or direct venue preference. If multiple active mappings exist, return `409 Conflict` and log a configuration error.
 
 Refresh algorithm for cache/map misses:
 
@@ -184,9 +308,11 @@ For each local BoardInfo record that can own the inventory venue:
 If exactly one candidate exists:
   resolvedBoardId = candidate board
   update routerId -> boardId map
-```
 
-Request-scoped reuse is required. A single MCP request that asks for multiple metrics for the same router must resolve `routerId` once, then reuse the same `RouterIdResolutionResult` for all handlers in that request. For example, five MCP metric queries in one request must not repeat the full resolution process five times.
+If more than one candidate exists:
+  return MultipleBoards
+  do not choose a candidate by list order or heuristic tie-breaker
+```
 
 Failure handling:
 
@@ -194,8 +320,8 @@ Failure handling:
 OWPROV inventory not found              -> 404 Not Found
 Inventory exists but venue is empty     -> 404 Not Found
 No Analytics board configured for venue -> 404 Not Found
-Multiple matching boards                -> 409 Conflict unless deterministic ownership exists
-OWPROV unavailable or invalid response  -> 502 Bad Gateway
+Multiple matching boards                -> 409 Conflict
+OWPROV unavailable or invalid response  -> 502 Bad Gateway after cache fallback is exhausted
 ```
 
 The resolver must return a status-bearing result, not a boolean, so handlers can map each failure to the correct HTTP response.
@@ -208,6 +334,9 @@ enum class RouterIdResolutionStatus {
     EmptyVenue,
     BoardNotConfigured,
     MultipleBoards,
+    AccessDenied,
+    MonitoringNotConfigured,
+    MonitoringDisabled,
     OwprovUnavailable,
     OwprovInvalidResponse
 };
@@ -217,6 +346,8 @@ struct RouterIdResolutionResult {
     std::string routerId;
     std::string venueId;
     std::string resolvedBoardId;
+    uint64_t resolvedAt = 0;
+    uint64_t ownershipVersion = 0;
     std::string message;
 };
 ```
@@ -225,11 +356,14 @@ Status mapping:
 
 ```text
 Success               -> continue request
-InvalidRouterId   -> 400 Bad Request
+InvalidRouterId       -> 400 Bad Request
 InventoryNotFound     -> 404 Not Found
 EmptyVenue            -> 404 Not Found
 BoardNotConfigured    -> 404 Not Found
 MultipleBoards        -> 409 Conflict
+AccessDenied          -> 404 Not Found
+MonitoringNotConfigured -> 404 Not Found
+MonitoringDisabled    -> 409 Conflict
 OwprovUnavailable     -> 502 Bad Gateway
 OwprovInvalidResponse -> 502 Bad Gateway
 ```
@@ -246,7 +380,80 @@ Option B:
   directly from ResolveRouterIdContext and inspect the HTTP response status.
 ```
 
-Handlers may keep a short-lived process cache for `routerId -> venueId -> boardId`, but it is secondary to the maintained `VenueCoordinator` ownership map. Any cache must refresh or invalidate entries when OWPROV reports a different venue or when `VenueCoordinator` reports changed board membership.
+Router resolution process cache:
+
+```text
+Scope:
+  thread-safe, process-level cache shared by all REST handlers
+
+Key:
+  routerId
+
+Positive value:
+  venueId
+  boardId
+  resolvedAt
+  ownershipVersion
+
+Negative value:
+  resolution status
+  resolvedAt
+  ownershipVersion when available
+
+Positive TTL:
+  5 minutes, absolute from resolvedAt
+
+Negative TTL:
+  30 seconds or less, absolute from resolvedAt
+
+Maximum size:
+  10000 routerId entries per process
+
+Eviction:
+  expire entries by TTL first, then evict least-recently-used entries when the
+  maximum size is reached
+
+On unexpired positive cache hit:
+  return cached venueId and boardId if ownershipVersion still matches the
+  current VenueCoordinator ownershipVersion
+
+On expired entry:
+  resolve again before serving the request
+
+On OWPROV failure:
+  an unexpired positive local ownership entry may be used if ownershipVersion
+  still matches
+  an expired entry must not be extended silently
+  if no usable unexpired entry exists, return OwprovUnavailable or
+  OwprovInvalidResponse according to the failure
+
+Negative-result caching:
+  cache InventoryNotFound, EmptyVenue, BoardNotConfigured, MultipleBoards, and
+  MonitoringNotConfigured for the negative TTL
+  do not cache OwprovUnavailable or OwprovInvalidResponse as ownership facts
+
+Invalidation:
+  invalidate the routerId entry immediately when OWPROV reports a different
+  venue for the router
+  invalidate affected routerId entries when VenueCoordinator detects board
+  membership changes
+  invalidate affected routerId entries on board deletion or board venue
+  reconfiguration
+  invalidate affected routerId entries when board configuration changes
+  invalidate affected routerId entries when venue monitoring settings change
+  invalidate the routerId entry when router assignment changes
+  invalidate the routerId entry when the router is removed
+  invalidate the routerId entry when ownershipVersion changes
+
+Concurrency:
+  cache reads and writes must be synchronized
+  concurrent misses for the same routerId should coalesce to one refresh when
+  practical
+  if coalescing is not implemented, racing refreshes must not publish older
+  ownershipVersion results over newer results
+```
+
+The cache is secondary to `VenueCoordinator` ownership. A cache hit must not override a newer `VenueCoordinator` ownershipVersion.
 
 ---
 
@@ -312,10 +519,10 @@ Add raw memory fields to the device time-point model and persist them with each 
 
 ```cpp
 struct DeviceResourceTimePoint {
-    uint64_t memory_free = 0;
-    uint64_t memory_total = 0;
-    uint64_t memory_cached = 0;
-    uint64_t memory_buffered = 0;
+    std::optional<uint64_t> memory_free;
+    std::optional<uint64_t> memory_total;
+    std::optional<uint64_t> memory_cached;
+    std::optional<uint64_t> memory_buffered;
 };
 
 struct DeviceTimePoint {
@@ -350,14 +557,24 @@ src/APStats.cpp
 
 Existing rows will not have `resource_data`; treat those rows as missing memory samples rather than zero free memory.
 
+Do not represent missing memory fields as `0`. A missing `memory_free` value and a genuine reported zero must remain distinguishable.
+
 ### Ingestion Logic
 
 ```cpp
 AnalyticsObjects::DeviceResourceTimePoint resource;
-GetJSON("free", memory, resource.memory_free, uint64_t{0});
-GetJSON("total", memory, resource.memory_total, uint64_t{0});
-GetJSON("cached", memory, resource.memory_cached, uint64_t{0});
-GetJSON("buffered", memory, resource.memory_buffered, uint64_t{0});
+if (memory.has("free")) {
+    resource.memory_free = memory["free"].as<uint64_t>();
+}
+if (memory.has("total")) {
+    resource.memory_total = memory["total"].as<uint64_t>();
+}
+if (memory.has("cached")) {
+    resource.memory_cached = memory["cached"].as<uint64_t>();
+}
+if (memory.has("buffered")) {
+    resource.memory_buffered = memory["buffered"].as<uint64_t>();
+}
 DTP.resource_data = resource;
 ```
 
@@ -370,12 +587,12 @@ Load TimePointDB records where:
   boardId == resolvedBoardId
   stored serialNumber == request routerId
   timestamp >= startTime
-  timestamp <= endTime
+  timestamp < endTime
 
 For each record:
   read record.resource_data.memory_free
   ignore missing resource_data
-  ignore memory_free when memory_total is 0 and the sample came from a missing memory block
+  include the sample only when memory_free is present
 
 Return:
   min_memfree = min(memory_free samples)
@@ -469,40 +686,44 @@ None
 
 ## API Logic
 
-Analytics already stores:
+Analytics should store a nullable Wi-Fi temperature value per radio:
 
 ```text
 radios[].band
-radios[].temperature
+radios[].wifi_temp
 ```
-
-Temperature samples need explicit validity handling. Current ingestion in `APStats.cpp` defaults a missing radio temperature to `20` and also rewrites a reported `0` to `20`. Those fallback values must not be treated as genuine measurements.
 
 Required ingestion rule:
 
 ```text
-If radios[].temperature is present, non-null, and accepted as a measured value:
-  store the measured temperature
-  store temperature_valid = true
+If the source radio temperature is present and non-null:
+  store radios[].wifi_temp = source temperature
 
-If radios[].temperature is missing, null, or rejected as invalid:
-  keep temperature missing/null
-  store temperature_valid = false
+If the source radio temperature is missing or null:
+  omit radios[].wifi_temp or store radios[].wifi_temp = null
 
 Do not synthesize a numeric fallback temperature for missing data.
-Do not store 20, 0, or any other placeholder for a missing temperature.
-For all newly ingested records, temperature_valid must be present.
+Do not store a placeholder in wifi_temp for a missing temperature.
 ```
 
-Historical data rule:
+Migration boundary rule:
 
 ```text
-Existing stored temperature == 20 is ambiguous because it may be either:
-  a genuine measured 20, or
-  the synthetic fallback for missing/zero input
+Define a fixed temperature_migration_cutover_time as the deployment/migration
+timestamp where radios[].wifi_temp starts being written consistently.
 
-Unless a migration can prove the value came from a real measured source, do not use
-historical 20 values in min/max/average temperature summaries.
+Only use temperature records created at or after temperature_migration_cutover_time.
+Ignore all earlier records because historical temperature values cannot reliably
+distinguish measured values from synthetic fallback values.
+
+If the requested range starts before temperature_migration_cutover_time:
+  effective_start_time = temperature_migration_cutover_time
+else:
+  effective_start_time = startTime
+
+Do not filter out post-cutover samples only because the measured value is 20°C.
+After the cutover, a present wifi_temp value is treated as a legitimate
+measurement.
 ```
 
 The current radio-band mapping is:
@@ -528,15 +749,15 @@ Use the current `timepoints.radio_data` JSON array:
 Load TimePointDB records where:
   boardId == resolvedBoardId
   stored serialNumber == request routerId
-  timestamp >= startTime
-  timestamp <= endTime
+  timestamp >= effective_start_time
+  timestamp < endTime
 
 For each record:
   parse radio_data
   for each radio in radio_data:
     if radio.band is 2 or 5:
-      if radio.temperature_valid is true and radio.temperature is present:
-        add radio.temperature to that band's sample list
+      if radio.wifi_temp is present and non-null:
+        add radio.wifi_temp to that band's sample list
 
 For each band:
   min_temperature = min(samples)
@@ -547,13 +768,8 @@ For each band:
 A valid temperature sample is:
 
 ```text
-New records:
-  temperature is present and non-null
-  and temperature_valid == true
-
-Historical records from the current ingestion behavior:
-  temperature is present
-  and temperature != 20
+record timestamp is at or after temperature_migration_cutover_time
+radio.wifi_temp is present and non-null
 ```
 
 If all samples for a band are invalid or missing, return `null` for that band's min, max, and average fields.
@@ -630,15 +846,25 @@ None
 [
   {
     "mac": "e2:51:95:ed:0f:28",
+    "rx_bytes": 106487500,
+    "tx_bytes": 3851250,
+    "total_bytes": 110338750,
     "data_consume_rx": "851.9 Mb",
     "data_consume_tx": "30.81 Mb",
-    "total_data_usage": "882.71 Mb"
+    "total_data_usage": "882.71 Mb",
+    "usage_accuracy": "exact",
+    "incomplete": false
   },
   {
     "mac": "28:39:26:a1:7c:a5",
+    "rx_bytes": 30071250,
+    "tx_bytes": 16486250,
+    "total_bytes": 46557500,
     "data_consume_rx": "240.57 Mb",
     "data_consume_tx": "131.89 Mb",
-    "total_data_usage": "372.46 Mb"
+    "total_data_usage": "372.46 Mb",
+    "usage_accuracy": "lower_bound",
+    "incomplete": true
   }
 ]
 ```
@@ -687,34 +913,82 @@ baseline = last sample before start_time for the same stream_key, if available
 first in-window delta:
   if baseline exists:
     counterDelta(first.rx_bytes, baseline.rx_bytes)
+    counterDelta(first.tx_bytes, baseline.tx_bytes)
+  else if this is a confirmed new association/session that began within the window:
+    first.rx_bytes
+    first.tx_bytes
   else:
     0
 
 subsequent deltas:
   counterDelta(current.rx_bytes, previous.rx_bytes)
+  counterDelta(current.tx_bytes, previous.tx_bytes)
 
 data_consume_rx = SUM(reset-safe rx_bytes deltas)
 data_consume_tx = SUM(reset-safe tx_bytes deltas)
 total_data_usage = data_consume_rx + data_consume_tx
+
+usage_accuracy = exact when no contributing stream is incomplete, otherwise lower_bound
+incomplete = true when usage_accuracy is lower_bound
 ```
 
-Calculate counter deltas per `stream_key`. After stream-level deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response.
+Calculate counter deltas independently for RX and TX per `stream_key`. After stream-level deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response. If any stream contributing to a station MAC is incomplete/estimated, that station's usage is incomplete/estimated.
+
+Usage accuracy contract:
+
+```text
+Returned usage is exact only when every stream has enough information to account
+for the requested window:
+  a pre-window baseline exists for an ongoing stream, or
+  the stream is confirmed to have begun within the requested window, or
+  any counter rollover is confirmed and handled with rollover arithmetic.
+
+When a stream lacks a pre-window baseline, has no reliable session/association
+start, or has an ambiguous counter decrease, the returned usage is a lower-bound
+estimate. The algorithm must avoid overcounting unknown traffic, so it adds zero
+for ambiguous intervals and treats the result as incomplete/estimated.
+
+The response must expose `usage_accuracy` per client:
+  exact: all contributing streams are fully accounted for
+  lower_bound: at least one contributing stream used a conservative zero delta
+    for an ambiguous interval or missing baseline
+
+When `usage_accuracy` is `lower_bound`, the reported byte and formatted usage
+values are the safely observed minimum. Actual usage may be higher.
+```
+
+A fixed-width rollover is confirmed only when the counter width is known for that source and the observed decrease is consistent with a rollover for that counter. If the counter width is unknown, or the decrease could also be a reset/reconnect/stale sample, treat it as ambiguous.
 
 ### Reset-Safe Delta Logic
 
 ```cpp
-uint64_t counterDelta(uint64_t current, uint64_t previous,
-                      bool confirmedFixedWidthRollover,
-                      uint64_t counterMax) {
+struct CounterDeltaResult {
+    uint64_t delta;
+    bool incomplete;
+};
+
+CounterDeltaResult counterDelta(uint64_t current,
+                                uint64_t previous,
+                                bool confirmedNewSession,
+                                bool newSessionStartedInWindow,
+                                bool confirmedFixedWidthRollover,
+                                uint64_t counterMax) {
     if (current >= previous) {
-        return current - previous;
+        return {current - previous, false};
+    }
+
+    if (confirmedNewSession) {
+        if (newSessionStartedInWindow) {
+            return {current, false};
+        }
+        return {0, true};
     }
 
     if (confirmedFixedWidthRollover) {
-        return (counterMax - previous) + current + 1;
+        return {(counterMax - previous) + current + 1, false};
     }
 
-    return 0;
+    return {0, true};
 }
 ```
 
@@ -745,13 +1019,46 @@ When no session identifier is available:
   but use BSSID/SSID/band/radio changes as stream boundaries when possible.
 
 If current < previous:
-  if fixed-width rollover is known and can be confirmed:
+  if a new association/session is confirmed:
+    if the new session start time is within [startTime, endTime):
+      add current as post-session-start traffic
+    else:
+      treat current as the new baseline, add delta 0, and mark the result
+      incomplete/estimated
+  else if fixed-width rollover is known and can be confirmed:
     apply rollover math
   else:
-    treat current as the new baseline and add delta 0
+    treat current as the new baseline, add delta 0, and mark the result
+    incomplete/estimated
 ```
 
-Without the pre-window baseline for the same calculated stream, the first sample inside the requested window can include traffic that occurred before `start_time`. Do not add the first in-window cumulative counter directly unless it is known to be a fresh association/reset for that same stream.
+Without the pre-window baseline for the same calculated stream, the first sample inside the requested window can include traffic that occurred before `start_time`. Do not add the first in-window cumulative counter directly unless it is known to be a fresh association/session that started inside the requested window. If the stream may have started before `start_time`, add zero for the first sample and mark the result incomplete/estimated.
+
+A new association/session is confirmed only when the source provides reliable session identity or timing evidence. For example, a session id change, association id change, or connected-duration reset may prove a new session if it also proves the session start time is within the requested window. BSSID, SSID, band, or radio changes define separate calculation streams, but they do not by themselves prove that the new cumulative counter started inside the requested window.
+
+Example:
+
+```text
+10:00 rx_bytes = 1000
+10:05 rx_bytes = 1500
+10:10 rx_bytes = 200
+
+Delta 10:00 -> 10:05 = 500
+
+If 10:10 is a confirmed new session that started inside the request window:
+  add 200
+  total rx_bytes = 700
+  usage_accuracy = exact, unless another stream is incomplete
+
+If 10:10 is an ambiguous decrease:
+  add 0
+  total rx_bytes = 500
+  usage_accuracy = lower_bound
+
+If previous = 9900, current = 100, counterMax = 9999, and rollover is confirmed:
+  delta = (9999 - 9900) + 100 + 1
+  delta = 200
+```
 
 ### Incorrect Calculation
 
@@ -801,7 +1108,7 @@ Resolve boardId from routerId
     ↓
 Load TimePointDB records for resolvedBoardId and stored serialNumber == request routerId
     ↓
-Include records from startTime through endTime
+Include records from startTime up to but not including endTime
     ↓
 Also load the latest pre-window association sample for each calculated stream_key
     ↓
@@ -939,7 +1246,7 @@ Load TimePointDB records where:
   boardId == resolvedBoardId
   stored serialNumber == request routerId
   timestamp >= startTime
-  timestamp <= endTime
+  timestamp < endTime
 
 For each record:
   parse ssid_data
@@ -1155,7 +1462,7 @@ src/StorageService.cpp
   include availability retention cleanup if retention should match board timepoint cleanup
 ```
 
-Add a DB upgrade/migration path for the new table. Existing deployments will start with no historical availability events; the API should return `offline_count: 0` for successful empty queries, not infer old events from `lastDisconnection`.
+Add a DB upgrade/migration path for the new table. Existing deployments will start with no historical availability events. Define a fixed `availabilityValidFrom` timestamp as the deployment/migration time when availability-event persistence starts. The API should return `offline_count: 0` only for successful empty queries whose requested range starts at or after `availabilityValidFrom`; do not infer old events from `lastDisconnection`.
 
 Add the files to `CMakeLists.txt`.
 
@@ -1414,6 +1721,24 @@ offline_count =
     COUNT(event_type = 'offline')
 ```
 
+Availability migration boundary:
+
+```text
+availabilityValidFrom = deployment timestamp when device_availability_events
+persistence became active
+
+If startTime < availabilityValidFrom:
+  reject the request
+  do not query device_availability_events
+  do not return offline_count: 0
+
+If startTime >= availabilityValidFrom:
+  query device_availability_events normally
+```
+
+Rejecting pre-cutover ranges prevents a successful zero response from meaning either
+"no outages occurred" or "Analytics was not collecting availability events yet."
+
 ### Query
 
 ```sql
@@ -1422,10 +1747,25 @@ FROM device_availability_events
 WHERE serialNumber = :router_id
   AND event_type = 'offline'
   AND event_time >= :start_time
-  AND event_time <= :end_time;
+  AND event_time < :end_time;
 ```
 
 Do not require `board_id = :resolvedBoardId` for the availability count. `board_id` is nullable event-time context and can differ from the router's current board after reassignment. The durable query identity for gateway availability history is `serialNumber`.
+
+### Range Before Availability Cutover
+
+Use an HTTP error:
+
+```http
+400 Bad Request
+```
+
+```json
+{
+  "error": "availability_range_before_cutover",
+  "message": "Availability history is only available for ranges starting at or after availabilityValidFrom"
+}
+```
 
 ### Success Response with No Offline Events
 
@@ -1503,7 +1843,7 @@ struct ClientRssiQuality;
 struct GatewayOfflineSummary;
 ```
 
-JSON field names should match the MCP CSV exactly.
+JSON field names should match the MCP CSV where the API is directly returning MCP fields. `usage-summary` additionally returns raw byte totals and usage accuracy fields so callers can distinguish exact usage from lower-bound estimates.
 
 ---
 
@@ -1551,9 +1891,9 @@ usage-summary
 rssi-summary
 ```
 
-The helper must use the current `routerId -> boardId` map maintained by `VenueCoordinator` as the primary ownership source. OWPROV inventory lookup must be status-aware and is used to verify or refresh ownership on cache/map misses. Any refresh path must read `InventoryTag.venue` and resolve board ownership with `monitorSubVenues` support, using candidate board device lists through `SDK::Prov::Venue::GetDevices(..., VenueInfo.monitorSubVenues, ...)` when needed. A single MCP request must reuse one `RouterIdResolutionResult` for repeated metrics targeting the same `routerId`.
+The helper must use the current `routerId -> boardId` map maintained by `VenueCoordinator` as the primary ownership source. OWPROV inventory lookup must be status-aware and is used to verify or refresh ownership on cache/map misses. Any refresh path must read `InventoryTag.venue` and resolve board ownership with `monitorSubVenues` support, using candidate board device lists through `SDK::Prov::Venue::GetDevices(..., VenueInfo.monitorSubVenues, ...)` when needed.
 
-`availability-summary` is the exception. It must validate `routerId` and authorization, but it must not require successful current `resolvedBoardId` resolution before reading availability storage. Request-time resolution may be used only for current context or authorization hints. The historical count must query availability storage by durable `serialNumber`, not by mandatory current `resolvedBoardId`.
+`availability-summary` is the storage-query exception, not an authorization exception. It must authenticate the caller, resolve current router ownership, and verify the caller has `analytics.gateway_metrics.read` on the resolved board, venue, or parent entity before querying availability storage. After authorization succeeds, the historical count must query availability storage by durable `serialNumber`, not by mandatory current `resolvedBoardId`. Event-time `board_id` is historical context only and must not authorize the request by itself.
 
 ---
 
@@ -1631,7 +1971,7 @@ bool GetGatewayAvailabilitySummary(...);
 | MCP Tool | Analytics API | Data Source | Implementation Status |
 |---|---|---|---|
 | `get_gateway_free_memory` | `GET /devices/{routerId}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
-| `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].temperature` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
+| `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].wifi_temp` | Resolve routerId to venueId and boardId, then aggregate present Wi-Fi temperature samples from `timepoints` |
 | `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then reset-safe delta aggregation with pre-window baseline |
 | `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
 | `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic plus `device_availability_events` | Use routerId as durable serialNumber, persist restart-safe state transitions, then count offline events by serialNumber |
