@@ -559,6 +559,45 @@ Existing rows will not have `resource_data`; treat those rows as missing memory 
 
 Do not represent missing memory fields as `0`. A missing `memory_free` value and a genuine reported zero must remain distinguishable.
 
+Migration coverage rule:
+
+```text
+Define a fixed memory_resource_data_valid_from timestamp as the deployment/migration
+timestamp where timepoints.resource_data.memory_free starts being written
+consistently.
+
+If startTime < memory_resource_data_valid_from:
+  effectiveStartTime = min(memory_resource_data_valid_from, endTime)
+  partial = true
+
+If startTime >= memory_resource_data_valid_from:
+  effectiveStartTime = startTime
+  partial = false
+
+effectiveEndTime = endTime
+```
+
+When the requested range starts before memory_resource_data_valid_from, the API
+may still return `200 OK`, but the aggregate values must represent only
+`[effectiveStartTime, endTime)`. The response must include a coverage header so
+consumers can distinguish a complete-window average from a post-migration-only
+partial average.
+
+Response coverage header:
+
+```http
+X-Analytics-Coverage: {"requested_start":"2026-07-26T12:00:00Z","requested_end":"2026-07-27T12:00:00Z","effective_start":"2026-07-26T12:00:00Z","effective_end":"2026-07-27T12:00:00Z","data_available_from":"2026-07-01T00:00:00Z","partial":false}
+```
+
+Header fields must use RFC3339 UTC timestamps. `requested_start` and
+`requested_end` are the original half-open request window. `effective_start` and
+`effective_end` are the half-open window used for aggregation. `data_available_from`
+is `memory_resource_data_valid_from`. `partial` is `true` when
+`effective_start` is later than `requested_start`. If the entire requested range
+is before `memory_resource_data_valid_from`, `effective_start` and
+`effective_end` must both equal `requested_end`, the aggregate window is empty,
+and the response body uses the normal empty-result values.
+
 ### Ingestion Logic
 
 ```cpp
@@ -586,7 +625,7 @@ Use the current `timepoints` table plus parsed JSON fields:
 Load TimePointDB records where:
   boardId == resolvedBoardId
   stored serialNumber == request routerId
-  timestamp >= startTime
+  timestamp >= effectiveStartTime
   timestamp < endTime
 
 For each record:
@@ -616,6 +655,8 @@ Use result.venueId and result.resolvedBoardId
 Parse timestampTill
     ↓
 Calculate start_time
+    ↓
+Calculate effectiveStartTime and X-Analytics-Coverage
     ↓
 Query timepoints and read resource_data.memory_free samples
     ↓
@@ -706,7 +747,7 @@ Do not synthesize a numeric fallback temperature for missing data.
 Do not store a placeholder in wifi_temp for a missing temperature.
 ```
 
-Migration boundary rule:
+Migration coverage rule:
 
 ```text
 Define a fixed temperature_migration_cutover_time as the deployment/migration
@@ -717,14 +758,40 @@ Ignore all earlier records because historical temperature values cannot reliably
 distinguish measured values from synthetic fallback values.
 
 If the requested range starts before temperature_migration_cutover_time:
-  effective_start_time = temperature_migration_cutover_time
-else:
-  effective_start_time = startTime
+  effectiveStartTime = min(temperature_migration_cutover_time, endTime)
+  partial = true
+
+If startTime >= temperature_migration_cutover_time:
+  effectiveStartTime = startTime
+  partial = false
+
+effectiveEndTime = endTime
 
 Do not filter out post-cutover samples only because the measured value is 20°C.
 After the cutover, a present wifi_temp value is treated as a legitimate
 measurement.
 ```
+
+When the requested range starts before temperature_migration_cutover_time, the
+API may still return `200 OK`, but the aggregate values must represent only
+`[effectiveStartTime, endTime)`. The response must include a coverage header so
+consumers can distinguish a complete-window average from a post-migration-only
+partial average.
+
+Response coverage header:
+
+```http
+X-Analytics-Coverage: {"requested_start":"2026-07-26T12:00:00Z","requested_end":"2026-07-27T12:00:00Z","effective_start":"2026-07-26T12:00:00Z","effective_end":"2026-07-27T12:00:00Z","data_available_from":"2026-07-01T00:00:00Z","partial":false}
+```
+
+Header fields must use RFC3339 UTC timestamps. `requested_start` and
+`requested_end` are the original half-open request window. `effective_start` and
+`effective_end` are the half-open window used for aggregation. `data_available_from`
+is `temperature_migration_cutover_time`. `partial` is `true` when
+`effective_start` is later than `requested_start`. If the entire requested range
+is before `temperature_migration_cutover_time`, `effective_start` and
+`effective_end` must both equal `requested_end`, the aggregate window is empty,
+and the response body uses the normal empty-result values.
 
 The current radio-band mapping is:
 
@@ -749,7 +816,7 @@ Use the current `timepoints.radio_data` JSON array:
 Load TimePointDB records where:
   boardId == resolvedBoardId
   stored serialNumber == request routerId
-  timestamp >= effective_start_time
+  timestamp >= effectiveStartTime
   timestamp < endTime
 
 For each record:
