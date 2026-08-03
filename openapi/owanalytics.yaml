@@ -2,7 +2,7 @@ openapi: 3.0.1
 info:
   title: OpenWiFi Analytics Service
   description: Definitions and APIs to analyze OpenWiFi network.
-  version: 2.6.0
+  version: 2.7.0
   license:
     name: BSD3
     url: https://github.com/routerarchitects/ra-wlan-cloud-analytics/blob/main/LICENSE
@@ -34,12 +34,35 @@ components:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Success'
     BadRequest:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/BadRequest'
-    AnalyticsBadRequest:
-      description: Invalid request parameters or requested range outside the available history window.
+    CommonAnalyticsBadRequest:
+      description: Invalid analytics request parameters.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/AnalyticsError'
+            $ref: '#/components/schemas/CommonAnalyticsBadRequestError'
+          examples:
+            invalidRouterId:
+              value:
+                error: invalid_router_id
+                message: routerId must be a 12 to 29 character hexadecimal OWPROV gateway serial number
+            invalidTimestamp:
+              value:
+                error: invalid_timestamp
+                message: timestampTill must be a valid UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format
+            invalidLookbackHours:
+              value:
+                error: invalid_lookback_hours
+                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+            lookbackOutsideRetention:
+              value:
+                error: lookback_outside_retention
+                message: Requested range is outside the configured monitoring retention window
+    AvailabilityAnalyticsBadRequest:
+      description: Invalid request or availability range before the supported cutover.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AvailabilityBadRequestError'
           examples:
             invalidRouterId:
               value:
@@ -66,7 +89,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/AnalyticsError'
+            $ref: '#/components/schemas/AnalyticsUnauthorizedError'
           examples:
             unauthorized:
               value:
@@ -77,7 +100,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/AnalyticsError'
+            $ref: '#/components/schemas/AnalyticsNotFoundError'
           examples:
             notFound:
               value:
@@ -92,7 +115,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/AnalyticsError'
+            $ref: '#/components/schemas/AnalyticsConflictError'
           examples:
             monitoringDisabled:
               value:
@@ -102,39 +125,87 @@ components:
               value:
                 error: multiple_boards
                 message: Router is mapped to multiple current boards
-    AnalyticsInternalError:
-      description: Analytics could not retrieve or aggregate the requested summary.
+    MemorySummaryInternalError:
+      description: Memory summary retrieval failed.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/AnalyticsError'
+            $ref: '#/components/schemas/MemorySummaryInternalError'
           examples:
             memorySummaryFailed:
               value:
                 error: memory_summary_query_failed
                 message: Unable to retrieve gateway memory history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    RadioTemperatureSummaryInternalError:
+      description: Radio temperature summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RadioTemperatureSummaryInternalError'
+          examples:
             radioTemperatureSummaryFailed:
               value:
                 error: radio_temperature_summary_query_failed
                 message: Unable to retrieve gateway radio temperature history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    WifiClientUsageInternalError:
+      description: Wi-Fi client usage summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WifiClientUsageInternalError'
+          examples:
             wifiClientUsageFailed:
               value:
                 error: wifi_client_usage_query_failed
                 message: Unable to retrieve Wi-Fi client usage history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    WifiClientRssiInternalError:
+      description: Wi-Fi client RSSI summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WifiClientRssiInternalError'
+          examples:
             wifiClientRssiFailed:
               value:
                 error: wifi_client_rssi_query_failed
                 message: Unable to retrieve Wi-Fi client RSSI history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    AvailabilityInternalError:
+      description: Availability summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AvailabilityInternalError'
+          examples:
             availabilityQueryFailed:
               value:
                 error: availability_query_failed
                 message: Unable to retrieve gateway availability history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
     AnalyticsBadGateway:
       description: Upstream provisioning service is unavailable or returned an invalid response after cache fallback was exhausted.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/AnalyticsError'
+            $ref: '#/components/schemas/AnalyticsBadGatewayError'
           examples:
             owprovUnavailable:
               value:
@@ -186,7 +257,8 @@ components:
 
     MacAddress:
       type: string
-      pattern: '^[A-Fa-f0-9]{2}(:[A-Fa-f0-9]{2}){5}$'
+      pattern: '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'
+      description: Canonical lowercase colon-separated MAC address.
       example: "e2:51:95:ed:0f:28"
 
     ObjectInfo:
@@ -842,7 +914,7 @@ components:
           items:
             $ref: '#/components/schemas/TagIntPair'
 
-    AnalyticsError:
+    CommonAnalyticsBadRequestError:
       type: object
       required:
         - error
@@ -855,26 +927,159 @@ components:
             - invalid_timestamp
             - invalid_lookback_hours
             - lookback_outside_retention
+        message:
+          type: string
+
+    AvailabilityBadRequestError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_router_id
+            - invalid_timestamp
+            - invalid_lookback_hours
+            - lookback_outside_retention
+            - availability_range_before_cutover
+        message:
+          type: string
+
+    AnalyticsUnauthorizedError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - unauthorized
-            - monitoring_disabled
-            - monitoring_not_configured
+        message:
+          type: string
+
+    AnalyticsNotFoundError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - not_found
+            - monitoring_not_configured
+        message:
+          type: string
+
+    AnalyticsConflictError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - monitoring_disabled
             - multiple_boards
+        message:
+          type: string
+
+    AnalyticsBadGatewayError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - owprov_unavailable
             - owprov_invalid_response
+        message:
+          type: string
+
+    MemorySummaryInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - memory_summary_query_failed
+            - internal_error
+        message:
+          type: string
+
+    RadioTemperatureSummaryInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - radio_temperature_summary_query_failed
+            - internal_error
+        message:
+          type: string
+
+    WifiClientUsageInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - wifi_client_usage_query_failed
+            - internal_error
+        message:
+          type: string
+
+    WifiClientRssiInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - wifi_client_rssi_query_failed
+            - internal_error
+        message:
+          type: string
+
+    AvailabilityInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
             - availability_query_failed
-            - availability_range_before_cutover
             - internal_error
         message:
           type: string
 
     GatewayMemorySummary:
       type: object
-      description: Gateway free memory summary in bytes. When samples exist, all values are nonnegative and satisfy min_memfree <= avg_memfree <= max_memfree. When no samples exist, all three fields are null.
+      description: >
+        Gateway free memory summary in bytes. Memory statistics are arithmetic aggregations of
+        stored memory_free samples whose timestamps fall within the requested half-open window.
+        They are not time-weighted. When samples exist, all values are nonnegative and satisfy
+        min_memfree <= avg_memfree <= max_memfree. When no valid memory samples exist, all three
+        fields are null.
       required:
         - min_memfree
         - max_memfree
@@ -897,14 +1102,23 @@ components:
           format: double
           minimum: 0
           nullable: true
-          description: Average reported free memory in bytes for the requested aggregation window.
+          description: Arithmetic average of reported free-memory samples in bytes for the requested aggregation window.
 
     GatewayWifiTemperatureSummary:
       type: object
       description: >
         Wi-Fi radio temperature summary. The 2.4 GHz JSON property names intentionally use
         the dotted `2.4G` suffix to match the MCP API wire contract; clients should treat
-        these as literal JSON keys, not property paths.
+        these as literal JSON keys, not property paths. Temperature statistics are arithmetic
+        aggregations of valid radio temperature samples whose timestamps fall within the
+        requested half-open window. They are not time-weighted. For gateways with multiple
+        radios in the same band, all valid samples for that band are combined directly rather
+        than averaging each radio first. Null applies independently per band: a band returns
+        null min, max, and average values when that band has no valid temperature samples,
+        even if another band has samples. A valid radio temperature sample is a present,
+        finite Celsius value where -40 <= temperature <= 125, excluding 0 because current
+        telemetry uses it as a missing-sensor sentinel. Missing, null, non-numeric, NaN,
+        infinite, 0, 255, and out-of-range values are excluded from aggregation.
       required:
         - min_wifi_temp_2.4G
         - max_wifi_temp_2.4G
@@ -916,37 +1130,67 @@ components:
         min_wifi_temp_2.4G:
           type: number
           format: double
+          minimum: -40
+          maximum: 125
           nullable: true
           description: Minimum reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
         max_wifi_temp_2.4G:
           type: number
           format: double
+          minimum: -40
+          maximum: 125
           nullable: true
           description: Maximum reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
         avg_wifi_temp_2.4G:
           type: number
           format: double
+          minimum: -40
+          maximum: 125
           nullable: true
-          description: Average reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
+          description: Arithmetic average of reported 2.4 GHz Wi-Fi radio temperature samples in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
         min_wifi_temp_5G:
           type: number
           format: double
+          minimum: -40
+          maximum: 125
           nullable: true
           description: Minimum reported 5 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window.
         max_wifi_temp_5G:
           type: number
           format: double
+          minimum: -40
+          maximum: 125
           nullable: true
           description: Maximum reported 5 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window.
         avg_wifi_temp_5G:
           type: number
           format: double
+          minimum: -40
+          maximum: 125
           nullable: true
-          description: Average reported 5 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window.
+          description: Arithmetic average of reported 5 GHz Wi-Fi radio temperature samples in degrees Celsius for the effective aggregation window.
 
     ClientBandwidthConsumption:
       type: object
-      description: Per-client usage totals. Raw byte counters are authoritative; total_bytes is always rx_bytes + tx_bytes. Formatted string fields are display-only decimal megabytes using bytes / 1,000,000 and the MB suffix.
+      description: >
+        Per-client usage totals. Raw byte counters are authoritative; total_bytes is always
+        rx_bytes + tx_bytes. Formatted string fields are display-only decimal megabytes using
+        bytes / 1,000,000, formatted with exactly two decimal places using round-half-up
+        rounding, followed by the literal " MB" suffix. For each client and direction,
+        cumulative byte counters are processed in timestamp order. Exact interval calculation
+        requires a valid sample exactly at windowStart, plus valid samples where windowStart <
+        timestamp < timestampTill. When no exact windowStart sample exists, accumulation starts
+        from the first in-window sample and the result is lower_bound; pre-window samples are not
+        used to calculate exact usage because they can include traffic from before the requested
+        interval. For each consecutive valid pair, add currentCounter - previousCounter when the
+        current counter is greater than or equal to the previous counter. If the current counter
+        is lower, treat it as a counter reset, add the current counter value as post-reset usage,
+        and mark the result lower_bound because traffic before the reset cannot be recovered from
+        cumulative counters alone. Samples exactly at timestampTill are excluded. When fewer than
+        two usable samples are available for a direction, that direction contributes 0 bytes and
+        the client usage is lower_bound. The expected collection interval is the configured
+        telemetry sampling interval for the resolved router scope; a gap is considered missing
+        when it exceeds two times that interval, allowing normal collection jitter.
       required:
         - mac
         - rx_bytes
@@ -974,34 +1218,66 @@ components:
           minimum: 0
         data_consume_rx:
           type: string
-          description: Display-only decimal megabytes derived from rx_bytes / 1,000,000. Use raw byte fields for calculations.
+          description: Display-only decimal megabytes derived from rx_bytes / 1,000,000. Format using exactly two decimal places, round-half-up rounding, and the literal " MB" suffix. Use raw byte fields for calculations.
           example: 106.49 MB
         data_consume_tx:
           type: string
-          description: Display-only decimal megabytes derived from tx_bytes / 1,000,000. Use raw byte fields for calculations.
+          description: Display-only decimal megabytes derived from tx_bytes / 1,000,000. Format using exactly two decimal places, round-half-up rounding, and the literal " MB" suffix. Use raw byte fields for calculations.
           example: 3.85 MB
         total_data_usage:
           type: string
-          description: Display-only decimal megabytes derived from total_bytes / 1,000,000. Use raw byte fields for calculations.
+          description: Display-only decimal megabytes derived from total_bytes / 1,000,000. Format using exactly two decimal places, round-half-up rounding, and the literal " MB" suffix. Use raw byte fields for calculations.
           example: 110.34 MB
         usage_accuracy:
           type: string
           enum:
             - exact
             - lower_bound
+          description: >
+            exact when the complete requested interval can be calculated from valid counter
+            samples, including a sample exactly at windowStart, without counter resets or
+            missing-sample gaps. lower_bound when fewer than two usable samples exist, when the
+            exact windowStart sample is missing, when any counter reset is detected, or when
+            gaps larger than two times the configured telemetry sampling interval prevent the
+            complete usage from being calculated.
         incomplete:
           type: boolean
+          description: True exactly when usage_accuracy is lower_bound; otherwise false.
 
-    ClientBandwidthConsumptionList:
-      type: array
-      description: Bounded per-client Wi-Fi usage summaries. The result set is limited to at most 500 clients.
-      maxItems: 500
-      items:
-        $ref: '#/components/schemas/ClientBandwidthConsumption'
+    ClientBandwidthConsumptionResponse:
+      type: object
+      required:
+        - items
+        - totalClients
+        - truncated
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          description: >
+            Clients ordered by total_bytes descending. Clients with equal
+            total_bytes are ordered by normalized MAC address ascending.
+            Only the first 500 clients are returned.
+          items:
+            $ref: '#/components/schemas/ClientBandwidthConsumption'
+        totalClients:
+          type: integer
+          minimum: 0
+          description: Total number of distinct client MAC addresses having at least one qualifying usage sample in the requested interval, calculated before applying the 500-client limit. A qualifying usage sample has a canonical client MAC address, a timestamp within [windowStart, timestampTill), and nonnegative cumulative rx_bytes or tx_bytes counters.
+        truncated:
+          type: boolean
+          description: True when totalClients is greater than the number of returned items.
 
     ClientRssiQuality:
       type: object
-      description: Per-client RSSI quality percentages. Percentages are independently rounded to two decimal places and may sum to slightly above or below 100 because of rounding.
+      description: >
+        Per-client RSSI quality percentages calculated from valid RSSI samples only. RSSI
+        categories use dBm thresholds: excellent is RSSI >= -55, good is -67 <= RSSI < -55,
+        fair is -75 <= RSSI < -67, and poor is RSSI < -75. RSSI values of 0, positive RSSI
+        values, values below -127, and missing RSSI values are excluded. Clients with no
+        valid RSSI samples are omitted. Percentages use valid samples as the denominator and
+        are independently rounded to two decimal places, so they may sum to slightly above
+        or below 100 because of rounding.
       required:
         - mac
         - rssi_excellent_pct
@@ -1017,47 +1293,79 @@ components:
           format: double
           minimum: 0
           maximum: 100
+          description: Percentage of valid RSSI samples where RSSI >= -55 dBm.
         rssi_good_pct:
           type: number
           format: double
           minimum: 0
           maximum: 100
+          description: Percentage of valid RSSI samples where -67 dBm <= RSSI < -55 dBm.
         rssi_fair_pct:
           type: number
           format: double
           minimum: 0
           maximum: 100
+          description: Percentage of valid RSSI samples where -75 dBm <= RSSI < -67 dBm.
         rssi_poor_pct:
           type: number
           format: double
           minimum: 0
           maximum: 100
+          description: Percentage of valid RSSI samples where -127 dBm <= RSSI < -75 dBm.
         rssi_total_samples:
           type: integer
           format: int64
-          minimum: 0
+          minimum: 1
+          description: Number of valid RSSI samples used as the denominator for the percentage fields.
 
-    ClientRssiQualityList:
-      type: array
-      description: Bounded per-client RSSI quality summaries. The result set is limited to at most 500 clients.
-      maxItems: 500
-      items:
-        $ref: '#/components/schemas/ClientRssiQuality'
+    ClientRssiQualityResponse:
+      type: object
+      required:
+        - items
+        - totalClients
+        - truncated
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          description: >
+            Clients ordered by normalized MAC address ascending.
+            Only the first 500 clients are returned.
+          items:
+            $ref: '#/components/schemas/ClientRssiQuality'
+        totalClients:
+          type: integer
+          minimum: 0
+          description: Total number of distinct client MAC addresses having at least one valid RSSI sample in the requested interval, calculated before applying the 500-client limit.
+        truncated:
+          type: boolean
+          description: True when totalClients is greater than the number of returned items.
 
     GatewayOfflineSummary:
       type: object
-      description: Gateway offline transition count. HTTP 200 represents successful retrieval; no separate success status field is returned.
+      description: >
+        Gateway offline transition count. Count each transition from an online state to an
+        offline state whose offline event timestamp falls within [timestampTill - lookbackHours,
+        timestampTill). Repeated offline samples without an intervening online state are not
+        counted. The latest valid state before the start of the window is used to determine
+        whether the first in-window offline event is a transition. A gateway already offline
+        at the beginning of the requested window is not counted unless it transitions online
+        and then offline again within the window. Events exactly at timestampTill are excluded.
+        Unknown or missing states do not create offline transitions. Availability events do not
+        carry a separate staleness timeout; transition state is determined only from persisted
+        gateway availability events keyed by serial number. HTTP 200 represents successful
+        retrieval; no separate success status field is returned.
       required:
         - gw_uuid
         - offline_count
       properties:
         gw_uuid:
-          type: string
-          example: "dc6279652334"
+          $ref: '#/components/schemas/RouterId'
         offline_count:
           type: integer
           format: int64
           minimum: 0
+          description: Number of online-to-offline transitions in the requested half-open interval.
 
     SystemCommandDetails:
       type: object
@@ -1434,7 +1742,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GatewayMemorySummary'
         400:
-          $ref: '#/components/responses/AnalyticsBadRequest'
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
         404:
@@ -1442,7 +1750,7 @@ paths:
         409:
           $ref: '#/components/responses/AnalyticsConflict'
         500:
-          $ref: '#/components/responses/AnalyticsInternalError'
+          $ref: '#/components/responses/MemorySummaryInternalError'
         502:
           $ref: '#/components/responses/AnalyticsBadGateway'
 
@@ -1466,7 +1774,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GatewayWifiTemperatureSummary'
         400:
-          $ref: '#/components/responses/AnalyticsBadRequest'
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
         404:
@@ -1474,7 +1782,7 @@ paths:
         409:
           $ref: '#/components/responses/AnalyticsConflict'
         500:
-          $ref: '#/components/responses/AnalyticsInternalError'
+          $ref: '#/components/responses/RadioTemperatureSummaryInternalError'
         502:
           $ref: '#/components/responses/AnalyticsBadGateway'
 
@@ -1496,9 +1804,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ClientBandwidthConsumptionList'
+                $ref: '#/components/schemas/ClientBandwidthConsumptionResponse'
         400:
-          $ref: '#/components/responses/AnalyticsBadRequest'
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
         404:
@@ -1506,7 +1814,7 @@ paths:
         409:
           $ref: '#/components/responses/AnalyticsConflict'
         500:
-          $ref: '#/components/responses/AnalyticsInternalError'
+          $ref: '#/components/responses/WifiClientUsageInternalError'
         502:
           $ref: '#/components/responses/AnalyticsBadGateway'
 
@@ -1528,9 +1836,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ClientRssiQualityList'
+                $ref: '#/components/schemas/ClientRssiQualityResponse'
         400:
-          $ref: '#/components/responses/AnalyticsBadRequest'
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
         404:
@@ -1538,7 +1846,7 @@ paths:
         409:
           $ref: '#/components/responses/AnalyticsConflict'
         500:
-          $ref: '#/components/responses/AnalyticsInternalError'
+          $ref: '#/components/responses/WifiClientRssiInternalError'
         502:
           $ref: '#/components/responses/AnalyticsBadGateway'
 
@@ -1562,7 +1870,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GatewayOfflineSummary'
         400:
-          $ref: '#/components/responses/AnalyticsBadRequest'
+          $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
         404:
@@ -1570,7 +1878,7 @@ paths:
         409:
           $ref: '#/components/responses/AnalyticsConflict'
         500:
-          $ref: '#/components/responses/AnalyticsInternalError'
+          $ref: '#/components/responses/AvailabilityInternalError'
         502:
           $ref: '#/components/responses/AnalyticsBadGateway'
 
