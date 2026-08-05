@@ -99,13 +99,14 @@ requested time range:
 delta = ending metric value - starting metric value
 ```
 
-Use exact requested-boundary samples when available. Otherwise, use the latest
-available starting sample at or before the requested start and the earliest
-available ending sample at or after the requested end. Each fallback boundary
-sample must be within two times the configured telemetry sampling interval from
-the requested boundary. When fallback samples are used, include both the
-requested time range and the actual sample timestamps used for the calculation
-in the response.
+Use exact effective-boundary samples when available. Effective boundaries are
+the requested boundaries clipped to any proven session lifetime. Otherwise, use
+the latest available starting sample at or before the effective start and the
+earliest available ending sample at or after the effective end. Each fallback
+boundary sample must be within two times the configured telemetry sampling
+interval from the effective boundary. When fallback samples are used, include
+the requested time range, effective boundaries, and actual sample timestamps
+used for the calculation in the response.
 
 ### Time Conversion and Validation
 
@@ -918,17 +919,23 @@ None
     "total_data_usage": "882.71 MB",
     "usage_accuracy": "exact",
     "incomplete": false,
-    "calculation_streams": [
+    "calculation_segments": [
       {
         "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
+        "segment_id": "e2:51:95:ed:0f:28|session=42|segment=0",
+        "segment_start_reason": "window_start",
+        "segment_end_reason": "window_end",
         "requested_start_time": "2026-07-26T12:00:00Z",
         "requested_end_time": "2026-07-27T12:00:00Z",
+        "effective_start_time": "2026-07-26T12:00:00Z",
+        "effective_end_time": "2026-07-27T12:00:00Z",
         "actual_start_time": "2026-07-26T12:00:00Z",
         "actual_end_time": "2026-07-27T12:00:00Z",
         "boundary_fallback_used": false,
         "accuracy": "exact",
         "rx_bytes": 106487500,
-        "tx_bytes": 3851250
+        "tx_bytes": 3851250,
+        "total_bytes": 110338750
       }
     ]
   },
@@ -942,17 +949,23 @@ None
     "total_data_usage": "372.46 MB",
     "usage_accuracy": "bounded_interval",
     "incomplete": false,
-    "calculation_streams": [
+    "calculation_segments": [
       {
         "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
+        "segment_id": "28:39:26:a1:7c:a5|session=99|segment=0",
+        "segment_start_reason": "window_start",
+        "segment_end_reason": "window_end",
         "requested_start_time": "2026-07-26T12:00:00Z",
         "requested_end_time": "2026-07-27T12:00:00Z",
+        "effective_start_time": "2026-07-26T12:00:00Z",
+        "effective_end_time": "2026-07-27T12:00:00Z",
         "actual_start_time": "2026-07-26T11:55:00Z",
         "actual_end_time": "2026-07-27T12:05:00Z",
         "boundary_fallback_used": true,
         "accuracy": "bounded_interval",
         "rx_bytes": 30071250,
-        "tx_bytes": 16486250
+        "tx_bytes": 16486250,
+        "total_bytes": 46557500
       }
     ]
   }
@@ -1015,17 +1028,21 @@ stream_key = association/session id when available, otherwise:
 requested_start_time = startTime
 requested_end_time = endTime
 
+effective boundaries:
+  effective_start = max(requested_start_time, proven_session_start)
+  effective_end = min(requested_end_time, proven_session_end)
+
 start_sample:
-  exact sample at startTime, if available
-  otherwise latest available sample at or before startTime
+  exact sample at effective_start, if available
+  otherwise latest available sample at or before effective_start
 
 end_sample:
-  exact sample at endTime, if available
-  otherwise earliest available sample at or after endTime
+  exact sample at effective_end, if available
+  otherwise earliest available sample at or after effective_end
 
 boundary tolerance:
-  abs(requested_start_time - actual_start_time) <= 2 * expected_collection_interval
-  abs(actual_end_time - requested_end_time) <= 2 * expected_collection_interval
+  abs(effective_start - actual_start_time) <= 2 * expected_collection_interval
+  abs(actual_end_time - effective_end) <= 2 * expected_collection_interval
 
 actual_start_time = start_sample.timestamp
 actual_end_time = end_sample.timestamp
@@ -1048,10 +1065,10 @@ data_consume_tx = SUM(stream tx_bytes segment differentials or lower-bound delta
 total_data_usage = data_consume_rx + data_consume_tx
 
 stream accuracy =
-  exact when the stream uses exact requested boundary samples and every segment
-    is fully proven
-  bounded_interval when the stream uses immediate fallback samples within
-    tolerance and every segment is fully proven
+  exact when the segment has authoritative counter evidence at effective_start
+    and effective_end, and every internal sub-segment is fully proven
+  bounded_interval when the segment uses immediate fallback samples within
+    tolerance and every internal sub-segment is fully proven
   lower_bound when the stream lacks a usable boundary pair, exceeds boundary
     tolerance, has an ambiguous reset/session change, or only has partially
     observed segments
@@ -1064,25 +1081,28 @@ client usage_accuracy precedence =
 incomplete = true when usage_accuracy is lower_bound
 ```
 
-Calculate counter deltas independently for RX and TX per `stream_key`. After stream-level segment deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response. If any stream contributing to a station MAC is lower_bound, that station's usage is lower_bound.
+Calculate counter deltas independently for RX and TX per `stream_key` and segment. After segment deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response. Client `rx_bytes` and `tx_bytes` must equal the sum of `calculation_segments[].rx_bytes` and `calculation_segments[].tx_bytes`; each segment's `total_bytes` must equal its `rx_bytes + tx_bytes`. If any segment contributing to a station MAC is lower_bound, that station's usage is lower_bound.
 
 Usage accuracy contract:
 
 ```text
-Returned usage is exact only when every stream has enough information to account
-for the requested window:
-  a valid sample exists exactly at windowStart, and
-  a valid sample exists exactly at timestampTill, and
-  any counter rollover is confirmed and handled with rollover arithmetic.
+Returned usage is exact only when every contributing segment has enough
+information to account for its overlap with the requested window:
+  effective_start = max(requested_start, proven_session_start), and
+  effective_end = min(requested_end, proven_session_end), and
+  authoritative counter evidence exists exactly at effective_start and
+  effective_end, and any counter rollover is confirmed and handled with
+  rollover arithmetic.
 
 Returned usage is bounded_interval when exact boundary samples are unavailable but
-the latest available starting sample at or before `windowStart` and the earliest
-available ending sample at or after `timestampTill` are available within two
-times the configured telemetry sampling interval, and no reset or gap prevents
-the differential from being calculated. The response must include the requested
-range and actual sample timestamps used. This is usage over an interval
-containing the requested interval; when counters are monotonic and uninterrupted,
-the returned value is greater than or equal to usage in the requested interval.
+the latest available starting sample at or before `effective_start` and the
+earliest available ending sample at or after `effective_end` are available
+within two times the configured telemetry sampling interval, and no reset or gap
+prevents the segment differential from being calculated. The response must
+include requested, effective, and actual sample timestamps used. This is usage
+over an interval containing the segment's overlap with the requested interval;
+when counters are monotonic and uninterrupted, the returned value is greater
+than or equal to usage in that overlap.
 
 When a stream lacks a usable bounding sample pair or has an ambiguous counter
 decrease/session change, or when either fallback boundary exceeds tolerance, the
@@ -1096,7 +1116,7 @@ provable lower-bound delta is 0.
 
 The response must expose `usage_accuracy` per client:
   exact: all contributing streams are fully accounted for
-  bounded_interval: at least one contributing stream used fallback samples
+  bounded_interval: at least one contributing segment used fallback samples
     within tolerance that bound the requested range
   lower_bound: at least one contributing stream used a conservative zero delta
     for an ambiguous interval, missing usable boundary pair, or out-of-tolerance
@@ -1110,9 +1130,11 @@ Differential response decision table:
 
 | Condition | Result |
 |---|---|
-| Exact start and end boundary samples exist, no reset/session ambiguity | `exact` differential |
-| Fallback start and end samples bound the requested range and both are within `2 * expected_collection_interval`, no reset/session ambiguity | `bounded_interval` differential |
-| Start sample missing and session start inside the requested window is confirmed | sum safely provable nonnegative segment deltas; `lower_bound` unless a complete stream differential can still be proven |
+| Exact effective start and effective end counter evidence exists, no reset/session ambiguity | `exact` differential |
+| Fallback start and end samples bound the effective segment range and both are within `2 * expected_collection_interval`, no reset/session ambiguity | `bounded_interval` differential |
+| Session starts inside the requested window with proven zero/session baseline and authoritative end evidence | `exact` if effective boundaries are fully proven |
+| Session ends inside the requested window with authoritative start and proven session-end evidence | `exact` if effective boundaries are fully proven |
+| Start sample missing and session start inside the requested window is confirmed but complete effective-boundary evidence is unavailable | sum safely provable nonnegative segment deltas; `lower_bound` |
 | Start sample missing and session origin is unknown | `lower_bound` |
 | End sample missing | sum safely provable nonnegative consecutive segment deltas through the latest usable sample; `lower_bound` |
 | Both boundary samples missing | sum safely provable nonnegative consecutive segment deltas inside the requested range; `lower_bound` |
@@ -1203,12 +1225,14 @@ If current < previous:
 ```
 
 For usage differential calculation, choose the start and end samples first, then
-calculate the boundary differential. Exact usage requires selected samples
-exactly at `windowStart` and `timestampTill`. If fallback samples within
-tolerance are used, the result is `bounded_interval` and the response must expose
-the requested and actual sample timestamps. Do not add a cumulative counter
+calculate the boundary differential for each segment. Exact usage requires
+authoritative counter evidence exactly at each segment's `effective_start` and
+`effective_end`, where effective boundaries are clipped to proven session
+lifetime and the requested window. If fallback samples within tolerance are used,
+the result is `bounded_interval` and the response must expose requested,
+effective, and actual sample timestamps. Do not add a cumulative counter
 directly unless it is known to represent traffic that started inside the
-requested window.
+segment's effective interval.
 
 A new association/session is confirmed only when the source provides reliable session identity or timing evidence. For example, a session id change, association id change, or connected-duration reset may prove a new session if it also proves the session start time is within the requested window. BSSID, SSID, band, or radio changes define separate calculation streams, but they do not by themselves prove that the new cumulative counter started inside the requested window.
 

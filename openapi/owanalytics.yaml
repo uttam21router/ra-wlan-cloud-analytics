@@ -255,35 +255,69 @@ components:
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
       example: "2026-07-27T12:00:00Z"
 
-    UsageCalculationStream:
+    UsageCalculationSegment:
       type: object
       description: >
-        Per-stream calculation metadata for one cumulative counter stream that contributes to a
-        client MAC total. A stream may be defined by session or association identity when
-        available, otherwise by stable telemetry dimensions such as BSSID, SSID, band, or radio.
-        requested_start_time and requested_end_time are the client-requested boundaries.
-        actual_start_time and actual_end_time are the sample timestamps used for this stream's
-        segment differential. boundary_fallback_used is true when either actual timestamp differs
-        from the requested boundary. accuracy describes this stream contribution before client
-        aggregation.
+        Per-segment calculation metadata for one cumulative counter segment that contributes to a
+        client MAC total. stream_id identifies the logical counter stream. segment_id identifies a
+        specific calculated segment within that stream, such as a proven session or reset-bounded
+        interval. requested_start_time and requested_end_time are the client-requested boundaries.
+        effective_start_time and effective_end_time are the segment's overlap with the requested
+        interval after applying proven session start/end evidence. actual_start_time and
+        actual_end_time are the sample timestamps used for this segment differential.
+        boundary_fallback_used is true when either actual timestamp differs from the effective
+        boundary. accuracy describes this segment contribution before client aggregation.
       required:
         - stream_id
+        - segment_id
+        - segment_start_reason
+        - segment_end_reason
         - requested_start_time
         - requested_end_time
+        - effective_start_time
+        - effective_end_time
         - actual_start_time
         - actual_end_time
         - boundary_fallback_used
         - accuracy
+        - rx_bytes
+        - tx_bytes
+        - total_bytes
       properties:
         stream_id:
           type: string
           description: Stable implementation-defined stream key used for counter calculation.
+        segment_id:
+          type: string
+          description: Stable implementation-defined segment key within stream_id.
+        segment_start_reason:
+          type: string
+          enum:
+            - window_start
+            - session_start
+            - reset_start
+            - first_observed_sample
+        segment_end_reason:
+          type: string
+          enum:
+            - window_end
+            - session_end
+            - reset_end
+            - last_observed_sample
         requested_start_time:
           type: string
           format: date-time
         requested_end_time:
           type: string
           format: date-time
+        effective_start_time:
+          type: string
+          format: date-time
+          description: max(requested_start_time, proven segment/session start).
+        effective_end_time:
+          type: string
+          format: date-time
+          description: min(requested_end_time, proven segment/session end).
         actual_start_time:
           type: string
           format: date-time
@@ -310,6 +344,11 @@ components:
           format: int64
           minimum: 0
           description: TX bytes contributed by this stream.
+        total_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: rx_bytes + tx_bytes for this segment.
 
     MacAddress:
       type: string
@@ -1236,13 +1275,16 @@ components:
         differential summary. For an uninterrupted stream, delta = ending counter value - starting
         counter value. For confirmed independent session splits or resets, calculate each proven
         stream segment separately and sum the segment differentials; do not sum raw cumulative
-        counter values. Exact calculation uses samples exactly at windowStart and timestampTill for
-        each contributing calculation stream. When exact boundary samples are unavailable, the
-        starting sample is the latest available sample at or before windowStart and the ending
-        sample is the earliest available sample at or after timestampTill. Fallback boundary
-        samples are usable only when each is within two times the configured telemetry sampling
-        interval from its requested boundary. calculation_streams reports the requested boundaries
-        and actual sample timestamps for every stream segment contributing to the client total.
+        counter values. Accuracy is evaluated against each segment's overlap with the requested
+        interval: effective_start = max(windowStart, proven_session_start) and effective_end =
+        min(timestampTill, proven_session_end). Exact calculation requires authoritative counter
+        evidence at both effective boundaries for each contributing calculation segment. When
+        exact effective-boundary samples are unavailable, the starting sample is the latest
+        available sample at or before effective_start and the ending sample is the earliest
+        available sample at or after effective_end. Fallback boundary samples are usable only when
+        each is within two times the configured telemetry sampling interval from its effective
+        boundary. calculation_segments reports requested boundaries, effective boundaries, and
+        actual sample timestamps for every segment contributing to the client total.
         Intermediate samples are used to detect resets, rollovers, duplicate or out-of-order
         telemetry, session changes, and missing-sample gaps; proven segment deltas may be summed,
         but raw cumulative values are never summed as usage. bounded_interval means the value is
@@ -1267,7 +1309,7 @@ components:
         - total_data_usage
         - usage_accuracy
         - incomplete
-        - calculation_streams
+        - calculation_segments
       properties:
         mac:
           $ref: '#/components/schemas/MacAddress'
@@ -1302,26 +1344,26 @@ components:
             - bounded_interval
             - lower_bound
           description: >
-            exact when the complete requested interval can be calculated from valid counter
-            samples exactly at windowStart and timestampTill, without counter resets or
-            missing-sample gaps. bounded_interval when one or both exact boundary samples are
+            exact when each segment's overlap with the requested interval can be calculated from
+            authoritative counter evidence exactly at effective_start and effective_end, without
+            counter resets or missing-sample gaps. bounded_interval when one or both exact boundary samples are
             unavailable and the calculation uses the latest available starting sample at or before
-            windowStart and the earliest available ending sample at or after timestampTill, with
+            effective_start and the earliest available ending sample at or after effective_end, with
             both fallback samples within two times the configured telemetry sampling interval of
-            the requested boundaries; calculation_streams reports the requested and actual
-            timestamps used per stream. lower_bound when no usable boundary pair exists, when either fallback
+            the effective boundaries; calculation_segments reports requested, effective, and actual
+            timestamps used per segment. lower_bound when no usable boundary pair exists, when either fallback
             boundary exceeds the tolerance, when any ambiguous counter reset/session change is
             detected, or when gaps larger than two times the configured telemetry sampling
             interval prevent a complete differential from being calculated.
         incomplete:
           type: boolean
           description: True exactly when usage_accuracy is lower_bound; otherwise false.
-        calculation_streams:
+        calculation_segments:
           type: array
           minItems: 1
-          description: Per-stream calculation metadata for all streams contributing to this client MAC total.
+          description: Per-segment calculation metadata for all segments contributing to this client MAC total. Client rx_bytes and tx_bytes equal the sum of segment rx_bytes and tx_bytes.
           items:
-            $ref: '#/components/schemas/UsageCalculationStream'
+            $ref: '#/components/schemas/UsageCalculationSegment'
 
     ClientBandwidthConsumptionResponse:
       type: object
@@ -1342,7 +1384,7 @@ components:
         totalClients:
           type: integer
           minimum: 0
-          description: Total number of distinct client MAC addresses having at least one qualifying usage sample in or bounding the requested interval, calculated before applying the 500-client limit. A qualifying usage sample has a canonical client MAC address and nonnegative cumulative rx_bytes or tx_bytes counters. Exact usage requires boundary samples at both windowStart and timestampTill; bounded_interval usage reports the actual bounding sample timestamps used.
+          description: Total number of distinct client MAC addresses having at least one qualifying usage sample in or bounding the requested interval, calculated before applying the 500-client limit. A qualifying usage sample has a canonical client MAC address and nonnegative cumulative rx_bytes or tx_bytes counters. Exact usage requires authoritative counter evidence at each segment's effective boundaries; bounded_interval usage reports the actual bounding sample timestamps used.
         truncated:
           type: boolean
           description: True when totalClients is greater than the number of returned items.
