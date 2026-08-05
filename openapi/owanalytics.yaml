@@ -241,6 +241,18 @@ components:
         minimum: 1
         example: 24
       required: true
+    IncludeCalculationDetails:
+      in: query
+      name: includeCalculationDetails
+      description: >
+        Include per-segment usage calculation provenance in the response. Defaults to false.
+        When false or omitted, usage-summary returns concise per-client calculation quality
+        metadata only. When true, each returned client also includes calculation_segments for
+        diagnostics and troubleshooting.
+      schema:
+        type: boolean
+        default: false
+      required: false
   schemas:
     RouterId:
       type: string
@@ -272,14 +284,15 @@ components:
       type: object
       description: >
         Aggregate response envelope for usage differential calculations. earliestActualStartTime
-        is the minimum non-null calculation_segments[].actual_start_time across all returned
-        clients. latestActualEndTime is the maximum non-null
-        calculation_segments[].actual_end_time across all returned clients. boundaryFallbackUsed is
-        true when any returned calculation segment has boundary_fallback_used=true. This describes
-        the overall result envelope only; it does not mean every client or segment used the entire
-        envelope. When no clients are returned, earliestActualStartTime and latestActualEndTime
-        are null and boundaryFallbackUsed is false. The same null timestamp behavior applies when
-        returned clients have no calculable segments.
+        is the minimum actual start timestamp among the server's internal calculable segments
+        contributing to returned clients. latestActualEndTime is the maximum actual end timestamp
+        among the server's internal calculable segments contributing to returned clients.
+        boundaryFallbackUsed is true when any internal calculable segment contributing to returned
+        clients used a fallback boundary. These values are identical whether or not
+        includeCalculationDetails is enabled. This describes the overall result envelope only; it
+        does not mean every client or segment used the entire envelope. When no returned client has
+        a calculable segment, earliestActualStartTime and latestActualEndTime are null and
+        boundaryFallbackUsed is false.
       required:
         - earliestActualStartTime
         - latestActualEndTime
@@ -349,10 +362,10 @@ components:
       properties:
         stream_id:
           type: string
-          description: Opaque stable identifier for the logical counter stream. Clients must not parse this value or depend on its format.
+          description: Opaque identifier scoped to this response. Clients must not persist it, compare it across requests, parse it, or depend on its format.
         segment_id:
           type: string
-          description: Opaque stable identifier for the calculated segment within stream_id. Clients must not parse this value or depend on its format.
+          description: Opaque identifier scoped to this response. Clients must not persist it, compare it across requests, parse it, or depend on its format.
         segment_start_reason:
           type: string
           enum:
@@ -378,11 +391,9 @@ components:
         actual_start_time:
           type: string
           format: date-time
-          nullable: true
         actual_end_time:
           type: string
           format: date-time
-          nullable: true
         boundary_fallback_used:
           type: boolean
         accuracy:
@@ -1340,9 +1351,9 @@ components:
         available sample at or before effective_start and the ending sample is the earliest
         available sample at or after effective_end. Fallback boundary samples are usable only when
         each is within two times the configured telemetry sampling interval from its effective
-        boundary. requestedTimeWindow reports the client-requested boundaries, and
-        calculation_segments reports effective boundaries and actual sample timestamps for every
-        segment contributing to the client total.
+        boundary. requestedTimeWindow reports the client-requested boundaries, and concise summary
+        metadata reports the aggregate calculation quality without exposing segment-level
+        provenance in the default response.
         Intermediate samples are used to detect resets, rollovers, duplicate or out-of-order
         telemetry, session changes, and missing-sample gaps; proven segment deltas may be summed,
         but raw cumulative values are never summed as usage. bounded_interval means the value is
@@ -1368,7 +1379,8 @@ components:
         - total_data_usage
         - usage_accuracy
         - incomplete
-        - calculation_segments
+        - segment_count
+        - boundary_fallback_used
       properties:
         mac:
           $ref: '#/components/schemas/MacAddress'
@@ -1409,26 +1421,44 @@ components:
             unavailable and the calculation uses the latest available starting sample at or before
             effective_start and the earliest available ending sample at or after effective_end, with
             both fallback samples within two times the configured telemetry sampling interval of
-            the effective boundaries; requestedTimeWindow reports requested timestamps and
-            calculation_segments reports effective and actual timestamps used per segment.
-            lower_bound when no usable boundary pair exists, when either fallback
+            the effective boundaries. lower_bound when no usable boundary pair exists, when either fallback
             boundary exceeds the tolerance, when any ambiguous counter reset/session change is
             detected, or when gaps larger than two times the configured telemetry sampling
             interval prevent a complete differential from being calculated. When a client was
             observed but no usage differential segment can be calculated, return zero byte totals,
-            usage_accuracy lower_bound, incomplete true, and an empty calculation_segments array.
+            usage_accuracy lower_bound, incomplete true, segment_count 0, and
+            boundary_fallback_used false.
         incomplete:
           type: boolean
           description: True exactly when usage_accuracy is lower_bound; otherwise false.
+        segment_count:
+          type: integer
+          minimum: 0
+          description: >
+            Number of calculable differential segments contributing to this client total. This is
+            0 when the client has qualifying observations but no usable counter interval from
+            which a differential segment can be calculated.
+        boundary_fallback_used:
+          type: boolean
+          description: >
+            True when at least one calculable segment contributing to this client used a fallback
+            boundary sample; false when no contributing segment used fallback boundaries or when
+            segment_count is 0.
         calculation_segments:
           type: array
           description: >
-            Per-segment calculation metadata for all calculable segments contributing to this
-            client MAC total. Client rx_bytes and tx_bytes equal the sum of segment rx_bytes and
-            tx_bytes. This array is empty when the client has qualifying observations but no
-            usable counter interval from which a differential segment can be calculated; in that
-            case rx_bytes, tx_bytes, and total_bytes are 0, usage_accuracy is lower_bound, and
-            incomplete is true.
+            Optional diagnostic per-segment calculation metadata. This property is absent when
+            includeCalculationDetails is false or omitted, and is present for every returned client
+            when includeCalculationDetails=true. The array is intended for diagnostics,
+            troubleshooting, and calculation provenance, not ordinary MCP decisions. Client rx_bytes
+            equals the sum of calculation_segments[].rx_bytes, client tx_bytes equals the sum of
+            calculation_segments[].tx_bytes, client total_bytes equals the sum of
+            calculation_segments[].total_bytes, segment_count equals calculation_segments.length,
+            and boundary_fallback_used is true when any segment has boundary_fallback_used=true.
+            This array is empty when the client has qualifying observations but no usable counter
+            interval from which a differential segment can be calculated; in that case rx_bytes,
+            tx_bytes, and total_bytes are 0, usage_accuracy is lower_bound, incomplete is true,
+            segment_count is 0, and boundary_fallback_used is false.
           items:
             $ref: '#/components/schemas/UsageCalculationSegment'
 
@@ -1436,12 +1466,15 @@ components:
       type: object
       description: >
         Wrapped Wi-Fi usage differential summary. requestedTimeWindow is always the requested
-        interval. resultTimeWindow summarizes the actual calculation sample envelope across all
-        returned calculation segments. When no clients are returned, items is empty, totalClients
-        is 0, truncated is false, resultTimeWindow.earliestActualStartTime and
-        resultTimeWindow.latestActualEndTime are null, and
-        resultTimeWindow.boundaryFallbackUsed is false. The same null resultTimeWindow timestamp
-        behavior applies when returned clients have no calculable segments.
+        interval. resultTimeWindow summarizes the server's internal calculable segment envelope
+        across returned clients and is identical whether or not includeCalculationDetails is
+        enabled. The default response omits calculation_segments and returns concise
+        segment_count and boundary_fallback_used metadata for each client. When
+        includeCalculationDetails=true, calculation_segments is present on every returned client.
+        When no clients are returned, items is empty, totalClients is 0, truncated is false,
+        resultTimeWindow.earliestActualStartTime and resultTimeWindow.latestActualEndTime are null,
+        and resultTimeWindow.boundaryFallbackUsed is false. The same null resultTimeWindow
+        timestamp behavior applies when returned clients have no calculable segments.
       required:
         - requestedTimeWindow
         - resultTimeWindow
@@ -2016,9 +2049,14 @@ paths:
         - $ref: '#/components/parameters/RouterIdPath'
         - $ref: '#/components/parameters/TimestampTill'
         - $ref: '#/components/parameters/LookbackHours'
+        - $ref: '#/components/parameters/IncludeCalculationDetails'
       responses:
         200:
-          description: Return reset-safe per-client Wi-Fi usage differential summaries.
+          description: >
+            Return reset-safe per-client Wi-Fi usage differential summaries. By default, each
+            client contains concise calculation quality metadata only. When
+            includeCalculationDetails=true, each client also includes diagnostic
+            calculation_segments. resultTimeWindow values are identical for both response shapes.
           content:
             application/json:
               schema:

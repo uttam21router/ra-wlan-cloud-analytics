@@ -104,9 +104,11 @@ the requested boundaries clipped to any proven session lifetime. Otherwise, use
 the latest available starting sample at or before the effective start and the
 earliest available ending sample at or after the effective end. Each fallback
 boundary sample must be within two times the configured telemetry sampling
-interval from the effective boundary. When fallback samples are used, include
-the requested time range, effective boundaries, and actual sample timestamps
-used for the calculation in the response.
+interval from the effective boundary. When fallback samples are used, the
+default response exposes the requested time range, aggregate result time window,
+usage accuracy, segment count, and fallback status. Effective boundaries and
+per-segment actual sample timestamps are included only when
+`includeCalculationDetails=true`.
 
 ### Time Conversion and Validation
 
@@ -214,15 +216,21 @@ can fall outside `[startTime, endTime)`, so the response must expose:
 ```text
 requestedTimeWindow.startTime = startTime
 requestedTimeWindow.endTime = endTime
-calculation_segments[].effective_start_time = effective start used for the segment
-calculation_segments[].effective_end_time = effective end used for the segment
-calculation_segments[].actual_start_time = timestamp of starting sample used
-calculation_segments[].actual_end_time = timestamp of ending sample used
+resultTimeWindow.earliestActualStartTime =
+  earliest actual starting sample used by any calculable segment contributing
+  to returned clients
+resultTimeWindow.latestActualEndTime =
+  latest actual ending sample used by any calculable segment contributing
+  to returned clients
+resultTimeWindow.boundaryFallbackUsed =
+  true when any calculable segment contributing to returned clients used a
+  fallback boundary sample
 ```
 
 When no calculable usage segment exists for an observed client, the client
-response uses `calculation_segments: []` instead of inventing effective or
-actual boundary timestamps.
+response uses `segment_count: 0` instead of inventing effective or actual
+boundary timestamps. If `includeCalculationDetails=true`, that client has
+`calculation_segments: []`.
 
 Example:
 
@@ -898,7 +906,11 @@ get_device_bandwidth_consumption(
 GET /api/v1/devices/{routerId}/wifi-clients/usage-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
+    &includeCalculationDetails=false
 ```
+
+`includeCalculationDetails` is optional and defaults to `false`. Set it to
+`true` only for diagnostic calculation provenance.
 
 ## Example Request
 
@@ -915,9 +927,9 @@ None
 
 ## Response
 
-`stream_id` and `segment_id` are opaque identifiers. Clients must not parse
-these values or depend on their format; the examples below are illustrative
-only.
+By default, usage-summary returns concise calculation quality metadata for MCP
+consumers. Segment-level provenance is verbose and is omitted unless
+`includeCalculationDetails=true` is requested.
 
 ```json
 {
@@ -941,6 +953,171 @@ only.
       "total_data_usage": "110.34 MB",
       "usage_accuracy": "exact",
       "incomplete": false,
+      "segment_count": 1,
+      "boundary_fallback_used": false
+    },
+    {
+      "mac": "28:39:26:a1:7c:a5",
+      "rx_bytes": 30071250,
+      "tx_bytes": 16486250,
+      "total_bytes": 46557500,
+      "data_consume_rx": "30.07 MB",
+      "data_consume_tx": "16.49 MB",
+      "total_data_usage": "46.56 MB",
+      "usage_accuracy": "bounded_interval",
+      "incomplete": false,
+      "segment_count": 1,
+      "boundary_fallback_used": true
+    },
+    {
+      "mac": "54:6c:0e:44:11:09",
+      "rx_bytes": 4200000,
+      "tx_bytes": 600000,
+      "total_bytes": 4800000,
+      "data_consume_rx": "4.20 MB",
+      "data_consume_tx": "0.60 MB",
+      "total_data_usage": "4.80 MB",
+      "usage_accuracy": "exact",
+      "incomplete": false,
+      "segment_count": 2,
+      "boundary_fallback_used": false
+    }
+  ],
+  "totalClients": 3,
+  "truncated": false
+}
+```
+
+`resultTimeWindow` is aggregate response metadata:
+
+```text
+earliestActualStartTime =
+  minimum actual_start_time among the server's internal calculable segments
+  contributing to returned clients
+
+latestActualEndTime =
+  maximum actual_end_time among the server's internal calculable segments
+  contributing to returned clients
+
+boundaryFallbackUsed =
+  true when any internal calculable segment contributing to returned clients
+  used a fallback boundary sample
+```
+
+It describes only the overall result envelope. It does not mean every client or
+segment used the entire envelope, and it is identical whether or not
+`includeCalculationDetails` is enabled.
+
+When no clients are returned:
+
+```json
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "resultTimeWindow": {
+    "earliestActualStartTime": null,
+    "latestActualEndTime": null,
+    "boundaryFallbackUsed": false
+  },
+  "items": [],
+  "totalClients": 0,
+  "truncated": false
+}
+```
+
+When a client is observed but no usage interval can be calculated, such as when
+only one cumulative-counter sample exists in or bounding the requested range,
+return the safely provable minimum with `segment_count: 0`:
+
+```json
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-08-05T12:00:00Z",
+    "endTime": "2026-08-05T13:00:00Z"
+  },
+  "resultTimeWindow": {
+    "earliestActualStartTime": null,
+    "latestActualEndTime": null,
+    "boundaryFallbackUsed": false
+  },
+  "items": [
+    {
+      "mac": "e2:51:95:ed:0f:28",
+      "rx_bytes": 0,
+      "tx_bytes": 0,
+      "total_bytes": 0,
+      "data_consume_rx": "0.00 MB",
+      "data_consume_tx": "0.00 MB",
+      "total_data_usage": "0.00 MB",
+      "usage_accuracy": "lower_bound",
+      "incomplete": true,
+      "segment_count": 0,
+      "boundary_fallback_used": false
+    }
+  ],
+  "totalClients": 1,
+  "truncated": false
+}
+```
+
+## Calculation Details
+
+Use `includeCalculationDetails=true` only for diagnostics, troubleshooting, or
+calculation provenance. Ordinary MCP decisions should use `usage_accuracy`,
+`segment_count`, `boundary_fallback_used`, and the aggregate `resultTimeWindow`.
+
+```http
+GET /api/v1/devices/60cf84f22290/wifi-clients/usage-summary?timestampTill=2026-07-27T12:00:00Z&lookbackHours=24&includeCalculationDetails=true
+Authorization: Bearer <token>
+```
+
+When details are enabled, every returned calculation segment has non-null
+`actual_start_time` and `actual_end_time`. `stream_id` and `segment_id` are
+opaque identifiers scoped to the response. Clients must not persist them,
+compare them across requests, parse them, or depend on their format; the
+examples below are illustrative only. If no differential can be calculated, the
+client still has `segment_count: 0` and
+`calculation_segments: []`.
+
+Detailed response invariants:
+
+```text
+client.rx_bytes == SUM(calculation_segments[].rx_bytes)
+client.tx_bytes == SUM(calculation_segments[].tx_bytes)
+client.total_bytes == SUM(calculation_segments[].total_bytes)
+client.segment_count == calculation_segments.length
+client.boundary_fallback_used ==
+  true when any calculation segment has boundary_fallback_used = true
+```
+
+Example detailed response for the same calculated result:
+
+```json
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "resultTimeWindow": {
+    "earliestActualStartTime": "2026-07-26T11:55:00Z",
+    "latestActualEndTime": "2026-07-27T12:05:00Z",
+    "boundaryFallbackUsed": true
+  },
+  "items": [
+    {
+      "mac": "e2:51:95:ed:0f:28",
+      "rx_bytes": 106487500,
+      "tx_bytes": 3851250,
+      "total_bytes": 110338750,
+      "data_consume_rx": "106.49 MB",
+      "data_consume_tx": "3.85 MB",
+      "total_data_usage": "110.34 MB",
+      "usage_accuracy": "exact",
+      "incomplete": false,
+      "segment_count": 1,
+      "boundary_fallback_used": false,
       "calculation_segments": [
         {
           "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
@@ -969,6 +1146,8 @@ only.
       "total_data_usage": "46.56 MB",
       "usage_accuracy": "bounded_interval",
       "incomplete": false,
+      "segment_count": 1,
+      "boundary_fallback_used": true,
       "calculation_segments": [
         {
           "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
@@ -986,79 +1165,54 @@ only.
           "total_bytes": 46557500
         }
       ]
-    }
-  ],
-  "totalClients": 2,
-  "truncated": false
-}
-```
-
-`resultTimeWindow` is aggregate response metadata:
-
-```text
-earliestActualStartTime =
-  minimum non-null items[].calculation_segments[].actual_start_time
-
-latestActualEndTime =
-  maximum non-null items[].calculation_segments[].actual_end_time
-
-boundaryFallbackUsed =
-  true when any returned calculation segment has boundary_fallback_used = true
-```
-
-It describes only the overall result envelope. It does not mean every client or
-segment used the entire envelope. Exact calculation timestamps remain in each
-`calculation_segments[]` entry.
-
-When no clients are returned:
-
-```json
-{
-  "requestedTimeWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
-  },
-  "resultTimeWindow": {
-    "earliestActualStartTime": null,
-    "latestActualEndTime": null,
-    "boundaryFallbackUsed": false
-  },
-  "items": [],
-  "totalClients": 0,
-  "truncated": false
-}
-```
-
-When a client is observed but no usage interval can be calculated, such as when
-only one cumulative-counter sample exists in or bounding the requested range,
-return the safely provable minimum with no calculation segments:
-
-```json
-{
-  "requestedTimeWindow": {
-    "startTime": "2026-08-05T12:00:00Z",
-    "endTime": "2026-08-05T13:00:00Z"
-  },
-  "resultTimeWindow": {
-    "earliestActualStartTime": null,
-    "latestActualEndTime": null,
-    "boundaryFallbackUsed": false
-  },
-  "items": [
+    },
     {
-      "mac": "e2:51:95:ed:0f:28",
-      "rx_bytes": 0,
-      "tx_bytes": 0,
-      "total_bytes": 0,
-      "data_consume_rx": "0.00 MB",
-      "data_consume_tx": "0.00 MB",
-      "total_data_usage": "0.00 MB",
-      "usage_accuracy": "lower_bound",
-      "incomplete": true,
-      "calculation_segments": []
+      "mac": "54:6c:0e:44:11:09",
+      "rx_bytes": 4200000,
+      "tx_bytes": 600000,
+      "total_bytes": 4800000,
+      "data_consume_rx": "4.20 MB",
+      "data_consume_tx": "0.60 MB",
+      "total_data_usage": "4.80 MB",
+      "usage_accuracy": "exact",
+      "incomplete": false,
+      "segment_count": 2,
+      "boundary_fallback_used": false,
+      "calculation_segments": [
+        {
+          "stream_id": "54:6c:0e:44:11:09|bssid=18:34:af:07:08:09|ssid=Corp|band=5G",
+          "segment_id": "54:6c:0e:44:11:09|session=10|segment=0",
+          "segment_start_reason": "window_start",
+          "segment_end_reason": "session_end",
+          "effective_start_time": "2026-07-26T12:00:00Z",
+          "effective_end_time": "2026-07-26T18:30:00Z",
+          "actual_start_time": "2026-07-26T12:00:00Z",
+          "actual_end_time": "2026-07-26T18:30:00Z",
+          "boundary_fallback_used": false,
+          "accuracy": "exact",
+          "rx_bytes": 1800000,
+          "tx_bytes": 250000,
+          "total_bytes": 2050000
+        },
+        {
+          "stream_id": "54:6c:0e:44:11:09|bssid=18:34:af:07:08:09|ssid=Corp|band=5G",
+          "segment_id": "54:6c:0e:44:11:09|session=11|segment=0",
+          "segment_start_reason": "session_start",
+          "segment_end_reason": "window_end",
+          "effective_start_time": "2026-07-26T19:00:00Z",
+          "effective_end_time": "2026-07-27T12:00:00Z",
+          "actual_start_time": "2026-07-26T19:00:00Z",
+          "actual_end_time": "2026-07-27T12:00:00Z",
+          "boundary_fallback_used": false,
+          "accuracy": "exact",
+          "rx_bytes": 2400000,
+          "tx_bytes": 350000,
+          "total_bytes": 2750000
+        }
+      ]
     }
   ],
-  "totalClients": 1,
+  "totalClients": 3,
   "truncated": false
 }
 ```
@@ -1172,7 +1326,16 @@ client usage_accuracy precedence =
 incomplete = true when usage_accuracy is lower_bound
 ```
 
-Calculate counter deltas independently for RX and TX per `stream_key` and segment. After segment deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response. Client `rx_bytes` and `tx_bytes` must equal the sum of `calculation_segments[].rx_bytes` and `calculation_segments[].tx_bytes`; each segment's `total_bytes` must equal its `rx_bytes + tx_bytes`. If any segment contributing to a station MAC is lower_bound, that station's usage is lower_bound.
+Calculate counter deltas independently for RX and TX per `stream_key` and
+internal calculable segment. After segment deltas are calculated, aggregate the
+resulting RX/TX deltas by station MAC for the response. Client `rx_bytes` and
+`tx_bytes` must equal the sum of internal segment RX/TX deltas; each internal
+segment's `total_bytes` must equal its `rx_bytes + tx_bytes`. The default
+response exposes `segment_count` and `boundary_fallback_used` instead of the
+segment objects. When `includeCalculationDetails=true`, the detailed
+`calculation_segments[]` array must satisfy the same byte-sum invariants. If
+any segment contributing to a station MAC is lower_bound, that station's usage
+is lower_bound.
 
 Usage accuracy contract:
 
@@ -1190,10 +1353,12 @@ the latest available starting sample at or before `effective_start` and the
 earliest available ending sample at or after `effective_end` are available
 within two times the configured telemetry sampling interval, and no reset or gap
 prevents the segment differential from being calculated. The response must
-include requested, effective, and actual sample timestamps used. This is usage
-over an interval containing the segment's overlap with the requested interval;
-when counters are monotonic and uninterrupted, the returned value is greater
-than or equal to usage in that overlap.
+include requested timestamps and aggregate actual sample timestamps. When
+`includeCalculationDetails=true`, it must also include the effective and actual
+timestamps for each returned segment. This is usage over an interval containing
+the segment's overlap with the requested interval; when counters are monotonic
+and uninterrupted, the returned value is greater than or equal to usage in that
+overlap.
 
 When a stream lacks a usable bounding sample pair or has an ambiguous counter
 decrease/session change, or when either fallback boundary exceeds tolerance, the
@@ -1204,10 +1369,12 @@ If no positive interval can be safely proven, return 0 bytes for that stream wit
 `lower_bound`. Include a client in the response when it has at least one
 qualifying sample in or bounding the requested interval, even if the safely
 provable lower-bound delta is 0. If no differential segment can be calculated
-for that client, return `calculation_segments: []`; do not create a segment with
-fabricated effective or actual boundary timestamps.
+for that client, return `segment_count: 0` and `boundary_fallback_used: false`;
+do not create a segment with fabricated effective or actual boundary timestamps.
+If details are enabled, return `calculation_segments: []` for that client.
 
-The response must expose `usage_accuracy` per client:
+The response must expose `usage_accuracy`, `segment_count`, and
+`boundary_fallback_used` per client:
   exact: all contributing streams are fully accounted for
   bounded_interval: at least one contributing segment used fallback samples
     within tolerance that bound the requested range
@@ -1231,7 +1398,7 @@ Differential response decision table:
 | Start sample missing and session origin is unknown | `lower_bound` |
 | End sample missing | sum safely provable nonnegative consecutive segment deltas through the latest usable sample; `lower_bound` |
 | Both boundary samples missing | sum safely provable nonnegative consecutive segment deltas inside the requested range; `lower_bound` |
-| Only one in-window sample exists | return 0 bytes, `lower_bound`, and `calculation_segments: []` |
+| Only one in-window sample exists | return 0 bytes, `lower_bound`, `segment_count: 0`, and `boundary_fallback_used: false`; if details are enabled, return `calculation_segments: []` |
 | Client appears during the window without reliable session-start proof | sum safely provable post-appearance segment deltas only; `lower_bound` |
 | Client disappears before the end boundary | sum safely provable segment deltas through the last usable sample; `lower_bound` |
 | Client reconnects and counters reset | split only when session identity proves independent streams; otherwise `lower_bound` |
@@ -1322,9 +1489,11 @@ calculate the boundary differential for each segment. Exact usage requires
 authoritative counter evidence exactly at each segment's `effective_start` and
 `effective_end`, where effective boundaries are clipped to proven session
 lifetime and the requested window. If fallback samples within tolerance are used,
-the result is `bounded_interval` and the response must expose requested,
-effective, and actual sample timestamps. Do not add a cumulative counter
-directly unless it is known to represent traffic that started inside the
+classify the result as `bounded_interval`. The default response exposes the
+requested time window, aggregate result time window, and fallback summary
+fields. When `includeCalculationDetails=true`, each returned segment
+additionally exposes its effective and actual boundary timestamps. Do not add a
+cumulative counter directly unless it is known to represent traffic that started inside the
 segment's effective interval.
 
 A new association/session is confirmed only when the source provides reliable session identity or timing evidence. For example, a session id change, association id change, or connected-duration reset may prove a new session if it also proves the session start time is within the requested window. BSSID, SSID, band, or radio changes define separate calculation streams, but they do not by themselves prove that the new cumulative counter started inside the requested window.
@@ -2312,7 +2481,7 @@ bool GetGatewayAvailabilitySummary(...);
 |---|---|---|---|
 | `get_gateway_free_memory` | `GET /devices/{routerId}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
 | `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].wifi_temp` | Resolve routerId to venueId and boardId, then aggregate present Wi-Fi temperature samples from `timepoints` |
-| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then calculate reset-safe cumulative-counter differentials with requested and actual calculation timestamps |
+| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then calculate reset-safe cumulative-counter differentials with concise quality metadata by default; include segment provenance only when `includeCalculationDetails=true` |
 | `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
 | `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic plus `device_availability_events` | Use routerId as durable serialNumber, persist restart-safe state transitions, then count offline events by serialNumber |
 
