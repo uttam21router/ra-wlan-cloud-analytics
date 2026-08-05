@@ -560,7 +560,7 @@ None
 {
   "min_memfree": 211374,
   "max_memfree": 215050,
-  "avg_memfree": 212074.360
+  "avg_memfree": 212074.36
 }
 ```
 
@@ -913,36 +913,48 @@ None
     "rx_bytes": 106487500,
     "tx_bytes": 3851250,
     "total_bytes": 110338750,
-    "data_consume_rx": "851.9 Mb",
-    "data_consume_tx": "30.81 Mb",
-    "total_data_usage": "882.71 Mb",
+    "data_consume_rx": "851.90 MB",
+    "data_consume_tx": "30.81 MB",
+    "total_data_usage": "882.71 MB",
     "usage_accuracy": "exact",
     "incomplete": false,
-    "calculation_window": {
-      "requested_start_time": "2026-07-26T12:00:00Z",
-      "requested_end_time": "2026-07-27T12:00:00Z",
-      "actual_start_time": "2026-07-26T12:00:00Z",
-      "actual_end_time": "2026-07-27T12:00:00Z",
-      "boundary_fallback_used": false
-    }
+    "calculation_streams": [
+      {
+        "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
+        "requested_start_time": "2026-07-26T12:00:00Z",
+        "requested_end_time": "2026-07-27T12:00:00Z",
+        "actual_start_time": "2026-07-26T12:00:00Z",
+        "actual_end_time": "2026-07-27T12:00:00Z",
+        "boundary_fallback_used": false,
+        "accuracy": "exact",
+        "rx_bytes": 106487500,
+        "tx_bytes": 3851250
+      }
+    ]
   },
   {
     "mac": "28:39:26:a1:7c:a5",
     "rx_bytes": 30071250,
     "tx_bytes": 16486250,
     "total_bytes": 46557500,
-    "data_consume_rx": "240.57 Mb",
-    "data_consume_tx": "131.89 Mb",
-    "total_data_usage": "372.46 Mb",
+    "data_consume_rx": "240.57 MB",
+    "data_consume_tx": "131.89 MB",
+    "total_data_usage": "372.46 MB",
     "usage_accuracy": "bounded_interval",
     "incomplete": false,
-    "calculation_window": {
-      "requested_start_time": "2026-07-26T12:00:00Z",
-      "requested_end_time": "2026-07-27T12:00:00Z",
-      "actual_start_time": "2026-07-26T11:55:00Z",
-      "actual_end_time": "2026-07-27T12:05:00Z",
-      "boundary_fallback_used": true
-    }
+    "calculation_streams": [
+      {
+        "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
+        "requested_start_time": "2026-07-26T12:00:00Z",
+        "requested_end_time": "2026-07-27T12:00:00Z",
+        "actual_start_time": "2026-07-26T11:55:00Z",
+        "actual_end_time": "2026-07-27T12:05:00Z",
+        "boundary_fallback_used": true,
+        "accuracy": "bounded_interval",
+        "rx_bytes": 30071250,
+        "tx_bytes": 16486250
+      }
+    ]
   }
 ]
 ```
@@ -980,7 +992,19 @@ The values are cumulative counters, so they must not be summed directly.
 ### Correct Calculation
 
 ```text
-calculate delta = ending metric value - starting metric value
+For an uninterrupted stream:
+  delta = ending metric value - starting metric value
+
+For confirmed rollover:
+  apply known-width rollover arithmetic
+
+For confirmed independent session split/reset:
+  calculate each proven session segment separately
+  sum segment differentials
+
+For ambiguous reset/session split:
+  calculate only safely observed nonnegative segment deltas
+  mark the stream lower_bound
 
 stream_key = association/session id when available, otherwise:
   station MAC
@@ -1009,29 +1033,38 @@ boundary_fallback_used =
   actual_start_time != requested_start_time ||
   actual_end_time != requested_end_time
 
-stream differential:
+uninterrupted segment differential:
   counterDelta(end_sample.rx_bytes, start_sample.rx_bytes)
   counterDelta(end_sample.tx_bytes, start_sample.tx_bytes)
 
 samples between start_sample and end_sample:
-  use only to detect counter resets, confirmed rollovers, duplicate or
-  out-of-order telemetry, and missing-sample gaps
-  do not sum these samples as usage
+  use to detect counter resets, confirmed rollovers, duplicate or
+  out-of-order telemetry, missing-sample gaps, and session boundaries
+  do not sum raw cumulative values as usage
+  do sum proven segment deltas when resets or session splits are confirmed
 
-data_consume_rx = SUM(stream rx_bytes differentials or lower-bound deltas)
-data_consume_tx = SUM(stream tx_bytes differentials or lower-bound deltas)
+data_consume_rx = SUM(stream rx_bytes segment differentials or lower-bound deltas)
+data_consume_tx = SUM(stream tx_bytes segment differentials or lower-bound deltas)
 total_data_usage = data_consume_rx + data_consume_tx
 
-usage_accuracy =
-  exact when every stream uses exact requested boundary samples
-  bounded_interval when any stream uses immediate fallback samples within tolerance
-  lower_bound when a stream lacks a usable boundary pair, exceeds boundary
-    tolerance, or has an ambiguous reset/session change
+stream accuracy =
+  exact when the stream uses exact requested boundary samples and every segment
+    is fully proven
+  bounded_interval when the stream uses immediate fallback samples within
+    tolerance and every segment is fully proven
+  lower_bound when the stream lacks a usable boundary pair, exceeds boundary
+    tolerance, has an ambiguous reset/session change, or only has partially
+    observed segments
+
+client usage_accuracy precedence =
+  lower_bound if any contributing stream is lower_bound
+  otherwise bounded_interval if any contributing stream is bounded_interval
+  otherwise exact
 
 incomplete = true when usage_accuracy is lower_bound
 ```
 
-Calculate counter deltas independently for RX and TX per `stream_key`. After stream-level deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response. If any stream contributing to a station MAC is incomplete/estimated, that station's usage is incomplete/estimated.
+Calculate counter deltas independently for RX and TX per `stream_key`. After stream-level segment deltas are calculated, aggregate the resulting RX/TX deltas by station MAC for the response. If any stream contributing to a station MAC is lower_bound, that station's usage is lower_bound.
 
 Usage accuracy contract:
 
@@ -1054,8 +1087,12 @@ the returned value is greater than or equal to usage in the requested interval.
 When a stream lacks a usable bounding sample pair or has an ambiguous counter
 decrease/session change, or when either fallback boundary exceeds tolerance, the
 returned usage is a lower-bound estimate. The algorithm must avoid overcounting
-unknown traffic, so it adds only safely observed non-decreasing deltas and treats
-the result as incomplete/estimated.
+unknown traffic, so it adds only safely provable nonnegative consecutive segment
+deltas inside the requested range and treats the result as incomplete/estimated.
+If no positive interval can be safely proven, return 0 bytes for that stream with
+`lower_bound`. Include a client in the response when it has at least one
+qualifying sample in or bounding the requested interval, even if the safely
+provable lower-bound delta is 0.
 
 The response must expose `usage_accuracy` per client:
   exact: all contributing streams are fully accounted for
@@ -1075,18 +1112,20 @@ Differential response decision table:
 |---|---|
 | Exact start and end boundary samples exist, no reset/session ambiguity | `exact` differential |
 | Fallback start and end samples bound the requested range and both are within `2 * expected_collection_interval`, no reset/session ambiguity | `bounded_interval` differential |
-| Start sample missing and session start inside the requested window is confirmed | safely observed delta, `lower_bound` unless a complete stream differential can still be proven |
+| Start sample missing and session start inside the requested window is confirmed | sum safely provable nonnegative segment deltas; `lower_bound` unless a complete stream differential can still be proven |
 | Start sample missing and session origin is unknown | `lower_bound` |
-| End sample missing | `lower_bound` |
-| Both boundary samples missing | `lower_bound` |
-| Only one in-window sample exists | `lower_bound` |
-| Client appears during the window without reliable session-start proof | `lower_bound` |
-| Client disappears before the end boundary | `lower_bound` |
+| End sample missing | sum safely provable nonnegative consecutive segment deltas through the latest usable sample; `lower_bound` |
+| Both boundary samples missing | sum safely provable nonnegative consecutive segment deltas inside the requested range; `lower_bound` |
+| Only one in-window sample exists | return 0 bytes; `lower_bound` |
+| Client appears during the window without reliable session-start proof | sum safely provable post-appearance segment deltas only; `lower_bound` |
+| Client disappears before the end boundary | sum safely provable segment deltas through the last usable sample; `lower_bound` |
 | Client reconnects and counters reset | split only when session identity proves independent streams; otherwise `lower_bound` |
 | Multiple sessions for the same MAC | calculate per proven session stream, then aggregate by MAC; mark client `lower_bound` if any contributing stream is incomplete |
 | Ambiguous counter reset, stale sample, duplicate conflict, or out-of-order telemetry | `lower_bound` |
 
-A fixed-width rollover is confirmed only when the counter width is known for that source and the observed decrease is consistent with a rollover for that counter. If the counter width is unknown, or the decrease could also be a reset/reconnect/stale sample, treat it as ambiguous.
+A fixed-width rollover is confirmed only when the counter width is known for that source, the observed decrease is consistent with a rollover for that counter, and the maximum possible counter increase during the observation gap cannot exceed one full counter range. If the counter width is unknown, if multiple wraps may have occurred, or if the decrease could also be a reset/reconnect/stale sample, treat it as ambiguous and return `lower_bound`.
+
+If the expected collection interval is missing, zero, invalid, or cannot be resolved reliably for the requested retention period, fallback boundary samples cannot qualify as `bounded_interval`; exact boundary samples are required to avoid `lower_bound`.
 
 ### Reset-Safe Delta Logic
 
@@ -1098,28 +1137,27 @@ struct CounterDeltaResult {
 
 CounterDeltaResult counterDelta(uint64_t current,
                                 uint64_t previous,
-                                bool confirmedNewSession,
-                                bool newSessionStartedInWindow,
                                 bool confirmedFixedWidthRollover,
+                                bool singleRolloverBoundProven,
                                 uint64_t counterMax) {
     if (current >= previous) {
         return {current - previous, false};
     }
 
-    if (confirmedNewSession) {
-        if (newSessionStartedInWindow) {
-            return {current, false};
-        }
-        return {0, true};
-    }
-
-    if (confirmedFixedWidthRollover) {
+    if (confirmedFixedWidthRollover && singleRolloverBoundProven) {
         return {(counterMax - previous) + current + 1, false};
     }
 
     return {0, true};
 }
 ```
+
+Session starts are handled by segment construction, not by blindly adding the
+current counter on every decrease. When reliable session evidence proves a new
+session started inside the requested window, use that session's first valid
+counter sample as the segment baseline and sum only subsequent proven segment
+deltas. If there is no subsequent usable sample, that segment contributes 0 with
+`lower_bound`.
 
 Do not treat every lower counter as a reset where `current` should be added. A lower value can mean a new association session, movement between radios/BSSIDs, stale or out-of-order telemetry, duplicate station records inside one timepoint, or counter-width rollover. Adding `current` on every decrease can overcount traffic by attributing unknown pre-window traffic to the requested window.
 
@@ -1150,13 +1188,14 @@ When no session identifier is available:
 If current < previous:
   if a new association/session is confirmed:
     if the new session start time is within [startTime, endTime):
-      add only safely observed post-session-start traffic
-      mark the result incomplete/estimated unless a valid end boundary
-      differential for that session can still be proven
+      close the previous segment at the last pre-reset sample
+      start a new segment with current as its baseline
+      add only subsequent proven nonnegative deltas for the new segment
+      mark the stream lower_bound unless both session segments can be fully proven
     else:
       treat current as the new baseline, add delta 0, and mark the result
       incomplete/estimated
-  else if fixed-width rollover is known and can be confirmed:
+  else if fixed-width rollover is known, one-wrap bound is proven, and can be confirmed:
     apply rollover math
   else:
     treat current as the new baseline, add delta 0, and mark the result
@@ -1219,23 +1258,23 @@ A client moving between BSSIDs should remain one client in the final response un
 The MCP output expects strings such as:
 
 ```text
-851.9 Mb
-30.81 Mb
+851.90 MB
+30.81 MB
 ```
 
 Recommended conversion:
 
 ```cpp
-double rxMb = static_cast<double>(rxBytes) * 8.0 / 1000000.0;
-double txMb = static_cast<double>(txBytes) * 8.0 / 1000000.0;
+double rxMB = static_cast<double>(rxBytes) / 1000000.0;
+double txMB = static_cast<double>(txBytes) / 1000000.0;
 ```
 
-`Mb` means megabits. If the implementation divides bytes by `1024 * 1024`, label the result as `MiB` or `MB` instead.
+`MB` means decimal megabytes. If the implementation divides bytes by `1024 * 1024`, label the result as `MiB` instead.
 
 Formatting:
 
 ```cpp
-fmt::format("{:.2f} Mb", value);
+fmt::format("{:.2f} MB", value);
 ```
 
 ### Query Flow
