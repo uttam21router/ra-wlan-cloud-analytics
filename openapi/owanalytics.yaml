@@ -241,6 +241,19 @@ components:
         minimum: 1
         example: 24
       required: true
+    MetricRetrievalMode:
+      in: query
+      name: metricMode
+      description: >
+        Metric retrieval mode for the requested time range. latest returns the latest reported
+        metric values inside the requested range. all returns every reported metric sample inside
+        the requested range. differential returns ending metric value minus starting metric value
+        for cumulative metrics; exact boundary samples are preferred, and nearest available
+        samples that bound the requested range are used as fallbacks when exact boundaries are
+        unavailable.
+      schema:
+        $ref: '#/components/schemas/MetricRetrievalMode'
+      required: false
   schemas:
     RouterId:
       type: string
@@ -254,6 +267,49 @@ components:
       format: date-time
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
       example: "2026-07-27T12:00:00Z"
+
+    MetricRetrievalMode:
+      type: string
+      enum:
+        - latest
+        - all
+        - differential
+      example: differential
+
+    MetricCalculationWindow:
+      type: object
+      description: >
+        Requested time range and actual sample timestamps used for metric retrieval. For
+        differential mode, requested_start_time and requested_end_time are the client-requested
+        boundaries, while actual_start_time and actual_end_time are the sample timestamps used
+        in ending metric value minus starting metric value. When exact boundary samples are
+        unavailable, actual_start_time is the nearest available sample at or before the requested
+        start, and actual_end_time is the nearest available sample at or after the requested end.
+        boundary_fallback_used is true when either actual timestamp differs from the requested
+        boundary.
+      required:
+        - requested_start_time
+        - requested_end_time
+        - actual_start_time
+        - actual_end_time
+        - boundary_fallback_used
+      properties:
+        requested_start_time:
+          type: string
+          format: date-time
+        requested_end_time:
+          type: string
+          format: date-time
+        actual_start_time:
+          type: string
+          format: date-time
+          nullable: true
+        actual_end_time:
+          type: string
+          format: date-time
+          nullable: true
+        boundary_fallback_used:
+          type: boolean
 
     MacAddress:
       type: string
@@ -1176,21 +1232,21 @@ components:
         Per-client usage totals. Raw byte counters are authoritative; total_bytes is always
         rx_bytes + tx_bytes. Formatted string fields are display-only decimal megabytes using
         bytes / 1,000,000, formatted with exactly two decimal places using round-half-up
-        rounding, followed by the literal " MB" suffix. For each client and direction,
-        cumulative byte counters are processed in timestamp order. Exact interval calculation
-        requires a valid sample exactly at windowStart, plus valid samples where windowStart <
-        timestamp < timestampTill. When no exact windowStart sample exists, accumulation starts
-        from the first in-window sample and the result is lower_bound; pre-window samples are not
-        used to calculate exact usage because they can include traffic from before the requested
-        interval. For each consecutive valid pair, add currentCounter - previousCounter when the
-        current counter is greater than or equal to the previous counter. If the current counter
-        is lower, treat it as a counter reset, add the current counter value as post-reset usage,
-        and mark the result lower_bound because traffic before the reset cannot be recovered from
-        cumulative counters alone. Samples exactly at timestampTill are excluded. When fewer than
-        two usable samples are available for a direction, that direction contributes 0 bytes and
-        the client usage is lower_bound. The expected collection interval is the configured
-        telemetry sampling interval for the resolved router scope; a gap is considered missing
-        when it exceeds two times that interval, allowing normal collection jitter.
+        rounding, followed by the literal " MB" suffix. In differential mode, cumulative byte
+        counters are differenced as ending metric value minus starting metric value. Exact
+        calculation uses samples exactly at windowStart and timestampTill for the same calculation
+        stream. If an exact boundary sample is unavailable, use the nearest available sample that
+        bounds the requested range: actual_start_time at or before windowStart and actual_end_time
+        at or after timestampTill. When fallback samples are used, calculation_window reports both
+        requested boundaries and actual sample timestamps. Samples between the selected start and
+        end samples are used to detect resets, rollovers, duplicate or out-of-order telemetry, and
+        missing-sample gaps; they are not summed as usage. If no bounding sample pair exists, or if
+        an ambiguous reset/decrease prevents a complete differential, the direction contributes the
+        safely observed lower-bound delta and the client usage is lower_bound. A fixed-width
+        rollover may remain exact or bounded only when the counter width is known and rollover
+        arithmetic can prove the differential. The expected collection interval is the configured
+        telemetry sampling interval for the resolved router scope; a gap is considered missing when
+        it exceeds two times that interval, allowing normal collection jitter.
       required:
         - mac
         - rx_bytes
@@ -1201,6 +1257,7 @@ components:
         - total_data_usage
         - usage_accuracy
         - incomplete
+        - calculation_window
       properties:
         mac:
           $ref: '#/components/schemas/MacAddress'
@@ -1232,17 +1289,22 @@ components:
           type: string
           enum:
             - exact
+            - bounded
             - lower_bound
           description: >
             exact when the complete requested interval can be calculated from valid counter
-            samples, including a sample exactly at windowStart, without counter resets or
-            missing-sample gaps. lower_bound when fewer than two usable samples exist, when the
-            exact windowStart sample is missing, when any counter reset is detected, or when
-            gaps larger than two times the configured telemetry sampling interval prevent the
-            complete usage from being calculated.
+            samples exactly at windowStart and timestampTill, without counter resets or
+            missing-sample gaps. bounded when one or both exact boundary samples are unavailable
+            and the calculation uses nearest available samples that bound the requested range;
+            calculation_window reports the requested and actual timestamps used. lower_bound when
+            no usable bounding sample pair exists, when any ambiguous counter reset is detected,
+            or when gaps larger than two times the configured telemetry sampling interval prevent
+            a complete differential from being calculated.
         incomplete:
           type: boolean
           description: True exactly when usage_accuracy is lower_bound; otherwise false.
+        calculation_window:
+          $ref: '#/components/schemas/MetricCalculationWindow'
 
     ClientBandwidthConsumptionResponse:
       type: object
@@ -1263,7 +1325,7 @@ components:
         totalClients:
           type: integer
           minimum: 0
-          description: Total number of distinct client MAC addresses having at least one qualifying usage sample in the requested interval, calculated before applying the 500-client limit. A qualifying usage sample has a canonical client MAC address, a timestamp within [windowStart, timestampTill), and nonnegative cumulative rx_bytes or tx_bytes counters.
+          description: Total number of distinct client MAC addresses having at least one qualifying usage sample in or bounding the requested interval, calculated before applying the 500-client limit. A qualifying usage sample has a canonical client MAC address and nonnegative cumulative rx_bytes or tx_bytes counters. Exact differential usage still requires boundary samples at both windowStart and timestampTill; fallback differential usage reports the actual bounding sample timestamps used.
         truncated:
           type: boolean
           description: True when totalClients is greater than the number of returned items.
@@ -1734,6 +1796,7 @@ paths:
         - $ref: '#/components/parameters/RouterIdPath'
         - $ref: '#/components/parameters/TimestampTill'
         - $ref: '#/components/parameters/LookbackHours'
+        - $ref: '#/components/parameters/MetricRetrievalMode'
       responses:
         200:
           description: Return gateway free memory summary for the requested aggregation window.
@@ -1766,6 +1829,7 @@ paths:
         - $ref: '#/components/parameters/RouterIdPath'
         - $ref: '#/components/parameters/TimestampTill'
         - $ref: '#/components/parameters/LookbackHours'
+        - $ref: '#/components/parameters/MetricRetrievalMode'
       responses:
         200:
           description: Return Wi-Fi radio temperature summary for the effective aggregation window.
@@ -1798,6 +1862,7 @@ paths:
         - $ref: '#/components/parameters/RouterIdPath'
         - $ref: '#/components/parameters/TimestampTill'
         - $ref: '#/components/parameters/LookbackHours'
+        - $ref: '#/components/parameters/MetricRetrievalMode'
       responses:
         200:
           description: Return bounded reset-safe per-client Wi-Fi usage summaries.
@@ -1830,6 +1895,7 @@ paths:
         - $ref: '#/components/parameters/RouterIdPath'
         - $ref: '#/components/parameters/TimestampTill'
         - $ref: '#/components/parameters/LookbackHours'
+        - $ref: '#/components/parameters/MetricRetrievalMode'
       responses:
         200:
           description: Return bounded per-client RSSI quality percentages.

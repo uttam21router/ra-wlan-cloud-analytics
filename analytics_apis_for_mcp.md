@@ -54,9 +54,40 @@ Recommended query parameters:
 ```http
 ?timestampTill=2026-07-27T12:00:00Z
 &lookbackHours=24
+&metricMode=<latest|all|differential>
 ```
 
 These are `GET` APIs, so no request body is required.
+
+### Metric Retrieval Modes
+
+Metric handlers must support these retrieval modes for the requested time range:
+
+```text
+latest:
+  Return the latest reported metric values within the requested time range.
+  Include the timestamp of the sample that supplied the value.
+
+all:
+  Return every metric sample reported within the requested time range.
+  Preserve each sample timestamp.
+
+differential:
+  Return the change in cumulative metric values over the requested time range.
+  delta = ending metric value - starting metric value
+```
+
+For `differential`, use samples at the exact requested start and end times when
+available. If an exact boundary sample is unavailable, use the nearest available
+sample that bounds the requested range:
+
+```text
+actual_start_time <= requested_start_time
+actual_end_time >= requested_end_time
+```
+
+When fallback samples are used, include both the requested time range and the
+actual sample timestamps used for the calculation in the response.
 
 ### Time Conversion and Validation
 
@@ -150,6 +181,18 @@ timestamp < endTime
 ```
 
 `timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
+
+For `metricMode=differential`, exact boundary samples at `startTime` and
+`endTime` are preferred. If either exact boundary sample is unavailable, the
+handler may use nearest samples that bound the requested range. These fallback
+samples can fall outside `[startTime, endTime)`, so the response must expose:
+
+```text
+requested_start_time = startTime
+requested_end_time = endTime
+actual_start_time = timestamp of starting sample used
+actual_end_time = timestamp of ending sample used
+```
 
 Example:
 
@@ -825,12 +868,13 @@ get_device_bandwidth_consumption(
 GET /api/v1/devices/{routerId}/wifi-clients/usage-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
+    &metricMode=differential
 ```
 
 ## Example Request
 
 ```http
-GET /api/v1/devices/60cf84f22290/wifi-clients/usage-summary?timestampTill=2026-07-27T12:00:00Z&lookbackHours=24
+GET /api/v1/devices/60cf84f22290/wifi-clients/usage-summary?timestampTill=2026-07-27T12:00:00Z&lookbackHours=24&metricMode=differential
 Authorization: Bearer <token>
 ```
 
@@ -853,7 +897,14 @@ None
     "data_consume_tx": "30.81 Mb",
     "total_data_usage": "882.71 Mb",
     "usage_accuracy": "exact",
-    "incomplete": false
+    "incomplete": false,
+    "calculation_window": {
+      "requested_start_time": "2026-07-26T12:00:00Z",
+      "requested_end_time": "2026-07-27T12:00:00Z",
+      "actual_start_time": "2026-07-26T12:00:00Z",
+      "actual_end_time": "2026-07-27T12:00:00Z",
+      "boundary_fallback_used": false
+    }
   },
   {
     "mac": "28:39:26:a1:7c:a5",
@@ -863,8 +914,15 @@ None
     "data_consume_rx": "240.57 Mb",
     "data_consume_tx": "131.89 Mb",
     "total_data_usage": "372.46 Mb",
-    "usage_accuracy": "lower_bound",
-    "incomplete": true
+    "usage_accuracy": "bounded",
+    "incomplete": false,
+    "calculation_window": {
+      "requested_start_time": "2026-07-26T12:00:00Z",
+      "requested_end_time": "2026-07-27T12:00:00Z",
+      "actual_start_time": "2026-07-26T11:55:00Z",
+      "actual_end_time": "2026-07-27T12:05:00Z",
+      "boundary_fallback_used": true
+    }
   }
 ]
 ```
@@ -902,33 +960,60 @@ The values are cumulative counters, so they must not be summed directly.
 ### Correct Calculation
 
 ```text
+metricMode=latest:
+  return the latest reported counters for each client stream inside
+  [startTime, endTime)
+  include the sample timestamp
+
+metricMode=all:
+  return all reported counter samples for each client stream inside
+  [startTime, endTime)
+  include each sample timestamp
+
+metricMode=differential:
+  calculate delta = ending metric value - starting metric value
+
 stream_key = association/session id when available, otherwise:
   station MAC
   BSSID
   SSID
   band/radio when present
 
-baseline = last sample before start_time for the same stream_key, if available
+requested_start_time = startTime
+requested_end_time = endTime
 
-first in-window delta:
-  if baseline exists:
-    counterDelta(first.rx_bytes, baseline.rx_bytes)
-    counterDelta(first.tx_bytes, baseline.tx_bytes)
-  else if this is a confirmed new association/session that began within the window:
-    first.rx_bytes
-    first.tx_bytes
-  else:
-    0
+start_sample:
+  exact sample at startTime, if available
+  otherwise nearest sample before startTime that bounds the requested range
 
-subsequent deltas:
-  counterDelta(current.rx_bytes, previous.rx_bytes)
-  counterDelta(current.tx_bytes, previous.tx_bytes)
+end_sample:
+  exact sample at endTime, if available
+  otherwise nearest sample after endTime that bounds the requested range
 
-data_consume_rx = SUM(reset-safe rx_bytes deltas)
-data_consume_tx = SUM(reset-safe tx_bytes deltas)
+actual_start_time = start_sample.timestamp
+actual_end_time = end_sample.timestamp
+boundary_fallback_used =
+  actual_start_time != requested_start_time ||
+  actual_end_time != requested_end_time
+
+stream differential:
+  counterDelta(end_sample.rx_bytes, start_sample.rx_bytes)
+  counterDelta(end_sample.tx_bytes, start_sample.tx_bytes)
+
+samples between start_sample and end_sample:
+  use only to detect counter resets, confirmed rollovers, duplicate or
+  out-of-order telemetry, and missing-sample gaps
+  do not sum these samples as usage
+
+data_consume_rx = SUM(stream rx_bytes differentials or lower-bound deltas)
+data_consume_tx = SUM(stream tx_bytes differentials or lower-bound deltas)
 total_data_usage = data_consume_rx + data_consume_tx
 
-usage_accuracy = exact when no contributing stream is incomplete, otherwise lower_bound
+usage_accuracy =
+  exact when every stream uses exact requested boundary samples
+  bounded when any stream uses fallback samples that bound the requested range
+  lower_bound when a stream lacks a usable bounding pair or has an ambiguous reset
+
 incomplete = true when usage_accuracy is lower_bound
 ```
 
@@ -939,19 +1024,26 @@ Usage accuracy contract:
 ```text
 Returned usage is exact only when every stream has enough information to account
 for the requested window:
-  a pre-window baseline exists for an ongoing stream, or
-  the stream is confirmed to have begun within the requested window, or
+  a valid sample exists exactly at windowStart, and
+  a valid sample exists exactly at timestampTill, and
   any counter rollover is confirmed and handled with rollover arithmetic.
 
-When a stream lacks a pre-window baseline, has no reliable session/association
-start, or has an ambiguous counter decrease, the returned usage is a lower-bound
-estimate. The algorithm must avoid overcounting unknown traffic, so it adds zero
-for ambiguous intervals and treats the result as incomplete/estimated.
+Returned usage is bounded when exact boundary samples are unavailable but
+nearest samples that bound the requested range are available and no reset or
+gap prevents the differential from being calculated. The response must include
+the requested range and actual sample timestamps used.
+
+When a stream lacks a usable bounding sample pair or has an ambiguous counter
+decrease, the returned usage is a lower-bound estimate. The algorithm must avoid
+overcounting unknown traffic, so it adds only safely observed non-decreasing
+deltas and treats the result as incomplete/estimated.
 
 The response must expose `usage_accuracy` per client:
   exact: all contributing streams are fully accounted for
+  bounded: at least one contributing stream used fallback samples that bound
+    the requested range
   lower_bound: at least one contributing stream used a conservative zero delta
-    for an ambiguous interval or missing baseline
+    for an ambiguous interval or missing usable bounding pair
 
 When `usage_accuracy` is `lower_bound`, the reported byte and formatted usage
 values are the safely observed minimum. Actual usage may be higher.
@@ -1021,7 +1113,9 @@ When no session identifier is available:
 If current < previous:
   if a new association/session is confirmed:
     if the new session start time is within [startTime, endTime):
-      add current as post-session-start traffic
+      add only safely observed post-session-start traffic
+      mark the result incomplete/estimated unless a valid end boundary
+      differential for that session can still be proven
     else:
       treat current as the new baseline, add delta 0, and mark the result
       incomplete/estimated
@@ -1032,7 +1126,12 @@ If current < previous:
     incomplete/estimated
 ```
 
-Without the pre-window baseline for the same calculated stream, the first sample inside the requested window can include traffic that occurred before `start_time`. Do not add the first in-window cumulative counter directly unless it is known to be a fresh association/session that started inside the requested window. If the stream may have started before `start_time`, add zero for the first sample and mark the result incomplete/estimated.
+For `metricMode=differential`, choose the start and end samples first, then
+calculate the boundary differential. Exact usage requires selected samples
+exactly at `windowStart` and `timestampTill`. If fallback samples are used, the
+result is `bounded` and the response must expose the requested and actual sample
+timestamps. Do not add a cumulative counter directly unless it is known to
+represent traffic that started inside the requested window.
 
 A new association/session is confirmed only when the source provides reliable session identity or timing evidence. For example, a session id change, association id change, or connected-duration reset may prove a new session if it also proves the session start time is within the requested window. BSSID, SSID, band, or radio changes define separate calculation streams, but they do not by themselves prove that the new cumulative counter started inside the requested window.
 
@@ -1972,7 +2071,7 @@ bool GetGatewayAvailabilitySummary(...);
 |---|---|---|---|
 | `get_gateway_free_memory` | `GET /devices/{routerId}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
 | `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].wifi_temp` | Resolve routerId to venueId and boardId, then aggregate present Wi-Fi temperature samples from `timepoints` |
-| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then reset-safe delta aggregation with pre-window baseline |
+| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then support latest, all, and reset-safe differential retrieval with requested and actual calculation timestamps |
 | `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
 | `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic plus `device_availability_events` | Use routerId as durable serialNumber, persist restart-safe state transitions, then count offline events by serialNumber |
 
