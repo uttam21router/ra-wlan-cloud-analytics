@@ -255,6 +255,70 @@ components:
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
       example: "2026-07-27T12:00:00Z"
 
+    RequestedTimeWindow:
+      type: object
+      required:
+        - startTime
+        - endTime
+      properties:
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+
+    DifferentialResultTimeWindow:
+      type: object
+      description: >
+        Aggregate response envelope for usage differential calculations. earliestActualStartTime
+        is the minimum non-null calculation_segments[].actual_start_time across all returned
+        clients. latestActualEndTime is the maximum non-null
+        calculation_segments[].actual_end_time across all returned clients. boundaryFallbackUsed is
+        true when any returned calculation segment has boundary_fallback_used=true. This describes
+        the overall result envelope only; it does not mean every client or segment used the entire
+        envelope. When no clients are returned, earliestActualStartTime and latestActualEndTime
+        are null and boundaryFallbackUsed is false.
+      required:
+        - earliestActualStartTime
+        - latestActualEndTime
+        - boundaryFallbackUsed
+      properties:
+        earliestActualStartTime:
+          type: string
+          format: date-time
+          nullable: true
+        latestActualEndTime:
+          type: string
+          format: date-time
+          nullable: true
+        boundaryFallbackUsed:
+          type: boolean
+
+    SampleResultTimeWindow:
+      type: object
+      description: >
+        Aggregate response envelope for sample-based summaries. firstSampleTime and lastSampleTime
+        are calculated from valid samples contributing to the returned response items after any
+        response item limit is applied. They are null when no valid samples are used, and
+        totalSamples is 0.
+      required:
+        - firstSampleTime
+        - lastSampleTime
+        - totalSamples
+      properties:
+        firstSampleTime:
+          type: string
+          format: date-time
+          nullable: true
+        lastSampleTime:
+          type: string
+          format: date-time
+          nullable: true
+        totalSamples:
+          type: integer
+          minimum: 0
+
     UsageCalculationSegment:
       type: object
       description: >
@@ -262,9 +326,7 @@ components:
         client MAC total. stream_id is an opaque identifier for the logical counter stream.
         segment_id is an opaque identifier for a specific calculated segment within that stream,
         such as a proven session or reset-bounded interval. Clients must not parse these
-        identifiers or depend on their format. requested_start_time and requested_end_time are the
-        client-requested boundaries.
-        effective_start_time and effective_end_time are the segment's overlap with the requested
+        identifiers or depend on their format. effective_start_time and effective_end_time are the segment's overlap with the requested
         interval after applying proven session start/end evidence. actual_start_time and
         actual_end_time are the sample timestamps used for this segment differential.
         boundary_fallback_used is true when either actual timestamp differs from the effective
@@ -274,8 +336,6 @@ components:
         - segment_id
         - segment_start_reason
         - segment_end_reason
-        - requested_start_time
-        - requested_end_time
         - effective_start_time
         - effective_end_time
         - actual_start_time
@@ -306,20 +366,14 @@ components:
             - session_end
             - reset_end
             - last_observed_sample
-        requested_start_time:
-          type: string
-          format: date-time
-        requested_end_time:
-          type: string
-          format: date-time
         effective_start_time:
           type: string
           format: date-time
-          description: max(requested_start_time, proven segment/session start).
+          description: max(response.requestedTimeWindow.startTime, proven segment/session start).
         effective_end_time:
           type: string
           format: date-time
-          description: min(requested_end_time, proven segment/session end).
+          description: min(response.requestedTimeWindow.endTime, proven segment/session end).
         actual_start_time:
           type: string
           format: date-time
@@ -340,12 +394,12 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: RX bytes contributed by this stream.
+          description: RX bytes contributed by this segment.
         tx_bytes:
           type: integer
           format: int64
           minimum: 0
-          description: TX bytes contributed by this stream.
+          description: TX bytes contributed by this segment.
         total_bytes:
           type: integer
           format: int64
@@ -1285,8 +1339,9 @@ components:
         available sample at or before effective_start and the ending sample is the earliest
         available sample at or after effective_end. Fallback boundary samples are usable only when
         each is within two times the configured telemetry sampling interval from its effective
-        boundary. calculation_segments reports requested boundaries, effective boundaries, and
-        actual sample timestamps for every segment contributing to the client total.
+        boundary. requestedTimeWindow reports the client-requested boundaries, and
+        calculation_segments reports effective boundaries and actual sample timestamps for every
+        segment contributing to the client total.
         Intermediate samples are used to detect resets, rollovers, duplicate or out-of-order
         telemetry, session changes, and missing-sample gaps; proven segment deltas may be summed,
         but raw cumulative values are never summed as usage. bounded_interval means the value is
@@ -1353,8 +1408,9 @@ components:
             unavailable and the calculation uses the latest available starting sample at or before
             effective_start and the earliest available ending sample at or after effective_end, with
             both fallback samples within two times the configured telemetry sampling interval of
-            the effective boundaries; calculation_segments reports requested, effective, and actual
-            timestamps used per segment. lower_bound when no usable boundary pair exists, when either fallback
+            the effective boundaries; requestedTimeWindow reports requested timestamps and
+            calculation_segments reports effective and actual timestamps used per segment.
+            lower_bound when no usable boundary pair exists, when either fallback
             boundary exceeds the tolerance, when any ambiguous counter reset/session change is
             detected, or when gaps larger than two times the configured telemetry sampling
             interval prevent a complete differential from being calculated.
@@ -1370,11 +1426,24 @@ components:
 
     ClientBandwidthConsumptionResponse:
       type: object
+      description: >
+        Wrapped Wi-Fi usage differential summary. requestedTimeWindow is always the requested
+        interval. resultTimeWindow summarizes the actual calculation sample envelope across all
+        returned calculation segments. When no clients are returned, items is empty, totalClients
+        is 0, truncated is false, resultTimeWindow.earliestActualStartTime and
+        resultTimeWindow.latestActualEndTime are null, and
+        resultTimeWindow.boundaryFallbackUsed is false.
       required:
+        - requestedTimeWindow
+        - resultTimeWindow
         - items
         - totalClients
         - truncated
       properties:
+        requestedTimeWindow:
+          $ref: '#/components/schemas/RequestedTimeWindow'
+        resultTimeWindow:
+          $ref: '#/components/schemas/DifferentialResultTimeWindow'
         items:
           type: array
           maxItems: 500
@@ -1444,11 +1513,27 @@ components:
 
     ClientRssiQualityResponse:
       type: object
+      description: >
+        Wrapped RSSI quality summary. requestedTimeWindow is always the requested interval.
+        resultTimeWindow summarizes valid RSSI samples contributing to the returned items after
+        applying the 500-client response limit. resultTimeWindow.firstSampleTime is the earliest
+        valid RSSI sample contributing to items[], resultTimeWindow.lastSampleTime is the latest
+        valid RSSI sample contributing to items[], and resultTimeWindow.totalSamples equals the sum
+        of items[].rssi_total_samples. When no clients are returned, items is empty, totalClients
+        is 0, truncated is false,
+        resultTimeWindow.firstSampleTime and resultTimeWindow.lastSampleTime are null, and
+        resultTimeWindow.totalSamples is 0.
       required:
+        - requestedTimeWindow
+        - resultTimeWindow
         - items
         - totalClients
         - truncated
       properties:
+        requestedTimeWindow:
+          $ref: '#/components/schemas/RequestedTimeWindow'
+        resultTimeWindow:
+          $ref: '#/components/schemas/SampleResultTimeWindow'
         items:
           type: array
           maxItems: 500

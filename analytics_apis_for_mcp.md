@@ -212,12 +212,12 @@ telemetry sampling interval from the effective boundary. These fallback samples
 can fall outside `[startTime, endTime)`, so the response must expose:
 
 ```text
-requested_start_time = startTime
-requested_end_time = endTime
-effective_start_time = effective start used for the segment
-effective_end_time = effective end used for the segment
-actual_start_time = timestamp of starting sample used
-actual_end_time = timestamp of ending sample used
+requestedTimeWindow.startTime = startTime
+requestedTimeWindow.endTime = endTime
+calculation_segments[].effective_start_time = effective start used for the segment
+calculation_segments[].effective_end_time = effective end used for the segment
+calculation_segments[].actual_start_time = timestamp of starting sample used
+calculation_segments[].actual_end_time = timestamp of ending sample used
 ```
 
 Example:
@@ -916,68 +916,113 @@ these values or depend on their format; the examples below are illustrative
 only.
 
 ```json
-[
-  {
-    "mac": "e2:51:95:ed:0f:28",
-    "rx_bytes": 106487500,
-    "tx_bytes": 3851250,
-    "total_bytes": 110338750,
-    "data_consume_rx": "851.90 MB",
-    "data_consume_tx": "30.81 MB",
-    "total_data_usage": "882.71 MB",
-    "usage_accuracy": "exact",
-    "incomplete": false,
-    "calculation_segments": [
-      {
-        "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
-        "segment_id": "e2:51:95:ed:0f:28|session=42|segment=0",
-        "segment_start_reason": "window_start",
-        "segment_end_reason": "window_end",
-        "requested_start_time": "2026-07-26T12:00:00Z",
-        "requested_end_time": "2026-07-27T12:00:00Z",
-        "effective_start_time": "2026-07-26T12:00:00Z",
-        "effective_end_time": "2026-07-27T12:00:00Z",
-        "actual_start_time": "2026-07-26T12:00:00Z",
-        "actual_end_time": "2026-07-27T12:00:00Z",
-        "boundary_fallback_used": false,
-        "accuracy": "exact",
-        "rx_bytes": 106487500,
-        "tx_bytes": 3851250,
-        "total_bytes": 110338750
-      }
-    ]
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
   },
-  {
-    "mac": "28:39:26:a1:7c:a5",
-    "rx_bytes": 30071250,
-    "tx_bytes": 16486250,
-    "total_bytes": 46557500,
-    "data_consume_rx": "240.57 MB",
-    "data_consume_tx": "131.89 MB",
-    "total_data_usage": "372.46 MB",
-    "usage_accuracy": "bounded_interval",
-    "incomplete": false,
-    "calculation_segments": [
-      {
-        "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
-        "segment_id": "28:39:26:a1:7c:a5|session=99|segment=0",
-        "segment_start_reason": "window_start",
-        "segment_end_reason": "window_end",
-        "requested_start_time": "2026-07-26T12:00:00Z",
-        "requested_end_time": "2026-07-27T12:00:00Z",
-        "effective_start_time": "2026-07-26T12:00:00Z",
-        "effective_end_time": "2026-07-27T12:00:00Z",
-        "actual_start_time": "2026-07-26T11:55:00Z",
-        "actual_end_time": "2026-07-27T12:05:00Z",
-        "boundary_fallback_used": true,
-        "accuracy": "bounded_interval",
-        "rx_bytes": 30071250,
-        "tx_bytes": 16486250,
-        "total_bytes": 46557500
-      }
-    ]
-  }
-]
+  "resultTimeWindow": {
+    "earliestActualStartTime": "2026-07-26T11:55:00Z",
+    "latestActualEndTime": "2026-07-27T12:05:00Z",
+    "boundaryFallbackUsed": true
+  },
+  "items": [
+    {
+      "mac": "e2:51:95:ed:0f:28",
+      "rx_bytes": 106487500,
+      "tx_bytes": 3851250,
+      "total_bytes": 110338750,
+      "data_consume_rx": "106.49 MB",
+      "data_consume_tx": "3.85 MB",
+      "total_data_usage": "110.34 MB",
+      "usage_accuracy": "exact",
+      "incomplete": false,
+      "calculation_segments": [
+        {
+          "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
+          "segment_id": "e2:51:95:ed:0f:28|session=42|segment=0",
+          "segment_start_reason": "window_start",
+          "segment_end_reason": "window_end",
+          "effective_start_time": "2026-07-26T12:00:00Z",
+          "effective_end_time": "2026-07-27T12:00:00Z",
+          "actual_start_time": "2026-07-26T12:00:00Z",
+          "actual_end_time": "2026-07-27T12:00:00Z",
+          "boundary_fallback_used": false,
+          "accuracy": "exact",
+          "rx_bytes": 106487500,
+          "tx_bytes": 3851250,
+          "total_bytes": 110338750
+        }
+      ]
+    },
+    {
+      "mac": "28:39:26:a1:7c:a5",
+      "rx_bytes": 30071250,
+      "tx_bytes": 16486250,
+      "total_bytes": 46557500,
+      "data_consume_rx": "30.07 MB",
+      "data_consume_tx": "16.49 MB",
+      "total_data_usage": "46.56 MB",
+      "usage_accuracy": "bounded_interval",
+      "incomplete": false,
+      "calculation_segments": [
+        {
+          "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
+          "segment_id": "28:39:26:a1:7c:a5|session=99|segment=0",
+          "segment_start_reason": "window_start",
+          "segment_end_reason": "window_end",
+          "effective_start_time": "2026-07-26T12:00:00Z",
+          "effective_end_time": "2026-07-27T12:00:00Z",
+          "actual_start_time": "2026-07-26T11:55:00Z",
+          "actual_end_time": "2026-07-27T12:05:00Z",
+          "boundary_fallback_used": true,
+          "accuracy": "bounded_interval",
+          "rx_bytes": 30071250,
+          "tx_bytes": 16486250,
+          "total_bytes": 46557500
+        }
+      ]
+    }
+  ],
+  "totalClients": 2,
+  "truncated": false
+}
+```
+
+`resultTimeWindow` is aggregate response metadata:
+
+```text
+earliestActualStartTime =
+  minimum non-null items[].calculation_segments[].actual_start_time
+
+latestActualEndTime =
+  maximum non-null items[].calculation_segments[].actual_end_time
+
+boundaryFallbackUsed =
+  true when any returned calculation segment has boundary_fallback_used = true
+```
+
+It describes only the overall result envelope. It does not mean every client or
+segment used the entire envelope. Exact calculation timestamps remain in each
+`calculation_segments[]` entry.
+
+When no clients are returned:
+
+```json
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "resultTimeWindow": {
+    "earliestActualStartTime": null,
+    "latestActualEndTime": null,
+    "boundaryFallbackUsed": false
+  },
+  "items": [],
+  "totalClients": 0,
+  "truncated": false
+}
 ```
 
 ## API Logic
@@ -1033,12 +1078,12 @@ stream_key = association/session id when available, otherwise:
   SSID
   band/radio when present
 
-requested_start_time = startTime
-requested_end_time = endTime
+requested_start = startTime
+requested_end = endTime
 
 effective boundaries:
-  effective_start = max(requested_start_time, proven_session_start)
-  effective_end = min(requested_end_time, proven_session_end)
+  effective_start = max(requested_start, proven_session_start)
+  effective_end = min(requested_end, proven_session_end)
 
 start_sample:
   exact sample at effective_start, if available
@@ -1290,8 +1335,8 @@ A client moving between BSSIDs should remain one client in the final response un
 The MCP output expects strings such as:
 
 ```text
-851.90 MB
-30.81 MB
+106.49 MB
+3.85 MB
 ```
 
 Recommended conversion:
@@ -1328,9 +1373,10 @@ Calculate reset-safe RX/TX deltas
     ↓
 Aggregate stream-level deltas by station MAC
     ↓
-Convert bytes to megabits
+Convert bytes to decimal megabytes
     ↓
-Return array
+Return wrapped response with requestedTimeWindow, resultTimeWindow, items,
+totalClients, and truncated
 ```
 
 ---
@@ -1371,24 +1417,70 @@ None
 ## Response
 
 ```json
-[
-  {
-    "mac": "e2:51:95:ed:0f:28",
-    "rssi_excellent_pct": 41.67,
-    "rssi_good_pct": 50.0,
-    "rssi_fair_pct": 1.67,
-    "rssi_poor_pct": 6.67,
-    "rssi_total_samples": 60
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
   },
-  {
-    "mac": "28:39:26:a1:7c:a5",
-    "rssi_excellent_pct": 92.73,
-    "rssi_good_pct": 7.27,
-    "rssi_fair_pct": 0.0,
-    "rssi_poor_pct": 0.0,
-    "rssi_total_samples": 110
-  }
-]
+  "resultTimeWindow": {
+    "firstSampleTime": "2026-07-26T12:01:00Z",
+    "lastSampleTime": "2026-07-27T11:58:00Z",
+    "totalSamples": 170
+  },
+  "items": [
+    {
+      "mac": "e2:51:95:ed:0f:28",
+      "rssi_excellent_pct": 41.67,
+      "rssi_good_pct": 50.0,
+      "rssi_fair_pct": 1.67,
+      "rssi_poor_pct": 6.67,
+      "rssi_total_samples": 60
+    },
+    {
+      "mac": "28:39:26:a1:7c:a5",
+      "rssi_excellent_pct": 92.73,
+      "rssi_good_pct": 7.27,
+      "rssi_fair_pct": 0.0,
+      "rssi_poor_pct": 0.0,
+      "rssi_total_samples": 110
+    }
+  ],
+  "totalClients": 2,
+  "truncated": false
+}
+```
+
+`resultTimeWindow` for RSSI is scoped to returned `items[]` after applying the
+500-client response limit:
+
+```text
+firstSampleTime =
+  earliest valid RSSI sample contributing to items[]
+
+lastSampleTime =
+  latest valid RSSI sample contributing to items[]
+
+totalSamples =
+  SUM(items[].rssi_total_samples)
+```
+
+For empty RSSI results:
+
+```json
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "resultTimeWindow": {
+    "firstSampleTime": null,
+    "lastSampleTime": null,
+    "totalSamples": 0
+  },
+  "items": [],
+  "totalClients": 0,
+  "truncated": false
+}
 ```
 
 ## API Logic
