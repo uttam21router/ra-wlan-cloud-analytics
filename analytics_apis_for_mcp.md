@@ -220,6 +220,10 @@ calculation_segments[].actual_start_time = timestamp of starting sample used
 calculation_segments[].actual_end_time = timestamp of ending sample used
 ```
 
+When no calculable usage segment exists for an observed client, the client
+response uses `calculation_segments: []` instead of inventing effective or
+actual boundary timestamps.
+
 Example:
 
 ```text
@@ -1025,6 +1029,40 @@ When no clients are returned:
 }
 ```
 
+When a client is observed but no usage interval can be calculated, such as when
+only one cumulative-counter sample exists in or bounding the requested range,
+return the safely provable minimum with no calculation segments:
+
+```json
+{
+  "requestedTimeWindow": {
+    "startTime": "2026-08-05T12:00:00Z",
+    "endTime": "2026-08-05T13:00:00Z"
+  },
+  "resultTimeWindow": {
+    "earliestActualStartTime": null,
+    "latestActualEndTime": null,
+    "boundaryFallbackUsed": false
+  },
+  "items": [
+    {
+      "mac": "e2:51:95:ed:0f:28",
+      "rx_bytes": 0,
+      "tx_bytes": 0,
+      "total_bytes": 0,
+      "data_consume_rx": "0.00 MB",
+      "data_consume_tx": "0.00 MB",
+      "total_data_usage": "0.00 MB",
+      "usage_accuracy": "lower_bound",
+      "incomplete": true,
+      "calculation_segments": []
+    }
+  ],
+  "totalClients": 1,
+  "truncated": false
+}
+```
+
 ## API Logic
 
 For gateway-scoped results, use `timepoints.ssid_data[].associations[]` because `wificlienthistory` currently does not store the gateway `serialNumber`.
@@ -1165,7 +1203,9 @@ deltas inside the requested range and treats the result as incomplete/estimated.
 If no positive interval can be safely proven, return 0 bytes for that stream with
 `lower_bound`. Include a client in the response when it has at least one
 qualifying sample in or bounding the requested interval, even if the safely
-provable lower-bound delta is 0.
+provable lower-bound delta is 0. If no differential segment can be calculated
+for that client, return `calculation_segments: []`; do not create a segment with
+fabricated effective or actual boundary timestamps.
 
 The response must expose `usage_accuracy` per client:
   exact: all contributing streams are fully accounted for
@@ -1191,7 +1231,7 @@ Differential response decision table:
 | Start sample missing and session origin is unknown | `lower_bound` |
 | End sample missing | sum safely provable nonnegative consecutive segment deltas through the latest usable sample; `lower_bound` |
 | Both boundary samples missing | sum safely provable nonnegative consecutive segment deltas inside the requested range; `lower_bound` |
-| Only one in-window sample exists | return 0 bytes; `lower_bound` |
+| Only one in-window sample exists | return 0 bytes, `lower_bound`, and `calculation_segments: []` |
 | Client appears during the window without reliable session-start proof | sum safely provable post-appearance segment deltas only; `lower_bound` |
 | Client disappears before the end boundary | sum safely provable segment deltas through the last usable sample; `lower_bound` |
 | Client reconnects and counters reset | split only when session identity proves independent streams; otherwise `lower_bound` |

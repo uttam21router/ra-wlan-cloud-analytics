@@ -278,7 +278,8 @@ components:
         true when any returned calculation segment has boundary_fallback_used=true. This describes
         the overall result envelope only; it does not mean every client or segment used the entire
         envelope. When no clients are returned, earliestActualStartTime and latestActualEndTime
-        are null and boundaryFallbackUsed is false.
+        are null and boundaryFallbackUsed is false. The same null timestamp behavior applies when
+        returned clients have no calculable segments.
       required:
         - earliestActualStartTime
         - latestActualEndTime
@@ -1413,14 +1414,21 @@ components:
             lower_bound when no usable boundary pair exists, when either fallback
             boundary exceeds the tolerance, when any ambiguous counter reset/session change is
             detected, or when gaps larger than two times the configured telemetry sampling
-            interval prevent a complete differential from being calculated.
+            interval prevent a complete differential from being calculated. When a client was
+            observed but no usage differential segment can be calculated, return zero byte totals,
+            usage_accuracy lower_bound, incomplete true, and an empty calculation_segments array.
         incomplete:
           type: boolean
           description: True exactly when usage_accuracy is lower_bound; otherwise false.
         calculation_segments:
           type: array
-          minItems: 1
-          description: Per-segment calculation metadata for all segments contributing to this client MAC total. Client rx_bytes and tx_bytes equal the sum of segment rx_bytes and tx_bytes.
+          description: >
+            Per-segment calculation metadata for all calculable segments contributing to this
+            client MAC total. Client rx_bytes and tx_bytes equal the sum of segment rx_bytes and
+            tx_bytes. This array is empty when the client has qualifying observations but no
+            usable counter interval from which a differential segment can be calculated; in that
+            case rx_bytes, tx_bytes, and total_bytes are 0, usage_accuracy is lower_bound, and
+            incomplete is true.
           items:
             $ref: '#/components/schemas/UsageCalculationSegment'
 
@@ -1432,7 +1440,8 @@ components:
         returned calculation segments. When no clients are returned, items is empty, totalClients
         is 0, truncated is false, resultTimeWindow.earliestActualStartTime and
         resultTimeWindow.latestActualEndTime are null, and
-        resultTimeWindow.boundaryFallbackUsed is false.
+        resultTimeWindow.boundaryFallbackUsed is false. The same null resultTimeWindow timestamp
+        behavior applies when returned clients have no calculable segments.
       required:
         - requestedTimeWindow
         - resultTimeWindow
