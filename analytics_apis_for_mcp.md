@@ -201,17 +201,21 @@ timestamp < endTime
 
 `timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
 
-For cumulative-counter differential summaries, exact boundary samples at
-`startTime` and `endTime` are preferred. Otherwise, the handler must use the
-latest available sample at or before `startTime` and the earliest available
-sample at or after `endTime`, provided each fallback sample is within two times
-the configured telemetry sampling interval from the requested boundary. These
-fallback samples can fall outside `[startTime, endTime)`, so the response must
-expose:
+For cumulative-counter differential summaries, exact effective-boundary samples
+are preferred. For endpoints with proven session lifetimes, effective boundaries
+are the requested boundaries clipped to the proven session start and end. For
+endpoints without session lifetimes, effective boundaries equal the requested
+boundaries. Otherwise, the handler must use the latest available sample at or
+before `effective_start` and the earliest available sample at or after
+`effective_end`, provided each fallback sample is within two times the configured
+telemetry sampling interval from the effective boundary. These fallback samples
+can fall outside `[startTime, endTime)`, so the response must expose:
 
 ```text
 requested_start_time = startTime
 requested_end_time = endTime
+effective_start_time = effective start used for the segment
+effective_end_time = effective end used for the segment
 actual_start_time = timestamp of starting sample used
 actual_end_time = timestamp of ending sample used
 ```
@@ -907,6 +911,10 @@ None
 
 ## Response
 
+`stream_id` and `segment_id` are opaque identifiers. Clients must not parse
+these values or depend on their format; the examples below are illustrative
+only.
+
 ```json
 [
   {
@@ -1047,8 +1055,8 @@ boundary tolerance:
 actual_start_time = start_sample.timestamp
 actual_end_time = end_sample.timestamp
 boundary_fallback_used =
-  actual_start_time != requested_start_time ||
-  actual_end_time != requested_end_time
+  actual_start_time != effective_start ||
+  actual_end_time != effective_end
 
 uninterrupted segment differential:
   counterDelta(end_sample.rx_bytes, start_sample.rx_bytes)

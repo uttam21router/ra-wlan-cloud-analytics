@@ -259,9 +259,11 @@ components:
       type: object
       description: >
         Per-segment calculation metadata for one cumulative counter segment that contributes to a
-        client MAC total. stream_id identifies the logical counter stream. segment_id identifies a
-        specific calculated segment within that stream, such as a proven session or reset-bounded
-        interval. requested_start_time and requested_end_time are the client-requested boundaries.
+        client MAC total. stream_id is an opaque identifier for the logical counter stream.
+        segment_id is an opaque identifier for a specific calculated segment within that stream,
+        such as a proven session or reset-bounded interval. Clients must not parse these
+        identifiers or depend on their format. requested_start_time and requested_end_time are the
+        client-requested boundaries.
         effective_start_time and effective_end_time are the segment's overlap with the requested
         interval after applying proven session start/end evidence. actual_start_time and
         actual_end_time are the sample timestamps used for this segment differential.
@@ -286,10 +288,10 @@ components:
       properties:
         stream_id:
           type: string
-          description: Stable implementation-defined stream key used for counter calculation.
+          description: Opaque stable identifier for the logical counter stream. Clients must not parse this value or depend on its format.
         segment_id:
           type: string
-          description: Stable implementation-defined segment key within stream_id.
+          description: Opaque stable identifier for the calculated segment within stream_id. Clients must not parse this value or depend on its format.
         segment_start_reason:
           type: string
           enum:
@@ -1288,8 +1290,9 @@ components:
         Intermediate samples are used to detect resets, rollovers, duplicate or out-of-order
         telemetry, session changes, and missing-sample gaps; proven segment deltas may be summed,
         but raw cumulative values are never summed as usage. bounded_interval means the value is
-        calculated over an interval containing the requested interval; when counters are monotonic
-        and uninterrupted, the value is greater than or equal to usage in the requested interval.
+        calculated over an interval containing the segment's effective overlap with the requested
+        interval; when counters are monotonic and uninterrupted, the value is greater than or equal
+        to usage in that effective overlap.
         If the boundary tolerance is exceeded, no usable bounding sample pair exists, or resets or
         stream/session changes prevent that guarantee, the direction contributes the sum of safely
         provable nonnegative segment deltas and the client usage is lower_bound. A fixed-width
