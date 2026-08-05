@@ -248,9 +248,9 @@ components:
         Metric retrieval mode for the requested time range. latest returns the latest reported
         metric values inside the requested range. all returns every reported metric sample inside
         the requested range. differential returns ending metric value minus starting metric value
-        for cumulative metrics; exact boundary samples are preferred, and nearest available
-        samples that bound the requested range are used as fallbacks when exact boundaries are
-        unavailable.
+        for cumulative metrics; use the latest available sample at or before the requested start
+        as the starting sample and the earliest available sample at or after the requested end as
+        the ending sample.
       schema:
         $ref: '#/components/schemas/MetricRetrievalMode'
       required: false
@@ -282,9 +282,10 @@ components:
         Requested time range and actual sample timestamps used for metric retrieval. For
         differential mode, requested_start_time and requested_end_time are the client-requested
         boundaries, while actual_start_time and actual_end_time are the sample timestamps used
-        in ending metric value minus starting metric value. When exact boundary samples are
-        unavailable, actual_start_time is the nearest available sample at or before the requested
-        start, and actual_end_time is the nearest available sample at or after the requested end.
+        in ending metric value minus starting metric value. actual_start_time is the latest
+        available sample at or before the requested start, and actual_end_time is the earliest
+        available sample at or after the requested end. Exact boundary samples are used when
+        present.
         boundary_fallback_used is true when either actual timestamp differs from the requested
         boundary.
       required:
@@ -1235,11 +1236,11 @@ components:
         rounding, followed by the literal " MB" suffix. In differential mode, cumulative byte
         counters are differenced as ending metric value minus starting metric value. Exact
         calculation uses samples exactly at windowStart and timestampTill for the same calculation
-        stream. If an exact boundary sample is unavailable, use the nearest available sample that
-        bounds the requested range: actual_start_time at or before windowStart and actual_end_time
-        at or after timestampTill. When fallback samples are used, calculation_window reports both
-        requested boundaries and actual sample timestamps. Samples between the selected start and
-        end samples are used to detect resets, rollovers, duplicate or out-of-order telemetry, and
+        stream. The starting sample is the latest available sample at or before windowStart; the
+        ending sample is the earliest available sample at or after timestampTill. Exact boundary
+        samples are used when present. When fallback samples are used, calculation_window reports
+        both requested boundaries and actual sample timestamps. Samples between the selected start
+        and end samples are used to detect resets, rollovers, duplicate or out-of-order telemetry, and
         missing-sample gaps; they are not summed as usage. If no bounding sample pair exists, or if
         an ambiguous reset/decrease prevents a complete differential, the direction contributes the
         safely observed lower-bound delta and the client usage is lower_bound. A fixed-width
@@ -1295,8 +1296,9 @@ components:
             exact when the complete requested interval can be calculated from valid counter
             samples exactly at windowStart and timestampTill, without counter resets or
             missing-sample gaps. bounded when one or both exact boundary samples are unavailable
-            and the calculation uses nearest available samples that bound the requested range;
-            calculation_window reports the requested and actual timestamps used. lower_bound when
+            and the calculation uses the latest available starting sample at or before windowStart
+            and the earliest available ending sample at or after timestampTill; calculation_window
+            reports the requested and actual timestamps used. lower_bound when
             no usable bounding sample pair exists, when any ambiguous counter reset is detected,
             or when gaps larger than two times the configured telemetry sampling interval prevent
             a complete differential from being calculated.

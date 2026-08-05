@@ -78,12 +78,12 @@ differential:
 ```
 
 For `differential`, use samples at the exact requested start and end times when
-available. If an exact boundary sample is unavailable, use the nearest available
-sample that bounds the requested range:
+available. Otherwise, use the samples immediately before and immediately after
+the requested time range:
 
 ```text
-actual_start_time <= requested_start_time
-actual_end_time >= requested_end_time
+starting sample = latest available sample at or before requested_start_time
+ending sample = earliest available sample at or after requested_end_time
 ```
 
 When fallback samples are used, include both the requested time range and the
@@ -183,9 +183,10 @@ timestamp < endTime
 `timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
 
 For `metricMode=differential`, exact boundary samples at `startTime` and
-`endTime` are preferred. If either exact boundary sample is unavailable, the
-handler may use nearest samples that bound the requested range. These fallback
-samples can fall outside `[startTime, endTime)`, so the response must expose:
+`endTime` are preferred. Otherwise, the handler must use the latest available
+sample at or before `startTime` and the earliest available sample at or after
+`endTime`. These fallback samples can fall outside `[startTime, endTime)`, so
+the response must expose:
 
 ```text
 requested_start_time = startTime
@@ -984,11 +985,11 @@ requested_end_time = endTime
 
 start_sample:
   exact sample at startTime, if available
-  otherwise nearest sample before startTime that bounds the requested range
+  otherwise latest available sample before startTime
 
 end_sample:
   exact sample at endTime, if available
-  otherwise nearest sample after endTime that bounds the requested range
+  otherwise earliest available sample after endTime
 
 actual_start_time = start_sample.timestamp
 actual_end_time = end_sample.timestamp
@@ -1011,7 +1012,7 @@ total_data_usage = data_consume_rx + data_consume_tx
 
 usage_accuracy =
   exact when every stream uses exact requested boundary samples
-  bounded when any stream uses fallback samples that bound the requested range
+  bounded when any stream uses immediate fallback samples that bound the requested range
   lower_bound when a stream lacks a usable bounding pair or has an ambiguous reset
 
 incomplete = true when usage_accuracy is lower_bound
@@ -1029,9 +1030,10 @@ for the requested window:
   any counter rollover is confirmed and handled with rollover arithmetic.
 
 Returned usage is bounded when exact boundary samples are unavailable but
-nearest samples that bound the requested range are available and no reset or
-gap prevents the differential from being calculated. The response must include
-the requested range and actual sample timestamps used.
+the latest available starting sample at or before `windowStart` and the earliest
+available ending sample at or after `timestampTill` are available, and no reset
+or gap prevents the differential from being calculated. The response must
+include the requested range and actual sample timestamps used.
 
 When a stream lacks a usable bounding sample pair or has an ambiguous counter
 decrease, the returned usage is a lower-bound estimate. The algorithm must avoid
