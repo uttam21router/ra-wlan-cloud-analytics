@@ -5,10 +5,10 @@ info:
   version: 2.6.0
   license:
     name: BSD3
-    url: https://github.com/Telecominfraproject/wlan-cloud-ucentralgw/blob/master/LICENSE
+    url: https://github.com/routerarchitects/ra-wlan-cloud-analytics/blob/main/LICENSE
 
 servers:
-  - url: 'https://localhost:16009/api/v1'
+  - url: 'https://openwifi.wlan.local:16009/api/v1'
 
 security:
   - bearerAuth: []
@@ -27,13 +27,13 @@ components:
 
   responses:
     NotFound:
-      $ref: 'https://github.com/Telecominfraproject/wlan-cloud-ucentralsec/blob/main/openpapi/owsec.yaml#/components/responses/NotFound'
+      $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/NotFound'
     Unauthorized:
-      $ref: 'https://github.com/Telecominfraproject/wlan-cloud-ucentralsec/blob/main/openpapi/owsec.yaml#/components/responses/Unauthorized'
+      $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Unauthorized'
     Success:
-      $ref: 'https://github.com/Telecominfraproject/wlan-cloud-ucentralsec/blob/main/openpapi/owsec.yaml#/components/responses/Success'
+      $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Success'
     BadRequest:
-      $ref: 'https://github.com/Telecominfraproject/wlan-cloud-ucentralsec/blob/main/openpapi/owsec.yaml#/components/responses/BadRequest'
+      $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/BadRequest'
 
   schemas:
     ObjectInfo:
@@ -80,14 +80,14 @@ components:
           type: boolean
 
     BoardInfo:
-      type: object
-      properties:
-        allOf:
-          $ref: '#/components/schemas/ObjectInfo'
-        venueList:
-          type: array
-          items:
-            $ref: '#/components/schemas/VenueInfo'
+      allOf:
+        - $ref: '#/components/schemas/ObjectInfo'
+        - type: object
+          properties:
+            venueList:
+              type: array
+              items:
+                $ref: '#/components/schemas/VenueInfo'
 
     BoardInfoList:
       type: object
@@ -209,8 +209,7 @@ components:
         ht:
           type: boolean
         sgi:
-          type:
-            boolean
+          type: boolean
 
     Fingerprint:
       type: object
@@ -220,11 +219,9 @@ components:
       type: object
       properties:
         association_bssid:
-          type: integer
-          format: int64
+          type: string
         station:
-          type: integer
-          format: int64
+          type: string
         fingerprint:
           $ref: '#/components/schemas/Fingerprint'
         rssi:
@@ -471,6 +468,10 @@ components:
     DeviceTimePointAnalysis:
       type: object
       properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Start (or representative time) of the aggregation window
         noise:
           $ref: '#/components/schemas/AveragePoint'
         active_pct:
@@ -622,14 +623,12 @@ components:
             type: string
 
     ExtraSystemConfiguration:
-      type: array
-      items:
-        type: object
-        properties:
-          parameterName:
-            type: string
-          parameterValue:
-            type: string
+      type: object
+      properties:
+        parameterName:
+          type: string
+        parameterValue:
+          type: string
 
     #########################################################################################
     ##
@@ -649,6 +648,13 @@ components:
           type: array
           items:
             type: string
+
+    ExtraConfigurationStatus:
+      type: object
+      properties:
+        additionalConfiguration:
+          type: boolean
+          description: Indicates whether additional configuration is enabled
 
     TagValuePair:
       type: object
@@ -717,10 +723,10 @@ components:
           type: string
         uptime:
           type: integer
-          format: integer64
+          format: int64
         start:
           type: integer
-          format: integer64
+          format: int64
         os:
           type: string
         processors:
@@ -764,6 +770,7 @@ components:
         - $ref: '#/components/schemas/SystemInfoResults'
         - $ref: '#/components/schemas/StringList'
         - $ref: '#/components/schemas/TagValuePairList'
+        - $ref: '#/components/schemas/ExtraConfigurationStatus' 
 
     Dashboard:
       type: object
@@ -848,7 +855,7 @@ components:
             type: string
 
 paths:
-  /api/v1/boards:
+  /boards:
     get:
       tags:
         - Boards
@@ -900,7 +907,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/board/{id}:
+  /board/{id}:
     get:
       tags:
         - Boards
@@ -967,7 +974,11 @@ paths:
               $ref: '#/components/schemas/BoardInfo'
       responses:
         200:
-          $ref: '#/components/schemas/BoardInfo'
+          description: Return the created board
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoardInfo'
         400:
           $ref: '#/components/responses/BadRequest'
         403:
@@ -993,7 +1004,11 @@ paths:
               $ref: '#/components/schemas/BoardInfo'
       responses:
         200:
-          $ref: '#/components/schemas/BoardInfo'
+          description: Return the updated board
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoardInfo'
         400:
           $ref: '#/components/responses/BadRequest'
         403:
@@ -1001,7 +1016,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/board/{id}/devices:
+  /board/{id}/devices:
     get:
       tags:
         - Board Devices
@@ -1017,7 +1032,11 @@ paths:
 
       responses:
         200:
-          $ref: '#/components/schemas/DeviceInfoList'
+          description: Return device information for the board
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceInfoList'
         400:
           $ref: '#/components/responses/BadRequest'
         403:
@@ -1025,7 +1044,7 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/board/{id}/timepoints:
+  /board/{id}/timepoints:
     get:
       tags:
         - Board data
@@ -1079,9 +1098,7 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/DeviceTimePointList'
-                  - $ref: '#/components/schemas/DeviceTimePointStats'
+                $ref: '#/components/schemas/DeviceTimePointList'
         400:
           $ref: '#/components/responses/BadRequest'
         403:
@@ -1121,12 +1138,12 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/wifiClientHistory:
+  /wifiClientHistory:
     get:
       tags:
         - WiFiClientHistory
       operationId: getWifiClientHistory
-      summary: Retrieve WiFi client history for debugging purpose
+      summary: Retrieve WiFi client addresses 
       parameters:
         - in: query
           name: fromDate
@@ -1191,12 +1208,12 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/wifiClientHistory/{client}:
+  /wifiClientHistory/{client}:
     get:
       tags:
         - WiFiClientHistory
-      operationId: getWifiClients
-      summary: Retrieve WiFi client history for debugging purpose
+      operationId: getWifiClientHistoryEntries
+      summary: Retrieve WiFi client history per device
       parameters:
         - in: path
           name: client
@@ -1263,7 +1280,11 @@ paths:
           required: false
       responses:
         200:
-          $ref: '#/components/schemas/WifiClientHistoryList'
+          description: Return WiFi client history entries per device
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiClientHistoryList'
         403:
           $ref: '#/components/responses/Unauthorized'
         404:
@@ -1273,7 +1294,7 @@ paths:
       tags:
         - WiFiClientHistory
       operationId: deleteWifiClientHistory
-      summary: Retrieve WiFi client history for debugging purpose
+      summary: Delete WiFi client history per device
       parameters:
         - in: query
           description: The venue to for the search.
@@ -1312,7 +1333,7 @@ paths:
   ## These are endpoints that all services in the OpenWiFi stack must provide
   ##
   #########################################################################################
-  /api/v1/system:
+  /system:
     post:
       tags:
         - System Commands
@@ -1363,13 +1384,17 @@ paths:
           required: true
       responses:
         200:
-          $ref: '#/components/schemas/SystemCommandResults'
+          description: Return the requested system information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemCommandResults'
         403:
           $ref: '#/components/responses/Unauthorized'
         404:
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/systemConfiguration:
+  /systemConfiguration:
     get:
       tags:
         - SystemConfiguration
