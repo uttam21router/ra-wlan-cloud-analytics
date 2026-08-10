@@ -303,7 +303,7 @@ A sample exactly at `11:00` belongs only to Request 2.
 All device metric handlers must enforce authorization before returning data:
 
 ```text
-1. Authenticate the bearer token.
+1. Authenticate the bearer token from Authorization: Bearer <token>.
    If the token is missing, invalid, or expired, return 401 Unauthorized.
 2. Resolve the caller's accessible entity, venue, and board scope from the token.
 3. Resolve routerId to its current router ownership context.
@@ -311,6 +311,10 @@ All device metric handlers must enforce authorization before returning data:
 5. Return 404 Not Found when the router exists but the caller cannot access it.
 6. Return 404 Not Found when the router does not exist.
 ```
+
+The MCP analytics endpoints are bearer-token endpoints. Do not allow `X-API-KEY`
+authentication for these endpoints unless this specification is explicitly
+updated to define API-key semantics and error precedence.
 
 Required permission:
 
@@ -767,7 +771,15 @@ Do not query `device_timepoints.memory_free` unless a separate normalized table 
 ### Handler Flow
 
 ```text
-Validate routerId
+Authenticate bearer token
+    ↓
+Validate routerId syntax
+    ↓
+Inspect raw query parameters for exactly one timestampTill and lookbackHours
+    ↓
+Parse timestampTill and lookbackHours
+    ↓
+Calculate start_time with checked epoch arithmetic
     ↓
 Call ResolveRouterIdContext(client, routerId)
     ↓
@@ -775,9 +787,7 @@ If status is not Success, map RouterIdResolutionStatus to HTTP response
     ↓
 Use result.venueId and result.resolvedBoardId
     ↓
-Parse timestampTill
-    ↓
-Calculate start_time
+Validate lookbackHours against monitoring duration and retention
     ↓
 Query timepoints and read resource_data.memory_free samples
     ↓
@@ -2858,6 +2868,15 @@ Add:
 /devices/{routerId}/availability-summary:
 /devices/{routerId}/wifi-clients/usage-summary:
 /devices/{routerId}/wifi-clients/rssi-summary:
+```
+
+Each MCP analytics operation must explicitly declare bearer-only security so it
+does not inherit the existing top-level OpenAPI `bearerAuth OR ApiKeyAuth`
+contract:
+
+```yaml
+security:
+  - bearerAuth: []
 ```
 
 ---
