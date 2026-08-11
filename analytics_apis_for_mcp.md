@@ -300,6 +300,22 @@ timestamp < endTime
 
 `timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
 
+MCP analytics responses that include window metadata must use common temporal
+field names:
+
+```text
+requestedWindow.startTime
+requestedWindow.endTime
+observedWindow.startTime
+observedWindow.endTime
+```
+
+`observedWindow` must contain only the common temporal fields `startTime` and
+`endTime`. Endpoint-specific metadata must not be added inside
+`observedWindow`, and endpoints must not introduce alternate temporal field
+names such as `firstSampleAt`, `firstSampleTime`, `earliestActualStartTime`, or
+`latestActualEndTime`.
+
 For cumulative-counter differential summaries, exact effective-boundary samples
 are preferred. For endpoints with proven session lifetimes, effective boundaries
 are the requested boundaries clipped to the proven session start and end. For
@@ -313,15 +329,12 @@ can fall outside `[startTime, endTime)`, so the response must expose:
 ```text
 requestedWindow.startTime = startTime
 requestedWindow.endTime = endTime
-observedWindow.earliestActualStartTime =
+observedWindow.startTime =
   earliest actual starting sample used by any calculable segment contributing
   to returned clients
-observedWindow.latestActualEndTime =
+observedWindow.endTime =
   latest actual ending sample used by any calculable segment contributing
   to returned clients
-observedWindow.boundaryFallbackUsed =
-  true when any calculable segment contributing to returned clients used a
-  fallback boundary sample
 ```
 
 When no calculable usage segment exists for an observed client, the client
@@ -1132,9 +1145,8 @@ consumers. Segment-level provenance is verbose and is omitted unless
     "endTime": "2026-07-27T12:00:00Z"
   },
   "observedWindow": {
-    "earliestActualStartTime": "2026-07-26T11:55:00Z",
-    "latestActualEndTime": "2026-07-27T12:05:00Z",
-    "boundaryFallbackUsed": true
+    "startTime": "2026-07-26T11:55:00Z",
+    "endTime": "2026-07-27T12:05:00Z"
   },
   "items": [
     {
@@ -1185,17 +1197,13 @@ consumers. Segment-level provenance is verbose and is omitted unless
 `observedWindow` is aggregate response metadata:
 
 ```text
-earliestActualStartTime =
+startTime =
   minimum actual_start_time among the server's internal calculable segments
   contributing to returned clients
 
-latestActualEndTime =
+endTime =
   maximum actual_end_time among the server's internal calculable segments
   contributing to returned clients
-
-boundaryFallbackUsed =
-  true when any internal calculable segment contributing to returned clients
-  used a fallback boundary sample
 ```
 
 It describes only the overall result envelope. It does not mean every client or
@@ -1211,9 +1219,8 @@ When no clients are returned:
     "endTime": "2026-07-27T12:00:00Z"
   },
   "observedWindow": {
-    "earliestActualStartTime": null,
-    "latestActualEndTime": null,
-    "boundaryFallbackUsed": false
+    "startTime": null,
+    "endTime": null
   },
   "items": [],
   "totalClients": 0,
@@ -1232,9 +1239,8 @@ return the safely provable minimum with `segment_count: 0`:
     "endTime": "2026-08-05T13:00:00Z"
   },
   "observedWindow": {
-    "earliestActualStartTime": null,
-    "latestActualEndTime": null,
-    "boundaryFallbackUsed": false
+    "startTime": null,
+    "endTime": null
   },
   "items": [
     {
@@ -1295,9 +1301,8 @@ Example detailed response for the same calculated result:
     "endTime": "2026-07-27T12:00:00Z"
   },
   "observedWindow": {
-    "earliestActualStartTime": "2026-07-26T11:55:00Z",
-    "latestActualEndTime": "2026-07-27T12:05:00Z",
-    "boundaryFallbackUsed": true
+    "startTime": "2026-07-26T11:55:00Z",
+    "endTime": "2026-07-27T12:05:00Z"
   },
   "items": [
     {
@@ -1422,9 +1427,8 @@ return the safely provable minimum with no calculation segments:
     "endTime": "2026-08-05T13:00:00Z"
   },
   "observedWindow": {
-    "earliestActualStartTime": null,
-    "latestActualEndTime": null,
-    "boundaryFallbackUsed": false
+    "startTime": null,
+    "endTime": null
   },
   "items": [
     {
@@ -1911,9 +1915,8 @@ None
     "endTime": "2026-07-27T12:00:00Z"
   },
   "observedWindow": {
-    "firstSampleTime": "2026-07-26T12:01:00Z",
-    "lastSampleTime": "2026-07-27T11:58:00Z",
-    "totalSamples": 170
+    "startTime": "2026-07-26T12:01:00Z",
+    "endTime": "2026-07-27T11:58:00Z"
   },
   "items": [
     {
@@ -1942,14 +1945,11 @@ None
 500-client response limit:
 
 ```text
-firstSampleTime =
+startTime =
   earliest valid RSSI sample contributing to items[]
 
-lastSampleTime =
+endTime =
   latest valid RSSI sample contributing to items[]
-
-totalSamples =
-  SUM(items[].rssi_total_samples)
 ```
 
 For empty RSSI results:
@@ -1961,9 +1961,8 @@ For empty RSSI results:
     "endTime": "2026-07-27T12:00:00Z"
   },
   "observedWindow": {
-    "firstSampleTime": null,
-    "lastSampleTime": null,
-    "totalSamples": 0
+    "startTime": null,
+    "endTime": null
   },
   "items": [],
   "totalClients": 0,
@@ -2100,16 +2099,16 @@ None
       "endTime": "2026-07-27T12:00:00Z"
     },
     "observedWindow": {
-      "firstSampleAt": "2026-07-26T13:15:00Z",
-      "lastSampleAt": "2026-07-27T09:45:00Z"
+      "startTime": "2026-07-26T13:15:00Z",
+      "endTime": "2026-07-27T09:45:00Z"
     },
     "sourceWindow": {
-      "firstSampleAt": "2026-07-26T11:55:00Z",
-      "lastSampleAt": "2026-07-27T12:00:00Z"
+      "startTime": "2026-07-26T11:55:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
     },
     "contributingWindow": {
-      "firstSampleAt": "2026-07-26T13:15:00Z",
-      "lastSampleAt": "2026-07-27T09:45:00Z"
+      "startTime": "2026-07-26T13:15:00Z",
+      "endTime": "2026-07-27T09:45:00Z"
     },
     "selection": "boundary_assisted",
     "coverage": "full",
@@ -2869,16 +2868,16 @@ Use an HTTP error:
       "endTime": "2026-07-27T12:00:00Z"
     },
     "observedWindow": {
-      "firstSampleAt": null,
-      "lastSampleAt": null
+      "startTime": null,
+      "endTime": null
     },
     "sourceWindow": {
-      "firstSampleAt": "2026-07-26T11:55:00Z",
-      "lastSampleAt": "2026-07-26T11:55:00Z"
+      "startTime": "2026-07-26T11:55:00Z",
+      "endTime": "2026-07-26T11:55:00Z"
     },
     "contributingWindow": {
-      "firstSampleAt": null,
-      "lastSampleAt": null
+      "startTime": null,
+      "endTime": null
     },
     "selection": "boundary_assisted",
     "coverage": "full",
