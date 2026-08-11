@@ -2122,27 +2122,9 @@ None
       "startTime": "2026-07-26T13:15:00Z",
       "endTime": "2026-07-27T09:45:00Z"
     },
-    "sourceWindow": {
-      "startTime": "2026-07-26T11:55:00Z",
-      "endTime": "2026-07-27T12:00:00Z"
-    },
-    "contributingWindow": {
-      "startTime": "2026-07-26T13:15:00Z",
-      "endTime": "2026-07-27T09:45:00Z"
-    },
-    "selection": "boundary_assisted",
     "coverage": "full",
     "accuracy": "exact",
-    "sampleCount": 6,
     "offlineEventCount": 6,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": true,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
     "availabilityCoverage": {
       "coverageStart": "2026-07-26T11:55:00Z",
       "stateKnownFrom": "2026-07-26T11:55:00Z",
@@ -2159,6 +2141,13 @@ None
   }
 }
 ```
+
+For availability responses, `observedWindow` is the actual event-time range
+represented by the availability data used to produce the response. It is derived
+from offline transition events that contributed to `offline_count`; when no
+offline transition events contribute, both `observedWindow.startTime` and
+`observedWindow.endTime` are `null`. Completeness and ingestion progress are
+reported separately in `availabilityCoverage`.
 
 ## API Logic
 
@@ -2891,27 +2880,9 @@ Use an HTTP error:
       "startTime": null,
       "endTime": null
     },
-    "sourceWindow": {
-      "startTime": "2026-07-26T11:55:00Z",
-      "endTime": "2026-07-26T11:55:00Z"
-    },
-    "contributingWindow": {
-      "startTime": null,
-      "endTime": null
-    },
-    "selection": "boundary_assisted",
     "coverage": "full",
     "accuracy": "exact",
-    "sampleCount": 0,
     "offlineEventCount": 0,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": true,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
     "availabilityCoverage": {
       "coverageStart": "2026-07-20T00:00:00Z",
       "stateKnownFrom": "2026-07-20T00:00:00Z",
@@ -2931,25 +2902,14 @@ Use an HTTP error:
 
 An exact zero is valid only when availability coverage proves the complete requested interval up to `endTime`: `coverageStart <= startTime`, `stateKnownFrom <= startTime`, `processedThrough >= endTime`, `ingestionGapKnown = false`, and `proofSource != "unavailable"`. When `processedThrough < endTime` (even if `processedThrough >= endTime - allowedIngestionDelaySeconds`), the requested interval is not fully covered up to `endTime` and a zero matching event count must be reported as partial/lower-bound (`meta.coverage = "partial"`), or as unavailable with `offline_count: null` when no coverage proof exists.
 
-For the availability endpoint, `sampleCount` is retained for response-shape
-consistency with the other summary APIs. When `meta.coverage` is `"full"` or `"partial"`, `sampleCount` is defined as:
+`offlineEventCount` is the number of offline transition rows in
+`device_availability_events` that contribute to `offline_count`. Online recovery
+transition rows (`event_type = 'online'`) are stored in transition history for
+state tracking, but they do not contribute to `observedWindow`,
+`offlineEventCount`, or `offline_count`.
 
-```text
-sampleCount = offlineEventCount = offline_count
-```
-
-`sampleCount` is the number of offline transition rows in `device_availability_events`
-contributing to `offline_count`. Online recovery transition rows (`event_type = 'online'`)
-are stored in transition history for state tracking and `observedWindow` / `sourceWindow`
-bounds, but they do not contribute to `sampleCount`, `offlineEventCount`, or `offline_count`.
-For `"full"` or `"partial"` coverage, `sampleCount` always equals `offlineEventCount`.
-
-When `meta.coverage = "none"` and `meta.accuracy = "not_applicable"`, `sampleCount`, `offlineEventCount`,
-and `offline_count` are all `null`.
-
-`boundarySamplesUsed.beforeStart` is `true` only when a pre-start boundary event
-was actually selected. Event counting does not require a pre-start boundary
-event when durable availability coverage proves the requested interval.
+When `meta.coverage = "none"` and `meta.accuracy = "not_applicable"`,
+`offlineEventCount` and `offline_count` are both `null`.
 
 ### Internal Error
 
