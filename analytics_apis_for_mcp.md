@@ -1563,7 +1563,18 @@ Differential response decision table:
 | Multiple sessions for the same MAC | calculate per proven session stream, then aggregate by MAC; mark client `lower_bound` if any contributing stream is incomplete |
 | Ambiguous counter reset, stale sample, duplicate conflict, or out-of-order telemetry | `lower_bound` |
 
-A fixed-width rollover is confirmed only when the counter width is known for that source, the observed decrease is consistent with a rollover for that counter, and the maximum possible counter increase during the observation gap cannot exceed one full counter range. If the counter width is unknown, if multiple wraps may have occurred, or if the decrease could also be a reset/reconnect/stale sample, treat it as ambiguous and return `lower_bound`.
+When `current < previous` and the counter width is known for that source, and
+the decrease is not explained by a proven session reset/reconnect or ambiguous
+stream change, assume at most one counter rollover occurred between the two
+samples and apply single-rollover arithmetic:
+
+```text
+delta = (counterMax - previous) + current + 1
+```
+
+If the counter width is unknown, multiple wraps are plausible, or the decrease
+could be a reset/reconnect/stale sample, treat the interval as ambiguous and
+return `lower_bound`.
 
 If the expected collection interval is missing, zero, invalid, or cannot be resolved reliably for the requested retention period, fallback boundary samples cannot qualify as `bounded_interval`; exact boundary samples are required to avoid `lower_bound`.
 
@@ -1577,14 +1588,14 @@ struct CounterDeltaResult {
 
 CounterDeltaResult counterDelta(uint64_t current,
                                 uint64_t previous,
-                                bool confirmedFixedWidthRollover,
-                                bool singleRolloverBoundProven,
+                                bool counterWidthKnown,
+                                bool decreaseAmbiguous,
                                 uint64_t counterMax) {
     if (current >= previous) {
         return {current - previous, false};
     }
 
-    if (confirmedFixedWidthRollover && singleRolloverBoundProven) {
+    if (counterWidthKnown && !decreaseAmbiguous) {
         return {(counterMax - previous) + current + 1, false};
     }
 
@@ -1660,8 +1671,8 @@ If current < previous:
     else:
       treat current as the new baseline, add delta 0, and mark the result
       incomplete/estimated
-  else if fixed-width rollover is known, one-wrap bound is proven, and can be confirmed:
-    apply rollover math
+  else if counter width is known and the decrease is not ambiguous:
+    assume at most one rollover occurred and apply single-rollover math
   else:
     treat current as the new baseline, add delta 0, and mark the result
     incomplete/estimated
