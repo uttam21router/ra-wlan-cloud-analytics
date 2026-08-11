@@ -62,11 +62,15 @@ All REST handlers must enforce request validation in four distinct sequential ph
    - Validate `routerId` syntax (1–64 characters matching `^[a-zA-Z0-9_-]+$`) -> HTTP `400 invalid_router_id` if malformed.
    - Inspect raw query collection for exact-once presence of `timestampTill` and `lookbackHours` -> HTTP `400 invalid_timestamp` / `invalid_lookback_hours` if missing or repeated.
    - Parse `timestampTill` shape & UTC semantics -> HTTP `400 invalid_timestamp` if malformed or invalid date/time.
+   - Capture `currentServerTime` once for the request and verify `end_time <= currentServerTime + allowedClockSkewSeconds` -> HTTP `400 invalid_timestamp` if `timestampTill` is too far in the future.
    - Parse `lookbackHours` strict positive integer -> HTTP `400 invalid_lookback_hours` if zero, negative, or non-numeric.
    - Checked epoch calculation: Compute `start_time = end_time - (lookback_hours * 3600)` using signed 64-bit integers. Verify `start_time >= 0` (minimum supported Unix epoch `1970-01-01T00:00:00Z`) -> HTTP `400 invalid_timestamp` if underflowing before epoch.
 
 2. **Phase 2: Router Ownership & Serial Resolution**
-   - Resolve `routerId` to `boardId` via local cache / OWPROV -> HTTP `404 not_found` if router serial does not exist in OWPROV.
+   - Resolve `routerId` to `boardId` via local cache / OWPROV.
+   - Return HTTP `404 not_found` if the router serial does not exist in OWPROV.
+   - Return HTTP `404 not_found` if the router serial exists in OWPROV but is outside the authenticated caller's accessible entity, venue, or board scope.
+   - Do not return HTTP `403 Forbidden` for the "existing router outside caller scope" case because it would disclose that the router serial exists.
    - Load router scope monitoring configuration (`monitoringDuration`) to derive `maxLookbackHours = floor(monitoringDuration / 3600)`.
 
 3. **Phase 3: Duration, Retention & Endpoint Cutover Validation**
@@ -165,6 +169,10 @@ Validation rules:
 
 ```text
 timestampTill must parse as a valid UTC timestamp ending with 'Z'.
+currentServerTime must be captured once per request after timestampTill parses.
+allowedClockSkewSeconds must be the same non-negative service-level value for all MCP analytics handlers.
+Unless a deployment explicitly configures another value, allowedClockSkewSeconds defaults to 300 seconds.
+endTime must be less than or equal to currentServerTime + allowedClockSkewSeconds.
 lookbackHours must be present exactly once.
 lookbackHours must parse as a strict whole decimal integer with no trailing characters.
 lookbackHours must be greater than 0.
@@ -172,6 +180,11 @@ maxLookbackHours = floor(configured monitoringDuration / 3600).
 lookbackHours must be less than or equal to maxLookbackHours.
 startTime must be less than endTime.
 ```
+
+If `timestampTill` is beyond `currentServerTime + allowedClockSkewSeconds`, return
+`400 Bad Request` with `error: "invalid_timestamp"`. Do not clamp `endTime` to
+server time. The returned aggregate must represent the requested half-open
+window exactly, not a silently shortened window.
 
 All APIs in this document derive `maxLookbackHours` from the configured `monitoringDuration` for the resolved router ownership scope. All APIs share this limit unless an endpoint section explicitly names a stricter limit. No endpoint currently defines a separate limit.
 
@@ -181,7 +194,8 @@ Return validation errors with field-specific error codes:
 
 ```text
 invalid_timestamp:
-  timestampTill is missing, malformed, not UTC `Z` format, or otherwise unsupported.
+  timestampTill is missing, malformed, not UTC `Z` format, beyond
+  currentServerTime + allowedClockSkewSeconds, or otherwise unsupported.
 
 invalid_lookback_hours:
   lookbackHours is missing, repeated, empty, non-numeric, fractional, partially numeric, overflowing,
@@ -199,7 +213,7 @@ Handlers must load the monitoring configuration for the resolved router ownershi
 
 ```text
 monitoringDuration = configured monitoring retention duration
-retentionEnd = min(currentTime, monitoringConfigurationExpiry)
+retentionEnd = min(currentServerTime, monitoringConfigurationExpiry)
 retentionStart = retentionEnd - monitoringDuration
 
 If monitoring has been enabled for less time than monitoringDuration:
@@ -325,6 +339,11 @@ analytics.gateway_metrics.read
 The permission is evaluated against the resolved board first, then the resolved venue, then the parent entity. Child-venue access is allowed only when the caller's venue permission explicitly includes descendant venues according to the same venue hierarchy rules used by OWPROV and `VenueCoordinator`; otherwise access is limited to the exact resolved venue or board.
 
 Authorization must not rely on the caller-supplied `routerId` alone. A caller must not be able to request an arbitrary gateway serial number and retrieve metrics without proving access to the router's current ownership scope. The external API intentionally returns `404 Not Found` for both nonexistent routers and routers outside the caller's authorized scope to avoid exposing router existence. Internal logs and metrics should preserve the exact reason.
+
+Reserve `403 Forbidden` for cases where the authenticated caller has visibility
+of the router's ownership scope, but lacks permission to perform the requested
+operation. Do not use `403 Forbidden` merely because OWPROV confirms the
+router exists outside the caller's accessible scope.
 
 For historical availability, authorize by current router ownership before querying `device_availability_events` by `serialNumber`. The event-time `board_id` field is historical context only and must not be the sole authorization source. If current ownership cannot be resolved for a non-operator caller, do not serve serial-number-only availability history. A privileged operator-level permission may bypass current ownership resolution only if explicitly implemented and audited.
 
@@ -460,6 +479,7 @@ Failure handling:
 
 ```text
 OWPROV inventory not found              -> 404 Not Found
+OWPROV inventory outside caller scope   -> 404 Not Found
 Inventory exists but venue is empty     -> 404 Not Found
 No Analytics board configured for venue -> 404 Not Found
 Multiple matching boards                -> 409 Conflict
@@ -503,7 +523,7 @@ InventoryNotFound     -> 404 Not Found
 EmptyVenue            -> 404 Not Found
 BoardNotConfigured    -> 404 Not Found
 MultipleBoards        -> 409 Conflict
-AccessDenied          -> 404 Not Found
+AccessDenied          -> 404 Not Found when the router exists in OWPROV but is outside the caller's accessible scope
 MonitoringNotConfigured -> 404 Not Found
 MonitoringDisabled    -> 409 Conflict
 OwprovUnavailable     -> 502 Bad Gateway
