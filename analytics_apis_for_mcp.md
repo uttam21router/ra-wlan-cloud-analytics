@@ -8,10 +8,13 @@ This document defines the request format, response format, and implementation lo
 - `get_device_rssi_quality`
 - `get_gateway_offline_count`
 
-The specification is structured across three distinct component layers:
+This specification is structured across two in-scope component areas:
 1. **MCP Analytics Behavior Specification**: Intended HTTP requests, parameter validation, response envelopes, and ownership/error semantics for future MCP-facing Analytics handlers.
 2. **Persistence & Pipeline Architecture Design**: Internal storage structures (`device_availability_events`, `device_availability_state`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), Kafka event consumption/ordering, and cutover semantics.
-3. **Test Specifications Matrix**: Independent verification matrix documented in `analytics_mcp_api_test_cases.md`.
+
+Follow-up deliverables:
+- OpenAPI contract/schema updates in `openapi/owanalytics.yaml`.
+- Independent test specification matrix in `analytics_mcp_api_test_cases.md`.
 
 > [!IMPORTANT]
 > This PR does not update `openapi/owanalytics.yaml` and does not publish a
@@ -22,7 +25,7 @@ The specification is structured across three distinct component layers:
 > `device_availability_ingestion_checkpoint`,
 > `device_availability_ingestion_gaps`), Kafka event ordering/checkpointing
 > rules, and cutover migration rules—constitute a production architecture
-> specification. Approving or merging this test specification PR does NOT bypass
+> specification. Approving or merging this behavior specification PR does NOT bypass
 > separate explicit architecture design sign-off for backend schema additions and
 > production Kafka pipeline changes prior to production deployment.
 
@@ -223,7 +226,7 @@ Handlers must load the monitoring configuration for the resolved router ownershi
 
 ```text
 monitoringDuration = configured monitoring retention duration
-retentionEnd = min(currentServerTime, monitoringConfigurationExpiry)
+retentionEnd = min(currentServerTime + allowedClockSkewSeconds, monitoringConfigurationExpiry)
 retentionStart = retentionEnd - monitoringDuration
 
 If monitoring has been enabled for less time than monitoringDuration:
@@ -231,6 +234,11 @@ If monitoring has been enabled for less time than monitoringDuration:
 ```
 
 Use the configured duration and effective retention timestamps instead of calendar assumptions so leap years, partial-year retention, recently enabled monitoring, and changed retention policies behave consistently.
+Use the same `currentServerTime + allowedClockSkewSeconds` upper bound for both
+future timestamp validation and retention validation. A `timestampTill` value
+inside the allowed skew window must not be rejected as
+`lookback_outside_retention` merely because it is later than
+`currentServerTime`, unless it also exceeds `monitoringConfigurationExpiry`.
 
 The requested half-open range must fit inside the configured retention window:
 
@@ -733,18 +741,23 @@ Do not represent missing memory fields as `0`. A missing `memory_free` value and
 
 ### Ingestion Logic
 
-Ingestion should preserve syntactically valid source telemetry and avoid
-analytics-specific semantic validation. Parse each memory field independently,
-persist fields that can be represented as nonnegative 64-bit integers, and omit
-only the malformed field. Do not apply cross-field checks such as
-`memory_free <= memory_total` during ingestion; those checks belong to the
-aggregation layer so raw telemetry remains available for troubleshooting.
+Ingestion should preserve syntactically and structurally valid source telemetry
+and avoid analytics-specific semantic validation. The typed memory resource
+model stores byte counts as unsigned values; negative memory values are
+structurally invalid for this ingestion contract and are omitted field-by-field,
+not preserved in `DeviceResourceTimePoint`. Parse each memory field
+independently, persist fields that can be represented as nonnegative 64-bit
+integers, and omit only the malformed or structurally invalid field. Do not
+apply cross-field checks such as `memory_free <= memory_total` during ingestion;
+those checks belong to the aggregation layer so source telemetry that is valid
+for the storage contract remains available for troubleshooting.
 
 ```cpp
 AnalyticsObjects::DeviceResourceTimePoint resource;
 
-// Validate numeric type, integral value, non-negative range (>= 0), and 64-bit non-overflow before unsigned conversion.
-// Field-level preservation policy: malformed free, total, cached, or buffered values are omitted independently.
+// Validate numeric type, integral value, non-negative byte-count range (>= 0), and 64-bit non-overflow before unsigned conversion.
+// Field-level preservation policy: malformed or structurally invalid free, total, cached, or buffered values are omitted independently.
+// Negative memory values are structurally invalid for this unsigned byte-count storage contract.
 // Do not apply analytics-specific semantic checks, such as free <= total, at ingestion time.
 auto parseMemoryField = [](const Poco::JSON::Object::Ptr &obj, const std::string &key) -> std::optional<uint64_t> {
     if (!obj->has(key) || obj->isNull(key)) return std::nullopt;
@@ -929,6 +942,26 @@ Do not synthesize a numeric fallback temperature for missing data.
 Do not store a placeholder in wifi_temp for a missing temperature.
 ```
 
+Zero-temperature sentinel source of truth:
+
+```text
+The source of truth for whether wifi_temp = 0 means unavailable is an explicit
+TelemetryTemperatureContract resolved at ingestion time from stable producer
+metadata, such as OWPROV inventory deviceType, gateway capabilities platform,
+firmware family, or an equivalent service-level contract registry.
+
+The resolved contract must expose:
+  wifiTempZeroIsUnavailable: boolean
+
+Persist either the resolved boolean on the radio temperature sample, for example
+radio_data[].wifi_temp_zero_is_unavailable, or persist a stable contract id that
+can be resolved later to the same boolean. Do not infer zero-sentinel behavior
+from the observed temperature value itself.
+
+If no producer/device contract can be resolved for a sample, the default is:
+  wifiTempZeroIsUnavailable = false
+```
+
 Migration boundary configuration & rule:
 
 ```text
@@ -989,7 +1022,7 @@ For each record:
   for each radio in radio_data:
     if radio.band is 2 or 5:
       if radio.wifi_temp is present, non-null, -40 <= radio.wifi_temp <= 125,
-         and (radio.wifi_temp != 0 or the producer/device contract does not define 0 as unavailable):
+         and (radio.wifi_temp != 0 or radio.wifi_temp_zero_is_unavailable is not true):
         add radio.wifi_temp to that band's sample list
 
 For each band:
@@ -1003,7 +1036,7 @@ A valid temperature sample is:
 ```text
 record timestamp is at or after temperatureMigrationCutoverTime
 radio.wifi_temp is present, non-null, and within range [-40, 125]
-radio.wifi_temp = 0 is excluded only when the producer/device contract defines 0 as unavailable
+radio.wifi_temp = 0 is excluded only when the persisted/resolved temperature contract has wifiTempZeroIsUnavailable = true
 ```
 
 If all samples for a band are invalid or missing, return `null` for that band's min, max, and average fields.
