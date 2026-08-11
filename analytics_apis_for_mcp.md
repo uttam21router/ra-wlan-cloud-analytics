@@ -723,12 +723,19 @@ Do not represent missing memory fields as `0`. A missing `memory_free` value and
 
 ### Ingestion Logic
 
+Ingestion should preserve syntactically valid source telemetry and avoid
+analytics-specific semantic validation. Parse each memory field independently,
+persist fields that can be represented as nonnegative 64-bit integers, and omit
+only the malformed field. Do not apply cross-field checks such as
+`memory_free <= memory_total` during ingestion; those checks belong to the
+aggregation layer so raw telemetry remains available for troubleshooting.
+
 ```cpp
 AnalyticsObjects::DeviceResourceTimePoint resource;
 
 // Validate numeric type, integral value, non-negative range (>= 0), and 64-bit non-overflow before unsigned conversion.
-// Field-level rejection policy: invalid free, total, cached, or buffered values are omitted independently.
-// Invalid cached/buffered values must not invalidate an otherwise valid memory_free observation.
+// Field-level preservation policy: malformed free, total, cached, or buffered values are omitted independently.
+// Do not apply analytics-specific semantic checks, such as free <= total, at ingestion time.
 auto parseMemoryField = [](const Poco::JSON::Object::Ptr &obj, const std::string &key) -> std::optional<uint64_t> {
     if (!obj->has(key) || obj->isNull(key)) return std::nullopt;
     try {
@@ -757,6 +764,13 @@ if (freeVal || totalVal || cachedVal || bufferedVal) {
 
 ### Aggregation Logic
 
+Aggregation decides whether a preserved memory sample is usable for the
+free-memory summary. `memory_free` is the required field for this aggregation.
+`memory_total` is optional and is used only when present and valid for the
+`memory_free <= memory_total` consistency check. `memory_cached` and
+`memory_buffered` are unrelated to the free-memory summary and must not affect
+sample inclusion.
+
 Use the current `timepoints` table plus parsed JSON fields:
 
 ```text
@@ -780,14 +794,12 @@ Return:
   avg_memfree = sum(memory_free samples) / sample_count
 ```
 
-Memory values are bytes and must be nonnegative. `memory_free` is the required
-field for this aggregation. `memory_total` is optional and is used only when it
-is valid; if valid `memory_total` is present, `memory_free` must not exceed
-`memory_total`. Corrupted samples that violate this consistency rule are ignored
-rather than contributing to the summary. Invalid `memory_cached` or
-`memory_buffered` values are ignored field-by-field and must not cause a valid
-`memory_free` sample to be dropped. For successful responses with samples, the
-invariant is:
+Memory values are bytes and must be nonnegative. If both `memory_free` and valid
+`memory_total` are present, `memory_free` must not exceed `memory_total`.
+Samples that violate this consistency rule are ignored rather than contributing
+to the summary. Invalid or missing `memory_cached` or `memory_buffered` values
+are ignored field-by-field and must not cause a valid `memory_free` sample to be
+dropped. For successful responses with samples, the invariant is:
 
 ```text
 min_memfree <= avg_memfree <= max_memfree
