@@ -9,14 +9,24 @@ This document defines the request format, response format, and implementation lo
 - `get_gateway_offline_count`
 
 The specification is structured across three distinct component layers:
-1. **Public API Contract Specifications**: External OpenAPI schemas (`openapi/owanalytics.yaml`) defining HTTP requests, parameter validation, and response envelopes.
+1. **MCP Analytics Behavior Specification**: Intended HTTP requests, parameter validation, response envelopes, and ownership/error semantics for future MCP-facing Analytics handlers.
 2. **Persistence & Pipeline Architecture Design**: Internal storage structures (`device_availability_events`, `device_availability_state`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), Kafka event consumption/ordering, and cutover semantics.
 3. **Test Specifications Matrix**: Independent verification matrix documented in `analytics_mcp_api_test_cases.md`.
 
 > [!IMPORTANT]
-> The specified production architecture changes—including four new availability persistence structures (`device_availability_events`, `device_availability_state`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), Kafka event ordering/checkpointing rules, cutover migration rules, and OpenAPI v2.7.0 endpoint schemas—constitute a production architecture specification. Approving or merging this test specification PR does NOT bypass separate explicit architecture design sign-off for backend schema additions and production Kafka pipeline changes prior to production deployment.
+> This PR does not update `openapi/owanalytics.yaml` and does not publish a
+> functional OpenAPI contract for these MCP analytics endpoints. The OpenAPI
+> contract/schema update is a follow-up deliverable. The specified production
+> architecture changes—including four new availability persistence structures
+> (`device_availability_events`, `device_availability_state`,
+> `device_availability_ingestion_checkpoint`,
+> `device_availability_ingestion_gaps`), Kafka event ordering/checkpointing
+> rules, and cutover migration rules—constitute a production architecture
+> specification. Approving or merging this test specification PR does NOT bypass
+> separate explicit architecture design sign-off for backend schema additions and
+> production Kafka pipeline changes prior to production deployment.
 
-The API contracts match the MCP tool names and response fields from the provided CSV.
+The intended API behavior matches the MCP tool names and response fields from the provided CSV.
 
 ---
 
@@ -2908,15 +2918,16 @@ Repository:
 routerarchitects/ra-wlan-cloud-analytics
 ```
 
-## OpenAPI
+## OpenAPI Follow-up Deliverable
 
-Update:
+This PR does not make these functional OpenAPI changes. A follow-up PR must
+update:
 
 ```text
 openapi/owanalytics.yaml
 ```
 
-Add:
+That follow-up should add:
 
 ```yaml
 /devices/{routerId}/memory-summary:
@@ -2926,9 +2937,9 @@ Add:
 /devices/{routerId}/wifi-clients/rssi-summary:
 ```
 
-Each MCP analytics operation must explicitly declare bearer-only security so it
-does not inherit the existing top-level OpenAPI `bearerAuth OR ApiKeyAuth`
-contract:
+That follow-up must also ensure each MCP analytics operation explicitly declares
+bearer-only security so it does not inherit the existing top-level OpenAPI
+`bearerAuth OR ApiKeyAuth` contract:
 
 ```yaml
 security:
