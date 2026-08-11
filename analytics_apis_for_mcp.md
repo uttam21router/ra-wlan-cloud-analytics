@@ -941,7 +941,11 @@ If the requested range starts before temperatureMigrationCutoverTime (startTime 
 
 Do not filter out post-cutover samples only because the measured value is 20°C.
 After the cutover, a present wifi_temp value is treated as a legitimate measurement.
-However, wifi_temp = 0 is defined as an uninitialized or missing-sensor sentinel across all OpenWiFi telemetry. A sample with wifi_temp = 0, null, 255, or outside the valid range [-40, 125] is treated as a missing sensor reading and MUST be excluded from aggregation for all samples regardless of timestamp.
+Reject `wifi_temp = 0` only when the corresponding telemetry producer or device
+contract defines `0` as an unavailable or uninitialized sensor sentinel.
+Otherwise, treat `0°C` as a valid in-range measurement. A sample with
+`wifi_temp = null`, `255`, or a value outside the valid range `[-40, 125]` is
+treated as a missing sensor reading and MUST be excluded from aggregation.
 ```
 
 The current radio-band mapping is:
@@ -974,7 +978,8 @@ For each record:
   parse radio_data
   for each radio in radio_data:
     if radio.band is 2 or 5:
-      if radio.wifi_temp is present, non-null, != 0, and -40 <= radio.wifi_temp <= 125:
+      if radio.wifi_temp is present, non-null, -40 <= radio.wifi_temp <= 125,
+         and (radio.wifi_temp != 0 or the producer/device contract does not define 0 as unavailable):
         add radio.wifi_temp to that band's sample list
 
 For each band:
@@ -987,7 +992,8 @@ A valid temperature sample is:
 
 ```text
 record timestamp is at or after temperatureMigrationCutoverTime
-radio.wifi_temp is present, non-null, != 0, and within range [-40, 125]
+radio.wifi_temp is present, non-null, and within range [-40, 125]
+radio.wifi_temp = 0 is excluded only when the producer/device contract defines 0 as unavailable
 ```
 
 If all samples for a band are invalid or missing, return `null` for that band's min, max, and average fields.
