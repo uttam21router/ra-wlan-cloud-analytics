@@ -727,17 +727,16 @@ Do not represent missing memory fields as `0`. A missing `memory_free` value and
 AnalyticsObjects::DeviceResourceTimePoint resource;
 
 // Validate numeric type, integral value, non-negative range (>= 0), and 64-bit non-overflow before unsigned conversion.
-// Sample-level rejection policy for negative telemetry: If ANY present memory field (free, total, cached, buffered) is negative (< 0), non-numeric, or invalid, mark the entire memory sample invalid and omit resource_data so the entire corrupted memory timepoint is excluded during aggregation.
-bool sampleValid = true;
-auto parseMemoryField = [&sampleValid](const Poco::JSON::Object::Ptr &obj, const std::string &key) -> std::optional<uint64_t> {
+// Field-level rejection policy: invalid free, total, cached, or buffered values are omitted independently.
+// Invalid cached/buffered values must not invalidate an otherwise valid memory_free observation.
+auto parseMemoryField = [](const Poco::JSON::Object::Ptr &obj, const std::string &key) -> std::optional<uint64_t> {
     if (!obj->has(key) || obj->isNull(key)) return std::nullopt;
     try {
-        if (!obj->isNumeric(key)) { sampleValid = false; return std::nullopt; }
+        if (!obj->isNumeric(key)) return std::nullopt;
         int64_t val = obj->getElement<int64_t>(key);
-        if (val < 0) { sampleValid = false; return std::nullopt; }
+        if (val < 0) return std::nullopt;
         return static_cast<uint64_t>(val);
     } catch (...) {
-        sampleValid = false;
         return std::nullopt;
     }
 };
@@ -747,7 +746,7 @@ auto totalVal = parseMemoryField(memory, "total");
 auto cachedVal = parseMemoryField(memory, "cached");
 auto bufferedVal = parseMemoryField(memory, "buffered");
 
-if (sampleValid) {
+if (freeVal || totalVal || cachedVal || bufferedVal) {
     if (freeVal)     resource.memory_free = *freeVal;
     if (totalVal)    resource.memory_total = *totalVal;
     if (cachedVal)   resource.memory_cached = *cachedVal;
@@ -770,9 +769,10 @@ Load TimePointDB records where:
 For each record:
   read record.resource_data.memory_free
   ignore missing resource_data
-  include the sample only when memory_free is present
-  exclude the sample if any present memory value is negative
-  exclude the sample if memory_total is present and memory_free > memory_total
+  include the sample only when memory_free is present and valid
+  use memory_total only when present and valid for the free <= total consistency check
+  exclude the sample if valid memory_total is present and memory_free > memory_total
+  ignore invalid or missing memory_total, memory_cached, and memory_buffered without invalidating memory_free
 
 Return:
   min_memfree = min(memory_free samples)
@@ -780,7 +780,14 @@ Return:
   avg_memfree = sum(memory_free samples) / sample_count
 ```
 
-Memory values are bytes and must be nonnegative. If `memory_total` is present, `memory_free` must not exceed `memory_total`; corrupted samples that violate this consistency rule are ignored rather than contributing to the summary. For successful responses with samples, the invariant is:
+Memory values are bytes and must be nonnegative. `memory_free` is the required
+field for this aggregation. `memory_total` is optional and is used only when it
+is valid; if valid `memory_total` is present, `memory_free` must not exceed
+`memory_total`. Corrupted samples that violate this consistency rule are ignored
+rather than contributing to the summary. Invalid `memory_cached` or
+`memory_buffered` values are ignored field-by-field and must not cause a valid
+`memory_free` sample to be dropped. For successful responses with samples, the
+invariant is:
 
 ```text
 min_memfree <= avg_memfree <= max_memfree
