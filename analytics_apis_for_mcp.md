@@ -74,6 +74,7 @@ All REST handlers must enforce request validation in four distinct sequential ph
 1. **Phase 1: Pure Request Parsing & Input Validation (No DB or I/O lookups)**
    - Validate `routerId` syntax (1–64 characters matching `^[a-zA-Z0-9_-]+$`) -> HTTP `400 invalid_router_id` if malformed.
    - Inspect raw query collection for exact-once presence of `timestampTill` and `lookbackHours` -> HTTP `400 invalid_timestamp` / `invalid_lookback_hours` if missing or repeated.
+   - For `wifi-clients/usage-summary` only, inspect raw query collection for optional `includeCalculationDetails`. It may appear at most once. If present, it must be exactly `true` or `false` -> HTTP `400 invalid_include_calculation_details` if repeated, empty, or any other value.
    - Parse `timestampTill` shape & UTC semantics -> HTTP `400 invalid_timestamp` if malformed or invalid date/time.
    - Capture `currentServerTime` once for the request and verify `end_time <= currentServerTime + allowedClockSkewSeconds` -> HTTP `400 invalid_timestamp` if `timestampTill` is too far in the future.
    - Parse `lookbackHours` strict positive integer -> HTTP `400 invalid_lookback_hours` if zero, negative, or non-numeric.
@@ -213,6 +214,10 @@ invalid_timestamp:
 invalid_lookback_hours:
   lookbackHours is missing, repeated, empty, non-numeric, fractional, partially numeric, overflowing,
   zero, negative, or greater than maxLookbackHours.
+
+invalid_include_calculation_details:
+  includeCalculationDetails is repeated, empty, or present with any value other
+  than the exact lowercase strings `true` or `false`.
 
 lookback_outside_retention:
   the calculated [startTime, endTime) window starts before the retained data window
@@ -1118,6 +1123,21 @@ GET /api/v1/devices/{routerId}/wifi-clients/usage-summary
 
 `includeCalculationDetails` is optional and defaults to `false`. Set it to
 `true` only for diagnostic calculation provenance.
+
+Validation:
+
+```text
+missing includeCalculationDetails -> false
+includeCalculationDetails=true    -> true
+includeCalculationDetails=false   -> false
+includeCalculationDetails=foo     -> 400 invalid_include_calculation_details
+includeCalculationDetails=1       -> 400 invalid_include_calculation_details
+includeCalculationDetails=        -> 400 invalid_include_calculation_details
+repeated includeCalculationDetails -> 400 invalid_include_calculation_details
+```
+
+Values are case-sensitive and must be the exact lowercase strings `true` or
+`false`; do not accept numeric, empty, mixed-case, or partially parsed values.
 
 ## Example Request
 
