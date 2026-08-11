@@ -160,7 +160,7 @@ the latest available starting sample at or before the effective start and the
 earliest available ending sample at or after the effective end. Each fallback
 boundary sample must be within two times the configured telemetry sampling
 interval from the effective boundary. When fallback samples are used, the
-default response exposes the requested time range, aggregate result time window,
+default response exposes `requestedWindow`, `observedWindow`,
 usage accuracy, segment count, and fallback status. Effective boundaries and
 per-segment actual sample timestamps are included only when
 `includeCalculationDetails=true`.
@@ -215,7 +215,8 @@ invalid_lookback_hours:
   zero, negative, or greater than maxLookbackHours.
 
 lookback_outside_retention:
-  the calculated [startTime, endTime) window is outside the configured retention window.
+  the calculated [startTime, endTime) window starts before the retained data window
+  or ends after the configured request upper bound.
 ```
 
 A valid timestamp with an invalid `lookbackHours` value must not return `invalid_timestamp`. Internally, query `timepoints.timestamp` and `wificlienthistory.timestamp` using epoch seconds.
@@ -226,28 +227,35 @@ Handlers must load the monitoring configuration for the resolved router ownershi
 
 ```text
 monitoringDuration = configured monitoring retention duration
-retentionEnd = min(currentServerTime + allowedClockSkewSeconds, monitoringConfigurationExpiry)
-retentionStart = retentionEnd - monitoringDuration
+requestEndLimit = min(currentServerTime + allowedClockSkewSeconds, monitoringConfigurationExpiry)
+retentionDataEnd = min(currentServerTime, monitoringConfigurationExpiry)
+retentionStart = retentionDataEnd - monitoringDuration
 
 If monitoring has been enabled for less time than monitoringDuration:
-  retentionStart = max(monitoringEnabledAt, retentionEnd - monitoringDuration)
+  retentionStart = max(monitoringEnabledAt, retentionDataEnd - monitoringDuration)
 ```
 
 Use the configured duration and effective retention timestamps instead of calendar assumptions so leap years, partial-year retention, recently enabled monitoring, and changed retention policies behave consistently.
-Use the same `currentServerTime + allowedClockSkewSeconds` upper bound for both
-future timestamp validation and retention validation. A `timestampTill` value
-inside the allowed skew window must not be rejected as
-`lookback_outside_retention` merely because it is later than
-`currentServerTime`, unless it also exceeds `monitoringConfigurationExpiry`.
+Do not derive `retentionStart` from `currentServerTime + allowedClockSkewSeconds`;
+the skew allowance is a request upper-bound tolerance, not an extension that
+slides the retained historical window forward.
 
-The requested half-open range must fit inside the configured retention window:
+The requested half-open range must satisfy:
 
 ```text
 startTime >= retentionStart
-endTime <= retentionEnd
+endTime <= requestEndLimit
 ```
 
-If the requested range is outside the configured retention window, return `400 Bad Request` with `error: "lookback_outside_retention"`.
+If `endTime > retentionDataEnd` but `endTime <= requestEndLimit`, accept the
+request as within clock skew tolerance. Query and report the exact requested
+`[startTime, endTime)` window; do not clamp `endTime` to `retentionDataEnd` and
+do not reject solely because the request extends slightly beyond
+`currentServerTime`.
+
+If the requested range violates `startTime >= retentionStart` or
+`endTime <= requestEndLimit`, return `400 Bad Request` with
+`error: "lookback_outside_retention"`.
 
 When monitoring is disabled:
 
@@ -303,15 +311,15 @@ telemetry sampling interval from the effective boundary. These fallback samples
 can fall outside `[startTime, endTime)`, so the response must expose:
 
 ```text
-requestedTimeWindow.startTime = startTime
-requestedTimeWindow.endTime = endTime
-resultTimeWindow.earliestActualStartTime =
+requestedWindow.startTime = startTime
+requestedWindow.endTime = endTime
+observedWindow.earliestActualStartTime =
   earliest actual starting sample used by any calculable segment contributing
   to returned clients
-resultTimeWindow.latestActualEndTime =
+observedWindow.latestActualEndTime =
   latest actual ending sample used by any calculable segment contributing
   to returned clients
-resultTimeWindow.boundaryFallbackUsed =
+observedWindow.boundaryFallbackUsed =
   true when any calculable segment contributing to returned clients used a
   fallback boundary sample
 ```
@@ -1119,11 +1127,11 @@ consumers. Segment-level provenance is verbose and is omitted unless
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "earliestActualStartTime": "2026-07-26T11:55:00Z",
     "latestActualEndTime": "2026-07-27T12:05:00Z",
     "boundaryFallbackUsed": true
@@ -1174,7 +1182,7 @@ consumers. Segment-level provenance is verbose and is omitted unless
 }
 ```
 
-`resultTimeWindow` is aggregate response metadata:
+`observedWindow` is aggregate response metadata:
 
 ```text
 earliestActualStartTime =
@@ -1198,11 +1206,11 @@ When no clients are returned:
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "earliestActualStartTime": null,
     "latestActualEndTime": null,
     "boundaryFallbackUsed": false
@@ -1219,11 +1227,11 @@ return the safely provable minimum with `segment_count: 0`:
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-08-05T12:00:00Z",
     "endTime": "2026-08-05T13:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "earliestActualStartTime": null,
     "latestActualEndTime": null,
     "boundaryFallbackUsed": false
@@ -1252,7 +1260,7 @@ return the safely provable minimum with `segment_count: 0`:
 
 Use `includeCalculationDetails=true` only for diagnostics, troubleshooting, or
 calculation provenance. Ordinary MCP decisions should use `usage_accuracy`,
-`segment_count`, `boundary_fallback_used`, and the aggregate `resultTimeWindow`.
+`segment_count`, `boundary_fallback_used`, and `observedWindow`.
 
 ```http
 GET /api/v1/devices/60cf84f22290/wifi-clients/usage-summary?timestampTill=2026-07-27T12:00:00Z&lookbackHours=24&includeCalculationDetails=true
@@ -1282,11 +1290,11 @@ Example detailed response for the same calculated result:
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "earliestActualStartTime": "2026-07-26T11:55:00Z",
     "latestActualEndTime": "2026-07-27T12:05:00Z",
     "boundaryFallbackUsed": true
@@ -1409,11 +1417,11 @@ return the safely provable minimum with no calculation segments:
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-08-05T12:00:00Z",
     "endTime": "2026-08-05T13:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "earliestActualStartTime": null,
     "latestActualEndTime": null,
     "boundaryFallbackUsed": false
@@ -1752,7 +1760,7 @@ authoritative counter evidence exactly at each segment's `effective_start` and
 `effective_end`, where effective boundaries are clipped to proven session
 lifetime and the requested window. If fallback samples within tolerance are used,
 classify the result as `bounded_interval`. The default response exposes the
-requested time window, aggregate result time window, and fallback summary
+requested window, observed window, and fallback summary
 fields. When `includeCalculationDetails=true`, each returned segment
 additionally exposes its effective and actual boundary timestamps. Do not add a
 cumulative counter directly unless it is known to represent traffic that started inside the
@@ -1855,7 +1863,7 @@ Aggregate stream-level deltas by station MAC (including only clients with in-win
     ↓
 Convert bytes to decimal megabytes
     ↓
-Return wrapped response with requestedTimeWindow, resultTimeWindow, items,
+Return wrapped response with requestedWindow, observedWindow, items,
 totalClients, and truncated
 ```
 
@@ -1898,11 +1906,11 @@ None
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "firstSampleTime": "2026-07-26T12:01:00Z",
     "lastSampleTime": "2026-07-27T11:58:00Z",
     "totalSamples": 170
@@ -1930,7 +1938,7 @@ None
 }
 ```
 
-`resultTimeWindow` for RSSI is scoped to returned `items[]` after applying the
+`observedWindow` for RSSI is scoped to returned `items[]` after applying the
 500-client response limit:
 
 ```text
@@ -1948,11 +1956,11 @@ For empty RSSI results:
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
+  "observedWindow": {
     "firstSampleTime": null,
     "lastSampleTime": null,
     "totalSamples": 0
