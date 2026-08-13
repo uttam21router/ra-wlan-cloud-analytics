@@ -153,16 +153,12 @@ requested time range:
 delta = ending metric value - starting metric value
 ```
 
-Use exact effective-boundary samples when available. Effective boundaries are
-the requested boundaries clipped to any proven session lifetime. Otherwise, use
-the latest available starting sample at or before the effective start and the
-earliest available ending sample at or after the effective end. Each fallback
-boundary sample must be within two times the configured telemetry sampling
-interval from the effective boundary. When fallback samples are used, the
-default response exposes `requestedWindow`, `observedWindow`,
-usage accuracy, segment count, and fallback status. Effective boundaries and
-per-segment actual sample timestamps are included only when
-`includeCalculationDetails=true`.
+Use the valid persisted samples available for the requested range. Effective
+boundaries are the requested boundaries clipped to any proven session lifetime.
+When samples immediately before or after the requested range are needed to
+calculate cumulative-counter deltas, the handler may use them. The response uses
+`observedWindow` to show the actual sample timestamps that contributed to the
+result; it must not add a result-quality classification.
 
 ### Time Conversion and Validation
 
@@ -317,31 +313,23 @@ observedWindow.endTime
 `endTime`. Endpoint-specific metadata must not be added inside
 `observedWindow`.
 
-For cumulative-counter differential summaries, exact effective-boundary samples
-are preferred. For endpoints with proven session lifetimes, effective boundaries
-are the requested boundaries clipped to the proven session start and end. For
-endpoints without session lifetimes, effective boundaries equal the requested
-boundaries. Otherwise, the handler must use the latest available sample at or
-before `effective_start` and the earliest available sample at or after
-`effective_end`, provided each fallback sample is within two times the configured
-telemetry sampling interval from the effective boundary. These fallback samples
-can fall outside `[startTime, endTime)`, so the response must expose:
+For all endpoints, `observedWindow` describes the persisted samples or events
+that contributed to the result:
 
 ```text
 requestedWindow.startTime = startTime
 requestedWindow.endTime = endTime
+
 observedWindow.startTime =
-  earliest actual starting sample used by any calculable segment contributing
-  to returned clients
+  earliest actual persisted sample/event timestamp used in the result
 observedWindow.endTime =
-  latest actual ending sample used by any calculable segment contributing
-  to returned clients
+  latest actual persisted sample/event timestamp used in the result
 ```
 
-When no calculable usage segment exists for an observed client, the client
-response uses `segment_count: 0` instead of inventing effective or actual
-boundary timestamps. If `includeCalculationDetails=true`, that client has
-`calculation_segments: []`.
+If no valid persisted data contributes to a result, both
+`observedWindow.startTime` and `observedWindow.endTime` are `null`. Analytics
+does not attach a result-quality classification to the relationship between
+`requestedWindow` and `observedWindow`.
 
 Example:
 
@@ -696,6 +684,14 @@ None
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-26T12:03:00Z",
+    "endTime": "2026-07-27T11:57:00Z"
+  },
   "min_memfree": 211374,
   "max_memfree": 215050,
   "avg_memfree": 212074.36
@@ -837,6 +833,8 @@ Return:
   min_memfree = min(memory_free samples)
   max_memfree = max(memory_free samples)
   avg_memfree = sum(memory_free samples) / sample_count
+  observedWindow.startTime = earliest timestamp of a memory_free sample contributing to the aggregation
+  observedWindow.endTime = latest timestamp of a memory_free sample contributing to the aggregation
 ```
 
 Memory values are bytes and must be nonnegative. If both `memory_free` and valid
@@ -884,6 +882,14 @@ Return MCP response shape
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
+  },
   "min_memfree": null,
   "max_memfree": null,
   "avg_memfree": null
@@ -931,6 +937,14 @@ None
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-26T12:04:00Z",
+    "endTime": "2026-07-27T11:55:00Z"
+  },
   "min_wifi_temp_2.4G": 62,
   "max_wifi_temp_2.4G": 70,
   "avg_wifi_temp_2.4G": 66.64,
@@ -1051,6 +1065,12 @@ For each band:
   min_temperature = min(samples)
   max_temperature = max(samples)
   avg_temperature = sum(samples) / sample_count
+
+observedWindow.startTime =
+  earliest timestamp of a valid temperature sample contributing to any returned band aggregation
+
+observedWindow.endTime =
+  latest timestamp of a valid temperature sample contributing to any returned band aggregation
 ```
 
 A valid temperature sample is:
@@ -1085,6 +1105,14 @@ if (radio.band == 5) {
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-26T12:04:00Z",
+    "endTime": "2026-07-27T11:55:00Z"
+  },
   "min_wifi_temp_2.4G": 62,
   "max_wifi_temp_2.4G": 70,
   "avg_wifi_temp_2.4G": 66.64,
@@ -1150,10 +1178,6 @@ None
 
 ## Response
 
-By default, usage-summary returns concise calculation quality metadata for MCP
-consumers. Segment-level provenance is verbose and is omitted unless
-`includeCalculationDetails=true` is requested.
-
 ```json
 {
   "requestedWindow": {
@@ -1172,11 +1196,7 @@ consumers. Segment-level provenance is verbose and is omitted unless
       "total_bytes": 110338750,
       "data_consume_rx": "106.49 MB",
       "data_consume_tx": "3.85 MB",
-      "total_data_usage": "110.34 MB",
-      "usage_accuracy": "exact",
-      "incomplete": false,
-      "segment_count": 1,
-      "boundary_fallback_used": false
+      "total_data_usage": "110.34 MB"
     },
     {
       "mac": "28:39:26:a1:7c:a5",
@@ -1185,11 +1205,7 @@ consumers. Segment-level provenance is verbose and is omitted unless
       "total_bytes": 46557500,
       "data_consume_rx": "30.07 MB",
       "data_consume_tx": "16.49 MB",
-      "total_data_usage": "46.56 MB",
-      "usage_accuracy": "bounded_interval",
-      "incomplete": false,
-      "segment_count": 1,
-      "boundary_fallback_used": true
+      "total_data_usage": "46.56 MB"
     },
     {
       "mac": "54:6c:0e:44:11:09",
@@ -1198,11 +1214,7 @@ consumers. Segment-level provenance is verbose and is omitted unless
       "total_bytes": 4800000,
       "data_consume_rx": "4.20 MB",
       "data_consume_tx": "0.60 MB",
-      "total_data_usage": "4.80 MB",
-      "usage_accuracy": "exact",
-      "incomplete": false,
-      "segment_count": 2,
-      "boundary_fallback_used": false
+      "total_data_usage": "4.80 MB"
     }
   ],
   "totalClients": 3,
@@ -1214,12 +1226,12 @@ consumers. Segment-level provenance is verbose and is omitted unless
 
 ```text
 startTime =
-  minimum actual_start_time among the server's internal calculable segments
-  contributing to returned clients
+  earliest actual persisted sample timestamp used by any returned client
+  calculation
 
 endTime =
-  maximum actual_end_time among the server's internal calculable segments
-  contributing to returned clients
+  latest actual persisted sample timestamp used by any returned client
+  calculation
 ```
 
 It describes only the overall result envelope. It does not mean every client or
@@ -1246,7 +1258,7 @@ When no clients are returned:
 
 When a client is observed but no usage interval can be calculated, such as when
 only one cumulative-counter sample exists in or bounding the requested range,
-return the safely provable minimum with `segment_count: 0`:
+return zero usage for that client without a quality classification:
 
 ```json
 {
@@ -1266,11 +1278,7 @@ return the safely provable minimum with `segment_count: 0`:
       "total_bytes": 0,
       "data_consume_rx": "0.00 MB",
       "data_consume_tx": "0.00 MB",
-      "total_data_usage": "0.00 MB",
-      "usage_accuracy": "lower_bound",
-      "incomplete": true,
-      "segment_count": 0,
-      "boundary_fallback_used": false
+      "total_data_usage": "0.00 MB"
     }
   ],
   "totalClients": 1,
@@ -1281,8 +1289,8 @@ return the safely provable minimum with `segment_count: 0`:
 ## Calculation Details
 
 Use `includeCalculationDetails=true` only for diagnostics, troubleshooting, or
-calculation provenance. Ordinary MCP decisions should use `usage_accuracy`,
-`segment_count`, `boundary_fallback_used`, and `observedWindow`.
+calculation provenance. Ordinary MCP decisions should use the returned byte
+values and `observedWindow`.
 
 ```http
 GET /api/v1/devices/60cf84f22290/wifi-clients/usage-summary?timestampTill=2026-07-27T12:00:00Z&lookbackHours=24&includeCalculationDetails=true
@@ -1294,8 +1302,7 @@ When details are enabled, every returned calculation segment has non-null
 opaque identifiers scoped to the response. Clients must not persist them,
 compare them across requests, parse them, or depend on their format; the
 examples below are illustrative only. If no differential can be calculated, the
-client still has `segment_count: 0` and
-`calculation_segments: []`.
+client has `calculation_segments: []`.
 
 Detailed response invariants:
 
@@ -1303,9 +1310,6 @@ Detailed response invariants:
 client.rx_bytes == SUM(calculation_segments[].rx_bytes)
 client.tx_bytes == SUM(calculation_segments[].tx_bytes)
 client.total_bytes == SUM(calculation_segments[].total_bytes)
-client.segment_count == calculation_segments.length
-client.boundary_fallback_used ==
-  true when any calculation segment has boundary_fallback_used = true
 ```
 
 Example detailed response for the same calculated result:
@@ -1329,10 +1333,6 @@ Example detailed response for the same calculated result:
       "data_consume_rx": "106.49 MB",
       "data_consume_tx": "3.85 MB",
       "total_data_usage": "110.34 MB",
-      "usage_accuracy": "exact",
-      "incomplete": false,
-      "segment_count": 1,
-      "boundary_fallback_used": false,
       "calculation_segments": [
         {
           "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
@@ -1343,8 +1343,6 @@ Example detailed response for the same calculated result:
           "effective_end_time": "2026-07-27T12:00:00Z",
           "actual_start_time": "2026-07-26T12:00:00Z",
           "actual_end_time": "2026-07-27T12:00:00Z",
-          "boundary_fallback_used": false,
-          "accuracy": "exact",
           "rx_bytes": 106487500,
           "tx_bytes": 3851250,
           "total_bytes": 110338750
@@ -1359,10 +1357,6 @@ Example detailed response for the same calculated result:
       "data_consume_rx": "30.07 MB",
       "data_consume_tx": "16.49 MB",
       "total_data_usage": "46.56 MB",
-      "usage_accuracy": "bounded_interval",
-      "incomplete": false,
-      "segment_count": 1,
-      "boundary_fallback_used": true,
       "calculation_segments": [
         {
           "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
@@ -1373,8 +1367,6 @@ Example detailed response for the same calculated result:
           "effective_end_time": "2026-07-27T12:00:00Z",
           "actual_start_time": "2026-07-26T11:55:00Z",
           "actual_end_time": "2026-07-27T12:05:00Z",
-          "boundary_fallback_used": true,
-          "accuracy": "bounded_interval",
           "rx_bytes": 30071250,
           "tx_bytes": 16486250,
           "total_bytes": 46557500
@@ -1389,10 +1381,6 @@ Example detailed response for the same calculated result:
       "data_consume_rx": "4.20 MB",
       "data_consume_tx": "0.60 MB",
       "total_data_usage": "4.80 MB",
-      "usage_accuracy": "exact",
-      "incomplete": false,
-      "segment_count": 2,
-      "boundary_fallback_used": false,
       "calculation_segments": [
         {
           "stream_id": "54:6c:0e:44:11:09|bssid=18:34:af:07:08:09|ssid=Corp|band=5G",
@@ -1403,8 +1391,6 @@ Example detailed response for the same calculated result:
           "effective_end_time": "2026-07-26T18:30:00Z",
           "actual_start_time": "2026-07-26T12:00:00Z",
           "actual_end_time": "2026-07-26T18:30:00Z",
-          "boundary_fallback_used": false,
-          "accuracy": "exact",
           "rx_bytes": 1800000,
           "tx_bytes": 250000,
           "total_bytes": 2050000
@@ -1418,8 +1404,6 @@ Example detailed response for the same calculated result:
           "effective_end_time": "2026-07-27T12:00:00Z",
           "actual_start_time": "2026-07-26T19:00:00Z",
           "actual_end_time": "2026-07-27T12:00:00Z",
-          "boundary_fallback_used": false,
-          "accuracy": "exact",
           "rx_bytes": 2400000,
           "tx_bytes": 350000,
           "total_bytes": 2750000
@@ -1434,7 +1418,7 @@ Example detailed response for the same calculated result:
 
 When a client is observed in-window (`[startTime, endTime)`) but no usage interval can be calculated, such as when
 only one cumulative-counter sample exists in or bounding the requested range,
-return the safely provable minimum with no calculation segments:
+return zero usage with no calculation segments:
 
 ```json
 {
@@ -1455,10 +1439,6 @@ return the safely provable minimum with no calculation segments:
       "data_consume_rx": "0.00 MB",
       "data_consume_tx": "0.00 MB",
       "total_data_usage": "0.00 MB",
-      "usage_accuracy": "lower_bound",
-      "incomplete": true,
-      "segment_count": 0,
-      "boundary_fallback_used": false,
       "calculation_segments": []
     }
   ],
@@ -1512,7 +1492,6 @@ For confirmed independent session split/reset:
 
 For ambiguous reset/session split:
   calculate only safely observed nonnegative segment deltas
-  mark the stream lower_bound
 
 stream_key = association/session id when available, otherwise:
   station MAC
@@ -1528,22 +1507,15 @@ effective boundaries:
   effective_end = min(requested_end, proven_session_end)
 
 start_sample:
-  exact sample at effective_start, if available
+  sample at effective_start, if available
   otherwise latest available sample at or before effective_start
 
 end_sample:
-  exact sample at effective_end, if available
+  sample at effective_end, if available
   otherwise earliest available sample at or after effective_end
-
-boundary tolerance:
-  abs(effective_start - actual_start_time) <= 2 * expected_collection_interval
-  abs(actual_end_time - effective_end) <= 2 * expected_collection_interval
 
 actual_start_time = start_sample.timestamp
 actual_end_time = end_sample.timestamp
-boundary_fallback_used =
-  actual_start_time != effective_start ||
-  actual_end_time != effective_end
 
 uninterrupted segment differential:
   counterDelta(end_sample.rx_bytes, start_sample.rx_bytes)
@@ -1555,109 +1527,68 @@ samples between start_sample and end_sample:
   do not sum raw cumulative values as usage
   do sum proven segment deltas when resets or session splits are confirmed
 
-rx_bytes    = SUM(stream rx_bytes segment differentials or lower-bound deltas)
-tx_bytes    = SUM(stream tx_bytes segment differentials or lower-bound deltas)
+rx_bytes    = SUM(stream rx_bytes segment differentials)
+tx_bytes    = SUM(stream tx_bytes segment differentials)
 total_bytes = rx_bytes + tx_bytes
 
 data_consume_rx  = format_bytes(rx_bytes)
 data_consume_tx  = format_bytes(tx_bytes)
 total_data_usage = format_bytes(total_bytes)
-
-stream accuracy =
-  exact when the segment has authoritative counter evidence at effective_start
-    and effective_end, and every internal sub-segment is fully proven
-  bounded_interval when the segment uses immediate fallback samples within
-    tolerance and every internal sub-segment is fully proven
-  lower_bound when the stream lacks a usable boundary pair, exceeds boundary
-    tolerance, has an ambiguous reset/session change, or only has partially
-    observed segments
-
-client usage_accuracy precedence =
-  lower_bound if any contributing stream is lower_bound
-  otherwise bounded_interval if any contributing stream is bounded_interval
-  otherwise exact
-
-incomplete = true when usage_accuracy is lower_bound
 ```
 
 Calculate counter deltas independently for RX and TX per `stream_key` and
 internal calculable segment. After segment deltas are calculated, aggregate the
 resulting RX/TX deltas by station MAC for the response. Client `rx_bytes` and
 `tx_bytes` must equal the sum of internal segment RX/TX deltas; each internal
-segment's `total_bytes` must equal its `rx_bytes + tx_bytes`. The default
-response exposes `segment_count` and `boundary_fallback_used` instead of the
-segment objects. When `includeCalculationDetails=true`, the detailed
-`calculation_segments[]` array must satisfy the same byte-sum invariants. If
-any segment contributing to a station MAC is lower_bound, that station's usage
-is lower_bound.
+segment's `total_bytes` must equal its `rx_bytes + tx_bytes`. When
+`includeCalculationDetails=true`, the detailed `calculation_segments[]` array
+must satisfy the same byte-sum invariants.
 
 Client MAC values in API responses must be normalized canonical lowercase colon-separated MAC addresses matching `^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`.
 
-Usage accuracy contract:
+Usage calculation contract:
 
 ```text
-Returned usage is exact only when every contributing calculation segment has
-authoritative boundary evidence matching effective boundaries exactly:
-  effective_start = max(requested_start, proven_session_start), and
-  effective_end = min(requested_end, proven_session_end), and
-  actual_start_time == effective_start and actual_end_time == effective_end,
-  and every counter reset, rollover, or session transition is unambiguously proven
-  and accounted for using independent segment differentials or verified rollover arithmetic.
+Use only valid persisted samples to calculate cumulative-counter deltas.
+Outside-window samples may be used as boundary samples when needed to calculate
+the first or last differential segment for a client observed in the requested
+range. The response must include requested timestamps and aggregate actual
+sample timestamps through `observedWindow`. When `includeCalculationDetails=true`,
+it must also include effective and actual timestamps for each returned segment.
 
-Returned usage is bounded_interval when exact boundary samples are unavailable but
-the latest available starting sample at or before `effective_start` and the
-earliest available ending sample at or after `effective_end` are available
-within two times the configured telemetry sampling interval, and no reset or gap
-prevents the segment differential from being calculated. The response must
-include requested timestamps and aggregate actual sample timestamps. When
-`includeCalculationDetails=true`, it must also include the effective and actual
-timestamps for each returned segment. This is usage over an interval containing
-the segment's overlap with the requested interval; when counters are monotonic
-and uninterrupted, the returned value is greater than or equal to usage in that
-overlap.
+If a stream lacks a usable bounding sample pair or has an ambiguous counter
+decrease/session change, skip the ambiguous interval rather than inventing
+traffic. Sum only safely calculable nonnegative consecutive segment deltas. If
+no differential segment can be calculated for an observed client, return that
+client with zero byte totals and, when details are enabled,
+`calculation_segments: []`.
 
-When a stream lacks a usable bounding sample pair or has an ambiguous counter
-decrease/session change, or when either fallback boundary exceeds tolerance, the
-returned usage is a lower-bound estimate. The algorithm must avoid overcounting
-unknown traffic, so it adds only safely provable nonnegative consecutive segment
-deltas inside the requested range and treats the result as incomplete/estimated.
-If no positive interval can be safely proven, return 0 bytes for that stream with
-`lower_bound`. Include a client in `items[]` and count it in `totalClients` only when it has at least one in-window observation (`[startTime, endTime)`) or proven session overlap during the requested interval, even if the safely provable lower-bound delta is 0. Outside-window bounding samples (e.g. pre-window baseline or post-window fallback samples) are used exclusively as boundary calculation aids for clients that have proven in-window presence or session overlap. A station MAC with only outside-window samples and no in-window observation or session overlap during `[startTime, endTime)` must be excluded from `items[]` and `totalClients`. If no differential segment can be calculated
-for that client, return `segment_count: 0` and `boundary_fallback_used: false`;
-do not create a segment with fabricated effective or actual boundary timestamps.
-If details are enabled, return `calculation_segments: []` for that client.
-
-The response must expose `usage_accuracy`, `segment_count`, and
-`boundary_fallback_used` per client:
-  exact: all contributing streams are fully accounted for
-  bounded_interval: at least one contributing segment used fallback samples
-    within tolerance that bound the requested range
-  lower_bound: at least one contributing stream used a conservative zero delta
-    for an ambiguous interval, missing usable boundary pair, or out-of-tolerance
-    boundary
-
-When `usage_accuracy` is `lower_bound`, the reported byte and formatted usage
-values are the safely observed minimum. Actual usage may be higher.
+Include a client in `items[]` and count it in `totalClients` only when it has at
+least one in-window observation (`[startTime, endTime)`) or proven session
+overlap during the requested interval. Outside-window boundary samples are used
+only as calculation aids for clients with proven requested-window presence or
+session overlap. A station MAC with only outside-window samples and no in-window
+observation or session overlap during `[startTime, endTime)` must be excluded
+from `items[]` and `totalClients`.
 ```
 
-Differential response decision table:
+Differential data-handling rules:
 
-| Condition | Result |
+| Condition | Handling |
 |---|---|
-| Exact effective start and effective end counter evidence exists, no reset/session ambiguity | `exact` differential |
-| Fallback start and end samples bound the effective segment range and both are within `2 * expected_collection_interval`, no reset/session ambiguity | `bounded_interval` differential |
-| Session starts inside the requested window with proven zero/session baseline and authoritative end evidence | `exact` if effective boundaries are fully proven |
-| Session ends inside the requested window with authoritative start and proven session-end evidence | `exact` if effective boundaries are fully proven |
-| Start sample missing and session start inside the requested window is confirmed but complete effective-boundary evidence is unavailable | sum safely provable nonnegative segment deltas; `lower_bound` |
-| Start sample missing and session origin is unknown | `lower_bound` |
-| End sample missing | sum safely provable nonnegative consecutive segment deltas through the latest usable sample; `lower_bound` |
-| Both boundary samples missing | sum safely provable nonnegative consecutive segment deltas inside the requested range; `lower_bound` |
-| Only one in-window sample exists | return 0 bytes, `lower_bound`, `segment_count: 0`, and `boundary_fallback_used: false`; if details are enabled, return `calculation_segments: []` |
-| Client appears during the window without reliable session-start proof | sum safely provable post-appearance segment deltas only; `lower_bound` |
-| Client disappears before the end boundary | sum safely provable segment deltas through the last usable sample; `lower_bound` |
-| Client reconnects and counters reset | split only when session identity proves independent streams; otherwise `lower_bound` |
-| Multiple sessions for the same MAC | calculate per proven session stream, then aggregate by MAC; mark client `lower_bound` if any contributing stream is incomplete |
-| Ambiguous counter reset, stale sample, duplicate conflict, or out-of-order telemetry | `lower_bound` |
+| Usable start and end counter samples exist, no reset/session ambiguity | calculate the differential |
+| Boundary samples immediately outside the requested range are needed | use them as calculation inputs and expose their timestamps through `observedWindow` |
+| Session starts inside the requested window with a usable session baseline and later sample | calculate deltas from the usable session samples |
+| Session ends inside the requested window with usable samples | calculate deltas through the last usable session sample |
+| Start sample missing | sum safely calculable nonnegative consecutive segment deltas from available samples |
+| End sample missing | sum safely calculable nonnegative consecutive segment deltas through the latest usable sample |
+| Both boundary samples missing | sum safely calculable consecutive segment deltas inside the requested range |
+| Only one in-window sample exists | return zero bytes for that client; if details are enabled, return `calculation_segments: []` |
+| Client appears during the window without reliable session-start proof | sum safely calculable post-appearance segment deltas only |
+| Client disappears before the end boundary | sum safely calculable segment deltas through the last usable sample |
+| Client reconnects and counters reset | split only when session identity proves independent streams; otherwise skip the ambiguous interval |
+| Multiple sessions for the same MAC | calculate per proven session stream, then aggregate by MAC |
+| Ambiguous counter reset, stale sample, duplicate conflict, or out-of-order telemetry | skip the ambiguous interval |
 
 When `current < previous` and the counter width is known for that source, and
 the decrease is not explained by a proven session reset/reconnect or ambiguous
@@ -1670,16 +1601,14 @@ delta = (counterMax - previous) + current + 1
 
 If the counter width is unknown, multiple wraps are plausible, or the decrease
 could be a reset/reconnect/stale sample, treat the interval as ambiguous and
-return `lower_bound`.
-
-If the expected collection interval is missing, zero, invalid, or cannot be resolved reliably for the requested retention period, fallback boundary samples cannot qualify as `bounded_interval`; exact boundary samples are required to avoid `lower_bound`.
+skip that interval.
 
 ### Reset-Safe Delta Logic
 
 ```cpp
 struct CounterDeltaResult {
     uint64_t delta;
-    bool incomplete;
+    bool usable;
 };
 
 CounterDeltaResult counterDelta(uint64_t current,
@@ -1688,14 +1617,14 @@ CounterDeltaResult counterDelta(uint64_t current,
                                 bool decreaseAmbiguous,
                                 uint64_t counterMax) {
     if (current >= previous) {
-        return {current - previous, false};
+        return {current - previous, true};
     }
 
     if (counterWidthKnown && !decreaseAmbiguous) {
-        return {(counterMax - previous) + current + 1, false};
+        return {(counterMax - previous) + current + 1, true};
     }
 
-    return {0, true};
+    return {0, false};
 }
 ```
 
@@ -1703,8 +1632,7 @@ Session starts are handled by segment construction, not by blindly adding the
 current counter on every decrease. When reliable session evidence proves a new
 session started inside the requested window, use that session's first valid
 counter sample as the segment baseline and sum only subsequent proven segment
-deltas. If there is no subsequent usable sample, that segment contributes 0 with
-`lower_bound`.
+deltas. If there is no subsequent usable sample, that segment contributes 0.
 
 Do not treat every lower counter as a reset where `current` should be added. A lower value can mean a new association session, movement between radios/BSSIDs, stale or out-of-order telemetry, duplicate station records inside one timepoint, or counter-width rollover. Adding `current` on every decrease can overcount traffic by attributing unknown pre-window traffic to the requested window.
 
@@ -1747,15 +1675,12 @@ Independent Directional Counter Rules (RX vs TX):
    - RX bytes are calculated normally and included in data_consume_rx.
    - TX bytes return 0 as a required non-null integer in calculation_segments (and formatted "0.00 MB" in summary strings).
    - Total segment bytes total_bytes = rx_bytes + 0 = rx_bytes.
-   - The stream accuracy is classified as lower_bound.
 3. If TX is present and valid but RX is missing/invalid:
    - TX bytes are calculated normally and included in data_consume_tx.
    - RX bytes return 0 as a required non-null integer in calculation_segments (and formatted "0.00 MB" in summary strings).
    - Total segment bytes total_bytes = 0 + tx_bytes = tx_bytes.
-   - The stream accuracy is classified as lower_bound.
-4. If a boundary sample has RX but not TX (or vice versa), the missing direction cannot form a calculable boundary delta; that direction returns 0 bytes and is marked uncalculable (lower_bound).
-5. segment_count is incremented if at least one direction (RX or TX) produces a valid calculable segment delta.
-6. A client MAC is included in totalClients and items[] if it has proven in-window presence or session overlap, regardless of whether one counter direction was missing or uncalculable.
+4. If a boundary sample has RX but not TX (or vice versa), the missing direction cannot form a calculable boundary delta; that direction returns 0 bytes.
+5. A client MAC is included in totalClients and items[] if it has proven in-window presence or session overlap, regardless of whether one counter direction was missing or uncalculable.
 
 If current < previous:
   if a new association/session is confirmed:
@@ -1763,27 +1688,21 @@ If current < previous:
       close the previous segment at the last pre-reset sample
       start a new segment with current as its baseline
       add only subsequent proven nonnegative deltas for the new segment
-      mark the stream lower_bound unless both session segments can be fully proven
     else:
-      treat current as the new baseline, add delta 0, and mark the result
-      incomplete/estimated
+      treat current as the new baseline and add delta 0
   else if counter width is known and the decrease is not ambiguous:
     assume at most one rollover occurred and apply single-rollover math
   else:
-    treat current as the new baseline, add delta 0, and mark the result
-    incomplete/estimated
+    treat current as the new baseline and add delta 0
 ```
 
 For usage differential calculation, choose the start and end samples first, then
-calculate the boundary differential for each segment. Exact usage requires
-authoritative counter evidence exactly at each segment's `effective_start` and
-`effective_end`, where effective boundaries are clipped to proven session
-lifetime and the requested window. If fallback samples within tolerance are used,
-classify the result as `bounded_interval`. The default response exposes the
-requested window, observed window, and fallback summary
-fields. When `includeCalculationDetails=true`, each returned segment
-additionally exposes its effective and actual boundary timestamps. Do not add a
-cumulative counter directly unless it is known to represent traffic that started inside the
+calculate the boundary differential for each segment. Effective boundaries are
+clipped to proven session lifetime and the requested window. The default
+response exposes the requested window, observed window, and calculated values.
+When `includeCalculationDetails=true`, each returned segment additionally
+exposes its effective and actual boundary timestamps. Do not add a cumulative
+counter directly unless it is known to represent traffic that started inside the
 segment's effective interval.
 
 A new association/session is confirmed only when the source provides reliable session identity or timing evidence. For example, a session id change, association id change, or connected-duration reset may prove a new session if it also proves the session start time is within the requested window. BSSID, SSID, band, or radio changes define separate calculation streams, but they do not by themselves prove that the new cumulative counter started inside the requested window.
@@ -1800,17 +1719,14 @@ Delta 10:00 -> 10:05 = 500
 If 10:10 is a confirmed new session that started inside the request window WITH authoritative proof of starting at counter zero (e.g. session_start event with baseline 0 at session origin):
   add 200 (delta from zero baseline)
   total rx_bytes = 700
-  usage_accuracy = exact, unless another stream is incomplete
 
 If 10:10 is a confirmed new session that started inside the request window WITHOUT authoritative proof of starting at zero:
   treat 200 as the new segment baseline (delta = 0 for 10:10 sample alone)
   total rx_bytes = 500
-  usage_accuracy = lower_bound (until a subsequent sample in Session B establishes a proven delta)
 
 If 10:10 is an ambiguous decrease:
   add 0 (treat 200 as baseline)
   total rx_bytes = 500
-  usage_accuracy = lower_bound
 
 If previous = 9900, current = 100, counterMax = 9999, and rollover is confirmed:
   delta = (9999 - 9900) + 100 + 1
@@ -2137,9 +2053,7 @@ progress or lag as availability-domain data.
 
 The `availability-summary` endpoint is an observed-data API. It reports the
 availability transition rows currently persisted in Analytics storage at request
-time. It does not prove that Kafka has delivered every possible source event,
-that the consumer is caught up, that no delayed message exists, or that the
-requested interval is ingestion-complete.
+time. It does not prove what Analytics has not yet received.
 
 ## API Logic
 
@@ -2441,14 +2355,13 @@ It does not prove what Analytics has not yet received.
 Explicitly out of scope for `availability-summary`:
 
 ```text
-strong read-after-Kafka-ingestion consistency
-zero-lag guarantees
-source-to-API delivery SLA
-Kafka consumer freshness validation
-historical ingestion-completeness proof
-availability coverage proof
-durable gap persistence
-durable checkpoint persistence
+strong read-after-Kafka-ingestion consistency guarantees
+source-to-API delivery SLA guarantees
+request-time Kafka consumer position validation
+historical source-event delivery proof
+server-side availability data-quality classification
+durable ingestion data-loss persistence
+durable ingestion checkpoint persistence
 waiting for Kafka catch-up before answering
 high availability across Kafka/DB failure scenarios
 ```
@@ -3002,7 +2915,7 @@ observedWindow.endTime =
 
 Do not set `observedWindow` to the requested range merely because the query
 covers that range. It reflects observed persisted transition events, not
-ingestion coverage.
+server-side data-status classification.
 
 Example:
 
@@ -3078,10 +2991,9 @@ Use an HTTP error:
 
 A zero result means no persisted offline transition was observed in the
 requested post-cutover interval based on the data currently available in
-Analytics storage. It does not mean no outage definitely occurred, Kafka is
-fully consumed through `endTime`, all producer events have reached Analytics, or
-there are no delayed messages. Kafka consumer lag is operational state and is
-not represented as availability-domain response metadata.
+Analytics storage. It does not make claims about outages not yet observed,
+delayed messages, or Kafka consumer position. Kafka consumer lag is operational
+state and is not represented as availability-domain response metadata.
 
 `offlineEventCount` is the number of offline transition rows in
 `device_availability_events` that contribute to `offline_count`. Online recovery
@@ -3167,7 +3079,7 @@ struct ClientRssiQualityResponse;
 struct GatewayOfflineSummary;
 ```
 
-JSON field names should match the MCP CSV where the API is directly returning MCP fields. `usage-summary` additionally returns raw byte totals and usage accuracy fields so callers can distinguish exact usage from lower-bound estimates.
+JSON field names should match the MCP CSV where the API is directly returning MCP fields. `usage-summary` additionally returns raw byte totals alongside display-formatted usage strings.
 
 Client MAC addresses (`mac`) must be normalized to canonical lowercase colon-separated format matching pattern `^[0-9a-f]{2}(:[0-9a-f]{2}){5}$` across all client metrics endpoints.
 
@@ -3301,7 +3213,7 @@ bool GetGatewayAvailabilitySummary(...);
 |---|---|---|---|
 | `get_gateway_free_memory` | `GET /devices/{routerId}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
 | `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].wifi_temp` | Resolve routerId to venueId and boardId, then aggregate present Wi-Fi temperature samples from `timepoints` |
-| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then calculate reset-safe cumulative-counter differentials with concise quality metadata by default; include segment provenance only when `includeCalculationDetails=true` |
+| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then calculate reset-safe cumulative-counter differentials from available persisted samples; include segment provenance only when `includeCalculationDetails=true` |
 | `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
 | `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic plus `device_availability_events` and `device_availability_state` | Use routerId as durable serialNumber, use `device_availability_state.current_state` and `last_event_time` for restart-safe transition detection, then count offline events by serialNumber |
 
