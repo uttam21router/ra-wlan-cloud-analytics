@@ -65,18 +65,6 @@ components:
         minimum: 1
         example: 24
       required: true
-    IncludeCalculationDetails:
-      in: query
-      name: includeCalculationDetails
-      description: >
-        Include per-segment usage calculation provenance in the response. Defaults to false.
-        When false or omitted, usage-summary returns concise per-client calculation quality
-        metadata only. When true, each returned client also includes calculation_segments for
-        diagnostics and troubleshooting.
-      schema:
-        type: boolean
-        default: false
-      required: false
   schemas:
     RouterId:
       type: string
@@ -91,7 +79,7 @@ components:
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
       example: "2026-07-27T12:00:00Z"
 
-    RequestedTimeWindow:
+    RequestedWindow:
       type: object
       required:
         - startTime
@@ -104,143 +92,23 @@ components:
           type: string
           format: date-time
 
-    DifferentialResultTimeWindow:
+    ObservedWindow:
       type: object
       description: >
-        Aggregate response envelope for usage differential calculations. earliestActualStartTime
-        is the minimum actual start timestamp among the server's internal calculable segments
-        contributing to returned clients. latestActualEndTime is the maximum actual end timestamp
-        among the server's internal calculable segments contributing to returned clients.
-        boundaryFallbackUsed is true when any internal calculable segment contributing to returned
-        clients used a fallback boundary. These values are identical whether or not
-        includeCalculationDetails is enabled. This describes the overall result envelope only; it
-        does not mean every client or segment used the entire envelope. When no returned client has
-        a calculable segment, earliestActualStartTime and latestActualEndTime are null and
-        boundaryFallbackUsed is false.
+        Actual persisted sample/event timestamp range used to produce the response. startTime and
+        endTime are null when no valid persisted data contributes to the result.
       required:
-        - earliestActualStartTime
-        - latestActualEndTime
-        - boundaryFallbackUsed
+        - startTime
+        - endTime
       properties:
-        earliestActualStartTime:
+        startTime:
           type: string
           format: date-time
           nullable: true
-        latestActualEndTime:
+        endTime:
           type: string
           format: date-time
           nullable: true
-        boundaryFallbackUsed:
-          type: boolean
-
-    SampleResultTimeWindow:
-      type: object
-      description: >
-        Aggregate response envelope for sample-based summaries. firstSampleTime and lastSampleTime
-        are calculated from valid samples contributing to the returned response items after any
-        response item limit is applied. They are null when no valid samples are used, and
-        totalSamples is 0.
-      required:
-        - firstSampleTime
-        - lastSampleTime
-        - totalSamples
-      properties:
-        firstSampleTime:
-          type: string
-          format: date-time
-          nullable: true
-        lastSampleTime:
-          type: string
-          format: date-time
-          nullable: true
-        totalSamples:
-          type: integer
-          minimum: 0
-
-    UsageCalculationSegment:
-      type: object
-      description: >
-        Per-segment calculation metadata for one cumulative counter segment that contributes to a
-        client MAC total. stream_id is an opaque identifier for the logical counter stream.
-        segment_id is an opaque identifier for a specific calculated segment within that stream,
-        such as a proven session or reset-bounded interval. Clients must not parse these
-        identifiers or depend on their format. effective_start_time and effective_end_time are the segment's overlap with the requested
-        interval after applying proven session start/end evidence. actual_start_time and
-        actual_end_time are the sample timestamps used for this segment differential.
-        boundary_fallback_used is true when either actual timestamp differs from the effective
-        boundary. accuracy describes this segment contribution before client aggregation.
-      required:
-        - stream_id
-        - segment_id
-        - segment_start_reason
-        - segment_end_reason
-        - effective_start_time
-        - effective_end_time
-        - actual_start_time
-        - actual_end_time
-        - boundary_fallback_used
-        - accuracy
-        - rx_bytes
-        - tx_bytes
-        - total_bytes
-      properties:
-        stream_id:
-          type: string
-          description: Opaque identifier scoped to this response. Clients must not persist it, compare it across requests, parse it, or depend on its format.
-        segment_id:
-          type: string
-          description: Opaque identifier scoped to this response. Clients must not persist it, compare it across requests, parse it, or depend on its format.
-        segment_start_reason:
-          type: string
-          enum:
-            - window_start
-            - session_start
-            - reset_start
-            - first_observed_sample
-        segment_end_reason:
-          type: string
-          enum:
-            - window_end
-            - session_end
-            - reset_end
-            - last_observed_sample
-        effective_start_time:
-          type: string
-          format: date-time
-          description: max(response.requestedTimeWindow.startTime, proven segment/session start).
-        effective_end_time:
-          type: string
-          format: date-time
-          description: min(response.requestedTimeWindow.endTime, proven segment/session end).
-        actual_start_time:
-          type: string
-          format: date-time
-        actual_end_time:
-          type: string
-          format: date-time
-        boundary_fallback_used:
-          type: boolean
-        accuracy:
-          type: string
-          enum:
-            - exact
-            - bounded_interval
-            - lower_bound
-        rx_bytes:
-          type: integer
-          format: int64
-          minimum: 0
-          description: RX bytes contributed by this segment.
-        tx_bytes:
-          type: integer
-          format: int64
-          minimum: 0
-          description: TX bytes contributed by this segment.
-        total_bytes:
-          type: integer
-          format: int64
-          minimum: 0
-          description: rx_bytes + tx_bytes for this segment.
 
     MacAddress:
       type: string
@@ -1117,10 +985,16 @@ components:
         min_memfree <= avg_memfree <= max_memfree. When no valid memory samples exist, all three
         fields are null.
       required:
+        - requestedWindow
+        - observedWindow
         - min_memfree
         - max_memfree
         - avg_memfree
       properties:
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
         min_memfree:
           type: integer
           format: int64
@@ -1156,6 +1030,8 @@ components:
         telemetry uses it as a missing-sensor sentinel. Missing, null, non-numeric, NaN,
         infinite, 0, 255, and out-of-range values are excluded from aggregation.
       required:
+        - requestedWindow
+        - observedWindow
         - min_wifi_temp_2.4G
         - max_wifi_temp_2.4G
         - avg_wifi_temp_2.4G
@@ -1163,6 +1039,10 @@ components:
         - max_wifi_temp_5G
         - avg_wifi_temp_5G
       properties:
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
         min_wifi_temp_2.4G:
           type: number
           format: double
@@ -1213,35 +1093,9 @@ components:
         rx_bytes + tx_bytes. Formatted string fields are display-only decimal megabytes using
         bytes / 1,000,000, formatted with standard floating point two decimal places
         and the literal " MB" suffix. Wi-Fi usage is a cumulative-counter
-        differential summary. For an uninterrupted stream, delta = ending counter value - starting
-        counter value. For confirmed independent session splits or resets, calculate each proven
-        stream segment separately and sum the segment differentials; do not sum raw cumulative
-        counter values. Accuracy is evaluated against each segment's overlap with the requested
-        interval: effective_start = max(windowStart, proven_session_start) and effective_end =
-        min(timestampTill, proven_session_end). Exact calculation requires authoritative counter
-        evidence at both effective boundaries for each contributing calculation segment. When
-        exact effective-boundary samples are unavailable, the starting sample is the latest
-        available sample at or before effective_start and the ending sample is the earliest
-        available sample at or after effective_end. Fallback boundary samples are usable only when
-        each is within two times the configured telemetry sampling interval from its effective
-        boundary. requestedTimeWindow reports the client-requested boundaries, and concise summary
-        metadata reports the aggregate calculation quality without exposing segment-level
-        provenance in the default response.
-        Intermediate samples are used to detect resets, rollovers, duplicate or out-of-order
-        telemetry, session changes, and missing-sample gaps; proven segment deltas may be summed,
-        but raw cumulative values are never summed as usage. bounded_interval means the value is
-        calculated over an interval containing the segment's effective overlap with the requested
-        interval; when counters are monotonic and uninterrupted, the value is greater than or equal
-        to usage in that effective overlap.
-        If the boundary tolerance is exceeded, no usable bounding sample pair exists, or resets or
-        stream/session changes prevent that guarantee, the direction contributes the sum of safely
-        provable nonnegative segment deltas and the client usage is lower_bound. A fixed-width
-        rollover may remain exact or bounded_interval only when the counter width is known and the
-        maximum possible counter increase during the observation gap cannot exceed one full counter
-        range; otherwise classify the stream as lower_bound. The expected collection interval is
-        the configured telemetry sampling interval for the resolved router scope; if it cannot be
-        resolved reliably, fallback boundary samples cannot qualify as bounded_interval and exact
-        boundary samples are required to avoid lower_bound.
+        differential summary calculated from valid persisted samples available to Analytics. The
+        implementation may use internal streams, sessions, boundary samples, reset detection, and
+        segments to calculate safe deltas, but those mechanics are not part of the public response.
       required:
         - mac
         - rx_bytes
@@ -1250,10 +1104,6 @@ components:
         - data_consume_rx
         - data_consume_tx
         - total_data_usage
-        - usage_accuracy
-        - incomplete
-        - segment_count
-        - boundary_fallback_used
       properties:
         mac:
           $ref: '#/components/schemas/MacAddress'
@@ -1281,81 +1131,24 @@ components:
           type: string
           description: Display-only decimal megabytes derived from total_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
           example: 110.34 MB
-        usage_accuracy:
-          type: string
-          enum:
-            - exact
-            - bounded_interval
-            - lower_bound
-          description: >
-            exact when actual_start_time == effective_start_time and actual_end_time == effective_end_time
-            for every contributing calculation segment, with all counter resets, rollovers, or session
-            transitions unambiguously proven and accounted for. bounded_interval when exact effective-boundary
-            samples are unavailable and fallback samples within two times the configured telemetry sampling
-            interval are used (actual_start_time < effective_start_time or actual_end_time > effective_end_time).
-            lower_bound when no usable boundary pair exists, when either fallback boundary exceeds tolerance,
-            when an unconfirmed or ambiguous counter reset/session change is detected, or when unbridgeable
-            gaps prevent a complete differential calculation. When a client was observed but no usage
-            differential segment can be calculated, return zero byte totals, usage_accuracy lower_bound,
-            incomplete true, segment_count 0, and boundary_fallback_used false.
-        incomplete:
-          type: boolean
-          description: True exactly when usage_accuracy is lower_bound; otherwise false.
-        segment_count:
-          type: integer
-          minimum: 0
-          description: >
-            Number of calculable differential segments contributing to this client total. This is
-            0 when the client has qualifying observations but no usable counter interval from
-            which a differential segment can be calculated.
-        boundary_fallback_used:
-          type: boolean
-          description: >
-            True when at least one calculable segment contributing to this client used a fallback
-            boundary sample; false when no contributing segment used fallback boundaries or when
-            segment_count is 0.
-        calculation_segments:
-          type: array
-          description: >
-            Optional diagnostic per-segment calculation metadata. This property is absent when
-            includeCalculationDetails is false or omitted, and is present for every returned client
-            when includeCalculationDetails=true. The array is intended for diagnostics,
-            troubleshooting, and calculation provenance, not ordinary MCP decisions. Client rx_bytes
-            equals the sum of calculation_segments[].rx_bytes, client tx_bytes equals the sum of
-            calculation_segments[].tx_bytes, client total_bytes equals the sum of
-            calculation_segments[].total_bytes, segment_count equals calculation_segments.length,
-            and boundary_fallback_used is true when any segment has boundary_fallback_used=true.
-            This array is empty when the client has qualifying observations but no usable counter
-            interval from which a differential segment can be calculated; in that case rx_bytes,
-            tx_bytes, and total_bytes are 0, usage_accuracy is lower_bound, incomplete is true,
-            segment_count is 0, and boundary_fallback_used is false.
-          items:
-            $ref: '#/components/schemas/UsageCalculationSegment'
-
     ClientBandwidthConsumptionResponse:
       type: object
       description: >
-        Wrapped Wi-Fi usage differential summary. requestedTimeWindow is always the requested
-        interval. resultTimeWindow summarizes the server's internal calculable segment envelope
-        across returned clients and is identical whether or not includeCalculationDetails is
-        enabled. The default response omits calculation_segments and returns concise
-        segment_count and boundary_fallback_used metadata for each client. When
-        includeCalculationDetails=true, calculation_segments is present on every returned client.
-        When no clients are returned, items is empty, totalClients is 0, truncated is false,
-        resultTimeWindow.earliestActualStartTime and resultTimeWindow.latestActualEndTime are null,
-        and resultTimeWindow.boundaryFallbackUsed is false. The same null resultTimeWindow
-        timestamp behavior applies when returned clients have no calculable segments.
+        Wrapped Wi-Fi usage differential summary calculated from persisted samples currently
+        available to Analytics. requestedWindow is the requested interval. observedWindow is the
+        earliest/latest persisted sample timestamp used by any returned client calculation, or
+        null/null when no valid sample contributes.
       required:
-        - requestedTimeWindow
-        - resultTimeWindow
+        - requestedWindow
+        - observedWindow
         - items
         - totalClients
         - truncated
       properties:
-        requestedTimeWindow:
-          $ref: '#/components/schemas/RequestedTimeWindow'
-        resultTimeWindow:
-          $ref: '#/components/schemas/DifferentialResultTimeWindow'
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
         items:
           type: array
           maxItems: 500
@@ -1368,7 +1161,7 @@ components:
         totalClients:
           type: integer
           minimum: 0
-          description: Total number of distinct client MAC addresses having at least one in-window observation or proven session overlap during the requested interval [startTime, endTime), calculated before applying the 500-client limit. Outside-window bounding samples are used solely for calculating boundary deltas of clients with proven in-window presence. Exact usage requires authoritative counter evidence at each segment's effective boundaries; bounded_interval usage reports the actual bounding sample timestamps used.
+          description: Total number of distinct client MAC addresses having at least one in-window observation or proven session overlap during the requested interval [startTime, endTime), calculated before applying the 500-client limit. Outside-window samples may be used internally as boundary calculation aids for eligible clients.
         truncated:
           type: boolean
           description: True when totalClients is greater than the number of returned items.
@@ -1426,26 +1219,21 @@ components:
     ClientRssiQualityResponse:
       type: object
       description: >
-        Wrapped RSSI quality summary. requestedTimeWindow is always the requested interval.
-        resultTimeWindow summarizes valid RSSI samples contributing to the returned items after
-        applying the 500-client response limit. resultTimeWindow.firstSampleTime is the earliest
-        valid RSSI sample contributing to items[], resultTimeWindow.lastSampleTime is the latest
-        valid RSSI sample contributing to items[], and resultTimeWindow.totalSamples equals the sum
-        of items[].rssi_total_samples. When no clients are returned, items is empty, totalClients
-        is 0, truncated is false,
-        resultTimeWindow.firstSampleTime and resultTimeWindow.lastSampleTime are null, and
-        resultTimeWindow.totalSamples is 0.
+        Wrapped RSSI quality summary. requestedWindow is the requested interval. observedWindow is
+        derived from the earliest/latest valid persisted RSSI samples contributing to returned
+        items after applying the 500-client response limit. When no clients are returned, items is
+        empty, totalClients is 0, truncated is false, and observedWindow is null/null.
       required:
-        - requestedTimeWindow
-        - resultTimeWindow
+        - requestedWindow
+        - observedWindow
         - items
         - totalClients
         - truncated
       properties:
-        requestedTimeWindow:
-          $ref: '#/components/schemas/RequestedTimeWindow'
-        resultTimeWindow:
-          $ref: '#/components/schemas/SampleResultTimeWindow'
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
         items:
           type: array
           maxItems: 500
@@ -1462,149 +1250,27 @@ components:
           type: boolean
           description: True when totalClients is greater than the number of returned items.
 
-    GatewayAvailabilitySampleWindow:
-      type: object
-      description: Sample window boundary timestamps for availability metadata. For sourceWindow, firstSampleAt maps to coverageStart (or stateKnownFrom) and lastSampleAt maps to processedThrough deterministically from checkpoint coverage.
-      required:
-        - firstSampleAt
-        - lastSampleAt
-      properties:
-        firstSampleAt:
-          type: string
-          format: date-time
-          nullable: true
-          description: ISO timestamp of earliest contributing sample or checkpoint coverage start.
-        lastSampleAt:
-          type: string
-          format: date-time
-          nullable: true
-          description: ISO timestamp of latest contributing sample or checkpoint processedThrough watermark.
-
-    GatewayAvailabilityBoundarySamplesUsed:
-      type: object
-      description: Indicators of whether boundary-assisted sampling selected events outside or at the window edge.
-      required:
-        - beforeStart
-        - atStart
-        - atEnd
-        - afterEnd
-      properties:
-        beforeStart:
-          type: boolean
-        atStart:
-          type: boolean
-        atEnd:
-          type: boolean
-        afterEnd:
-          type: boolean
-
-    GatewayAvailabilityIngestionCoverage:
-      type: object
-      description: Durable ingestion coverage proof for the requested gateway lookback window. Full coverage requires coverageStart <= startTime, stateKnownFrom <= startTime, processedThrough >= endTime, and ingestionGapKnown == false.
-      required:
-        - coverageStart
-        - stateKnownFrom
-        - processedThrough
-        - allowedIngestionDelaySeconds
-        - ingestionGapKnown
-        - proofSource
-      properties:
-        coverageStart:
-          type: string
-          format: date-time
-          nullable: true
-          description: ISO timestamp of earliest durable availability coverage; null when coverage is none.
-        stateKnownFrom:
-          type: string
-          format: date-time
-          nullable: true
-          description: ISO timestamp from which gateway availability state is authoritatively established; null when state is unproven or coverage is none.
-        processedThrough:
-          type: string
-          format: date-time
-          nullable: true
-          description: ISO timestamp through which availability ingestion is complete; null when coverage is none.
-        allowedIngestionDelaySeconds:
-          type: integer
-          minimum: 0
-          description: Allowed ingestion delay window in seconds.
-        ingestionGapKnown:
-          type: boolean
-          description: True when a known ingestion gap overlaps the requested window.
-        proofSource:
-          type: string
-          description: Proof source mechanism for availability coverage.
-
     GatewayAvailabilityMeta:
       type: object
-      description: Metadata proving availability coverage, accuracy, and window boundaries.
+      description: Metadata for observed persisted availability events used by the response.
       required:
         - requestedWindow
         - observedWindow
-        - sourceWindow
-        - contributingWindow
-        - selection
-        - coverage
-        - accuracy
-        - sampleCount
         - offlineEventCount
-        - effectiveSamplingIntervalSeconds
-        - allowedGapSeconds
-        - boundarySamplesUsed
-        - availabilityCoverage
       properties:
         requestedWindow:
-          $ref: '#/components/schemas/RequestedTimeWindow'
+          $ref: '#/components/schemas/RequestedWindow'
         observedWindow:
-          $ref: '#/components/schemas/GatewayAvailabilitySampleWindow'
-        sourceWindow:
-          $ref: '#/components/schemas/GatewayAvailabilitySampleWindow'
-        contributingWindow:
-          $ref: '#/components/schemas/GatewayAvailabilitySampleWindow'
-        selection:
-          type: string
-          enum:
-            - boundary_assisted
-          description: Boundary event selection strategy; always "boundary_assisted".
-          example: boundary_assisted
-        coverage:
-          type: string
-          enum:
-            - full
-            - partial
-            - none
-          description: full when durable ingestion coverage proves the complete interval; partial when coverage is incomplete; none when no coverage proof exists.
-        accuracy:
-          type: string
-          enum:
-            - exact
-            - lower_bound
-            - not_applicable
-          description: exact when coverage is full and complete; lower_bound when coverage is partial; not_applicable when coverage is none.
-        sampleCount:
-          type: integer
-          minimum: 0
-          nullable: true
-          description: Number of offline transition rows contributing to offline_count; null when coverage is none.
+          $ref: '#/components/schemas/ObservedWindow'
         offlineEventCount:
           type: integer
+          format: int64
           minimum: 0
-          nullable: true
-          description: Alias for sampleCount; null when coverage is none.
-        effectiveSamplingIntervalSeconds:
-          type: integer
-          minimum: 0
-        allowedGapSeconds:
-          type: integer
-          minimum: 0
-        boundarySamplesUsed:
-          $ref: '#/components/schemas/GatewayAvailabilityBoundarySamplesUsed'
-        availabilityCoverage:
-          $ref: '#/components/schemas/GatewayAvailabilityIngestionCoverage'
+          description: Number of persisted offline transition rows contributing to offline_count.
 
     GatewayAvailabilityData:
       type: object
-      description: Gateway availability state summary data.
+      description: Gateway offline transition count calculated from persisted availability events.
       required:
         - gw_uuid
         - fetch_status
@@ -1622,21 +1288,15 @@ components:
           type: integer
           format: int64
           minimum: 0
-          nullable: true
-          description: >
-            Number of online-to-offline transitions in the requested half-open interval.
-            Non-negative integer when coverage is "full" or "partial"; null when coverage is
-            "none" and accuracy is "not_applicable".
+          description: Number of persisted offline transition rows currently available in Analytics storage for the requested half-open interval.
 
     GatewayAvailabilitySummaryResponse:
       type: object
       description: >
-        Wrapped gateway availability summary response containing meta and data. Transition state
-        is determined using the restart-safe device_availability_state table, while
-        device_availability_events stores the counted transition history. The meta object
-        provides proof of coverage, accuracy, and boundary metadata. When coverage is "none"
-        and accuracy is "not_applicable", sampleCount, offlineEventCount, and offline_count
-        are all null.
+        Wrapped gateway availability summary response. The endpoint counts persisted offline
+        transition rows in device_availability_events for the requested interval and reports the
+        observed event-time window for those rows. It does not expose Kafka progress, ingestion
+        completeness, coverage, or checkpoint proof.
       required:
         - meta
         - data
@@ -1645,85 +1305,6 @@ components:
           $ref: '#/components/schemas/GatewayAvailabilityMeta'
         data:
           $ref: '#/components/schemas/GatewayAvailabilityData'
-      oneOf:
-        - description: Full coverage exact state
-          properties:
-            meta:
-              properties:
-                coverage:
-                  type: string
-                  enum:
-                    - full
-                accuracy:
-                  type: string
-                  enum:
-                    - exact
-                sampleCount:
-                  type: integer
-                  minimum: 0
-                  nullable: false
-                offlineEventCount:
-                  type: integer
-                  minimum: 0
-                  nullable: false
-            data:
-              properties:
-                offline_count:
-                  type: integer
-                  minimum: 0
-                  nullable: false
-        - description: Partial coverage lower_bound state
-          properties:
-            meta:
-              properties:
-                coverage:
-                  type: string
-                  enum:
-                    - partial
-                accuracy:
-                  type: string
-                  enum:
-                    - lower_bound
-                sampleCount:
-                  type: integer
-                  minimum: 0
-                  nullable: false
-                offlineEventCount:
-                  type: integer
-                  minimum: 0
-                  nullable: false
-            data:
-              properties:
-                offline_count:
-                  type: integer
-                  minimum: 0
-                  nullable: false
-        - description: No coverage unavailable state
-          properties:
-            meta:
-              properties:
-                coverage:
-                  type: string
-                  enum:
-                    - none
-                accuracy:
-                  type: string
-                  enum:
-                    - not_applicable
-                sampleCount:
-                  nullable: true
-                  enum:
-                    - null
-                offlineEventCount:
-                  nullable: true
-                  enum:
-                    - null
-            data:
-              properties:
-                offline_count:
-                  nullable: true
-                  enum:
-                    - null
 
     SystemCommandDetails:
       type: object
@@ -2156,14 +1737,11 @@ paths:
         - $ref: '#/components/parameters/RouterIdPath'
         - $ref: '#/components/parameters/TimestampTill'
         - $ref: '#/components/parameters/LookbackHours'
-        - $ref: '#/components/parameters/IncludeCalculationDetails'
       responses:
         200:
           description: >
-            Return reset-safe per-client Wi-Fi usage differential summaries. By default, each
-            client contains concise calculation quality metadata only. When
-            includeCalculationDetails=true, each client also includes diagnostic
-            calculation_segments. resultTimeWindow values are identical for both response shapes.
+            Return reset-safe per-client Wi-Fi usage summaries calculated from available
+            persisted samples.
           content:
             application/json:
               schema:
@@ -2227,7 +1805,7 @@ paths:
         - $ref: '#/components/parameters/LookbackHours'
       responses:
         200:
-          description: Return wrapped gateway availability summary response with coverage proof and transition count.
+          description: Return the gateway offline-transition count calculated from availability events currently persisted in Analytics storage.
           content:
             application/json:
               schema:
