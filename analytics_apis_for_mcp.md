@@ -72,7 +72,6 @@ All REST handlers must enforce request validation in four distinct sequential ph
 1. **Phase 1: Pure Request Parsing & Input Validation (No DB or I/O lookups)**
    - Validate `routerId` syntax (1–64 characters matching `^[a-zA-Z0-9_-]+$`) -> HTTP `400 invalid_router_id` if malformed.
    - Inspect raw query collection for exact-once presence of `timestampTill` and `lookbackHours` -> HTTP `400 invalid_timestamp` / `invalid_lookback_hours` if missing or repeated.
-   - For `wifi-clients/usage-summary` only, inspect raw query collection for optional `includeCalculationDetails`. It may appear at most once. If present, it must be exactly `true` or `false` -> HTTP `400 invalid_include_calculation_details` if repeated, empty, or any other value.
    - Parse `timestampTill` shape & UTC semantics -> HTTP `400 invalid_timestamp` if malformed or invalid date/time.
    - Capture `currentServerTime` once for the request and verify `end_time <= currentServerTime + allowedClockSkewSeconds` -> HTTP `400 invalid_timestamp` if `timestampTill` is too far in the future.
    - Parse `lookbackHours` strict positive integer -> HTTP `400 invalid_lookback_hours` if zero, negative, or non-numeric.
@@ -208,10 +207,6 @@ invalid_timestamp:
 invalid_lookback_hours:
   lookbackHours is missing, repeated, empty, non-numeric, fractional, partially numeric, overflowing,
   zero, negative, or greater than maxLookbackHours.
-
-invalid_include_calculation_details:
-  includeCalculationDetails is repeated, empty, or present with any value other
-  than the exact lowercase strings `true` or `false`.
 
 lookback_outside_retention:
   the calculated [startTime, endTime) window starts before the retained data window
@@ -1142,26 +1137,7 @@ get_device_bandwidth_consumption(
 GET /api/v1/devices/{routerId}/wifi-clients/usage-summary
     ?timestampTill=2026-07-27T12:00:00Z
     &lookbackHours=24
-    &includeCalculationDetails=false
 ```
-
-`includeCalculationDetails` is optional and defaults to `false`. Set it to
-`true` only for diagnostic calculation provenance.
-
-Validation:
-
-```text
-missing includeCalculationDetails -> false
-includeCalculationDetails=true    -> true
-includeCalculationDetails=false   -> false
-includeCalculationDetails=foo     -> 400 invalid_include_calculation_details
-includeCalculationDetails=1       -> 400 invalid_include_calculation_details
-includeCalculationDetails=        -> 400 invalid_include_calculation_details
-repeated includeCalculationDetails -> 400 invalid_include_calculation_details
-```
-
-Values are case-sensitive and must be the exact lowercase strings `true` or
-`false`; do not accept numeric, empty, mixed-case, or partially parsed values.
 
 ## Example Request
 
@@ -1235,8 +1211,7 @@ endTime =
 ```
 
 It describes only the overall result envelope. It does not mean every client or
-segment used the entire envelope, and it is identical whether or not
-`includeCalculationDetails` is enabled.
+internal calculation stream used the entire envelope.
 
 When no clients are returned:
 
@@ -1279,167 +1254,6 @@ return zero usage for that client without a quality classification:
       "data_consume_rx": "0.00 MB",
       "data_consume_tx": "0.00 MB",
       "total_data_usage": "0.00 MB"
-    }
-  ],
-  "totalClients": 1,
-  "truncated": false
-}
-```
-
-## Calculation Details
-
-Use `includeCalculationDetails=true` only for diagnostics, troubleshooting, or
-calculation provenance. Ordinary MCP decisions should use the returned byte
-values and `observedWindow`.
-
-```http
-GET /api/v1/devices/60cf84f22290/wifi-clients/usage-summary?timestampTill=2026-07-27T12:00:00Z&lookbackHours=24&includeCalculationDetails=true
-Authorization: Bearer <token>
-```
-
-When details are enabled, every returned calculation segment has non-null
-`actual_start_time` and `actual_end_time`. `stream_id` and `segment_id` are
-opaque identifiers scoped to the response. Clients must not persist them,
-compare them across requests, parse them, or depend on their format; the
-examples below are illustrative only. If no differential can be calculated, the
-client has `calculation_segments: []`.
-
-Detailed response invariants:
-
-```text
-client.rx_bytes == SUM(calculation_segments[].rx_bytes)
-client.tx_bytes == SUM(calculation_segments[].tx_bytes)
-client.total_bytes == SUM(calculation_segments[].total_bytes)
-```
-
-Example detailed response for the same calculated result:
-
-```json
-{
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
-  },
-  "observedWindow": {
-    "startTime": "2026-07-26T11:55:00Z",
-    "endTime": "2026-07-27T12:05:00Z"
-  },
-  "items": [
-    {
-      "mac": "e2:51:95:ed:0f:28",
-      "rx_bytes": 106487500,
-      "tx_bytes": 3851250,
-      "total_bytes": 110338750,
-      "data_consume_rx": "106.49 MB",
-      "data_consume_tx": "3.85 MB",
-      "total_data_usage": "110.34 MB",
-      "calculation_segments": [
-        {
-          "stream_id": "e2:51:95:ed:0f:28|bssid=18:34:af:01:02:03|ssid=Corp|band=5G",
-          "segment_id": "e2:51:95:ed:0f:28|session=42|segment=0",
-          "segment_start_reason": "window_start",
-          "segment_end_reason": "window_end",
-          "effective_start_time": "2026-07-26T12:00:00Z",
-          "effective_end_time": "2026-07-27T12:00:00Z",
-          "actual_start_time": "2026-07-26T12:00:00Z",
-          "actual_end_time": "2026-07-27T12:00:00Z",
-          "rx_bytes": 106487500,
-          "tx_bytes": 3851250,
-          "total_bytes": 110338750
-        }
-      ]
-    },
-    {
-      "mac": "28:39:26:a1:7c:a5",
-      "rx_bytes": 30071250,
-      "tx_bytes": 16486250,
-      "total_bytes": 46557500,
-      "data_consume_rx": "30.07 MB",
-      "data_consume_tx": "16.49 MB",
-      "total_data_usage": "46.56 MB",
-      "calculation_segments": [
-        {
-          "stream_id": "28:39:26:a1:7c:a5|bssid=18:34:af:04:05:06|ssid=Corp|band=5G",
-          "segment_id": "28:39:26:a1:7c:a5|session=99|segment=0",
-          "segment_start_reason": "window_start",
-          "segment_end_reason": "window_end",
-          "effective_start_time": "2026-07-26T12:00:00Z",
-          "effective_end_time": "2026-07-27T12:00:00Z",
-          "actual_start_time": "2026-07-26T11:55:00Z",
-          "actual_end_time": "2026-07-27T12:05:00Z",
-          "rx_bytes": 30071250,
-          "tx_bytes": 16486250,
-          "total_bytes": 46557500
-        }
-      ]
-    },
-    {
-      "mac": "54:6c:0e:44:11:09",
-      "rx_bytes": 4200000,
-      "tx_bytes": 600000,
-      "total_bytes": 4800000,
-      "data_consume_rx": "4.20 MB",
-      "data_consume_tx": "0.60 MB",
-      "total_data_usage": "4.80 MB",
-      "calculation_segments": [
-        {
-          "stream_id": "54:6c:0e:44:11:09|bssid=18:34:af:07:08:09|ssid=Corp|band=5G",
-          "segment_id": "54:6c:0e:44:11:09|session=10|segment=0",
-          "segment_start_reason": "window_start",
-          "segment_end_reason": "session_end",
-          "effective_start_time": "2026-07-26T12:00:00Z",
-          "effective_end_time": "2026-07-26T18:30:00Z",
-          "actual_start_time": "2026-07-26T12:00:00Z",
-          "actual_end_time": "2026-07-26T18:30:00Z",
-          "rx_bytes": 1800000,
-          "tx_bytes": 250000,
-          "total_bytes": 2050000
-        },
-        {
-          "stream_id": "54:6c:0e:44:11:09|bssid=18:34:af:07:08:09|ssid=Corp|band=5G",
-          "segment_id": "54:6c:0e:44:11:09|session=11|segment=0",
-          "segment_start_reason": "session_start",
-          "segment_end_reason": "window_end",
-          "effective_start_time": "2026-07-26T19:00:00Z",
-          "effective_end_time": "2026-07-27T12:00:00Z",
-          "actual_start_time": "2026-07-26T19:00:00Z",
-          "actual_end_time": "2026-07-27T12:00:00Z",
-          "rx_bytes": 2400000,
-          "tx_bytes": 350000,
-          "total_bytes": 2750000
-        }
-      ]
-    }
-  ],
-  "totalClients": 3,
-  "truncated": false
-}
-```
-
-When a client is observed in-window (`[startTime, endTime)`) but no usage interval can be calculated, such as when
-only one cumulative-counter sample exists in or bounding the requested range,
-return zero usage with no calculation segments:
-
-```json
-{
-  "requestedWindow": {
-    "startTime": "2026-08-05T12:00:00Z",
-    "endTime": "2026-08-05T13:00:00Z"
-  },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "items": [
-    {
-      "mac": "e2:51:95:ed:0f:28",
-      "rx_bytes": 0,
-      "tx_bytes": 0,
-      "total_bytes": 0,
-      "data_consume_rx": "0.00 MB",
-      "data_consume_tx": "0.00 MB",
-      "total_data_usage": "0.00 MB",
-      "calculation_segments": []
     }
   ],
   "totalClients": 1,
@@ -1514,8 +1328,8 @@ end_sample:
   sample at effective_end, if available
   otherwise earliest available sample at or after effective_end
 
-actual_start_time = start_sample.timestamp
-actual_end_time = end_sample.timestamp
+start_sample_time = start_sample.timestamp
+end_sample_time = end_sample.timestamp
 
 uninterrupted segment differential:
   counterDelta(end_sample.rx_bytes, start_sample.rx_bytes)
@@ -1537,12 +1351,12 @@ total_data_usage = format_bytes(total_bytes)
 ```
 
 Calculate counter deltas independently for RX and TX per `stream_key` and
-internal calculable segment. After segment deltas are calculated, aggregate the
-resulting RX/TX deltas by station MAC for the response. Client `rx_bytes` and
-`tx_bytes` must equal the sum of internal segment RX/TX deltas; each internal
-segment's `total_bytes` must equal its `rx_bytes + tx_bytes`. When
-`includeCalculationDetails=true`, the detailed `calculation_segments[]` array
-must satisfy the same byte-sum invariants.
+internal calculable segment. Streams, sessions, counter reset detection,
+boundary samples, and segments are internal implementation mechanics only. After
+internal segment deltas are calculated, aggregate the resulting RX/TX deltas by
+station MAC for the public response. Client `rx_bytes` and `tx_bytes` must equal
+the sum of internal segment RX/TX deltas; each internal segment's `total_bytes`
+must equal its `rx_bytes + tx_bytes`.
 
 Client MAC values in API responses must be normalized canonical lowercase colon-separated MAC addresses matching `^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`.
 
@@ -1553,15 +1367,13 @@ Use only valid persisted samples to calculate cumulative-counter deltas.
 Outside-window samples may be used as boundary samples when needed to calculate
 the first or last differential segment for a client observed in the requested
 range. The response must include requested timestamps and aggregate actual
-sample timestamps through `observedWindow`. When `includeCalculationDetails=true`,
-it must also include effective and actual timestamps for each returned segment.
+sample timestamps through `observedWindow`.
 
 If a stream lacks a usable bounding sample pair or has an ambiguous counter
 decrease/session change, skip the ambiguous interval rather than inventing
 traffic. Sum only safely calculable nonnegative consecutive segment deltas. If
 no differential segment can be calculated for an observed client, return that
-client with zero byte totals and, when details are enabled,
-`calculation_segments: []`.
+client with zero byte totals.
 
 Include a client in `items[]` and count it in `totalClients` only when it has at
 least one in-window observation (`[startTime, endTime)`) or proven session
@@ -1583,7 +1395,7 @@ Differential data-handling rules:
 | Start sample missing | sum safely calculable nonnegative consecutive segment deltas from available samples |
 | End sample missing | sum safely calculable nonnegative consecutive segment deltas through the latest usable sample |
 | Both boundary samples missing | sum safely calculable consecutive segment deltas inside the requested range |
-| Only one in-window sample exists | return zero bytes for that client; if details are enabled, return `calculation_segments: []` |
+| Only one in-window sample exists | return zero bytes for that client |
 | Client appears during the window without reliable session-start proof | sum safely calculable post-appearance segment deltas only |
 | Client disappears before the end boundary | sum safely calculable segment deltas through the last usable sample |
 | Client reconnects and counters reset | split only when session identity proves independent streams; otherwise skip the ambiguous interval |
@@ -1673,11 +1485,11 @@ Independent Directional Counter Rules (RX vs TX):
 1. RX and TX counters are calculated independently per stream.
 2. If RX is present and valid but TX is missing, non-numeric, negative (< 0), or uncalculable:
    - RX bytes are calculated normally and included in data_consume_rx.
-   - TX bytes return 0 as a required non-null integer in calculation_segments (and formatted "0.00 MB" in summary strings).
+   - TX bytes return 0 as a required non-null integer and formatted "0.00 MB" in summary strings.
    - Total segment bytes total_bytes = rx_bytes + 0 = rx_bytes.
 3. If TX is present and valid but RX is missing/invalid:
    - TX bytes are calculated normally and included in data_consume_tx.
-   - RX bytes return 0 as a required non-null integer in calculation_segments (and formatted "0.00 MB" in summary strings).
+   - RX bytes return 0 as a required non-null integer and formatted "0.00 MB" in summary strings.
    - Total segment bytes total_bytes = 0 + tx_bytes = tx_bytes.
 4. If a boundary sample has RX but not TX (or vice versa), the missing direction cannot form a calculable boundary delta; that direction returns 0 bytes.
 5. A client MAC is included in totalClients and items[] if it has proven in-window presence or session overlap, regardless of whether one counter direction was missing or uncalculable.
@@ -1700,10 +1512,8 @@ For usage differential calculation, choose the start and end samples first, then
 calculate the boundary differential for each segment. Effective boundaries are
 clipped to proven session lifetime and the requested window. The default
 response exposes the requested window, observed window, and calculated values.
-When `includeCalculationDetails=true`, each returned segment additionally
-exposes its effective and actual boundary timestamps. Do not add a cumulative
-counter directly unless it is known to represent traffic that started inside the
-segment's effective interval.
+Do not add a cumulative counter directly unless it is known to represent traffic
+that started inside the segment's effective interval.
 
 A new association/session is confirmed only when the source provides reliable session identity or timing evidence. For example, a session id change, association id change, or connected-duration reset may prove a new session if it also proves the session start time is within the requested window. BSSID, SSID, band, or radio changes define separate calculation streams, but they do not by themselves prove that the new cumulative counter started inside the requested window.
 
@@ -3213,7 +3023,7 @@ bool GetGatewayAvailabilitySummary(...);
 |---|---|---|---|
 | `get_gateway_free_memory` | `GET /devices/{routerId}/memory-summary` | `timepoints.resource_data.memory_free` | Resolve routerId to venueId and boardId, then aggregate `timepoints` |
 | `get_gateway_wifi_temp` | `GET /devices/{routerId}/radio-temperature-summary` | `timepoints.radio_data[].wifi_temp` | Resolve routerId to venueId and boardId, then aggregate present Wi-Fi temperature samples from `timepoints` |
-| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then calculate reset-safe cumulative-counter differentials from available persisted samples; include segment provenance only when `includeCalculationDetails=true` |
+| `get_device_bandwidth_consumption` | `GET /devices/{routerId}/wifi-clients/usage-summary` | `timepoints.ssid_data[].associations[]` | Resolve routerId to venueId and boardId, then calculate reset-safe cumulative-counter differentials from available persisted samples |
 | `get_device_rssi_quality` | `GET /devices/{routerId}/wifi-clients/rssi-summary` | `timepoints.ssid_data[].associations[].rssi` | Resolve routerId to venueId and boardId, then classify RSSI samples |
 | `get_gateway_offline_count` | `GET /devices/{routerId}/availability-summary` | Existing gateway `connection` topic plus `device_availability_events` and `device_availability_state` | Use routerId as durable serialNumber, use `device_availability_state.current_state` and `last_event_time` for restart-safe transition detection, then count offline events by serialNumber |
 
