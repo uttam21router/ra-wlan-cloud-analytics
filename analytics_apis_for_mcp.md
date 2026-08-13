@@ -2135,9 +2135,16 @@ offline transition events contribute, both `observedWindow.startTime` and
 `observedWindow.endTime` are `null`. The response does not report Kafka consumer
 progress or lag as availability-domain data.
 
+The `availability-summary` endpoint is an observed-data API. It reports the
+availability transition rows currently persisted in Analytics storage at request
+time. It does not prove that Kafka has delivered every possible source event,
+that the consumer is caught up, that no delayed message exists, or that the
+requested interval is ingestion-complete.
+
 ## API Logic
 
-This API can use gateway events from the existing `connection` topic.
+Availability ingestion uses gateway events from the existing `connection` topic.
+The REST API query path reads only Analytics storage.
 
 Analytics currently handles gateway-level events:
 
@@ -2274,7 +2281,15 @@ Constraints:
   current_state must be one of: online, offline, unknown
 ```
 
-`device_availability_events` stores only online/offline transition history. `device_availability_state` stores the authoritative current state and the latest accepted source availability ordering key.
+`device_availability_events` stores only online/offline transition history.
+Historical availability queries read this table and count persisted offline
+transition rows.
+
+`device_availability_state` is used during ingestion. It stores the latest
+accepted current state and source availability ordering key, supports
+restart-safe transition detection, and prevents repeated ping or disconnection
+messages from generating duplicate transitions. The REST handler must not derive
+historical availability counts from `device_availability_state`.
 
 `last_event_time` and `last_source_sequence` form the persisted source ordering key after events have been consumed in Kafka partition order for the gateway. `last_event_time` must be populated from the normalized Kafka source timestamp (`event_time`), and `last_source_sequence` must be populated from a reliable source sequence, source offset within the producing system, or another deterministic 64-bit numeric value (`BIGINT`) when one exists. `source_sequence` and `last_source_sequence` are stored as `BIGINT NULL` so SQL and application-layer index and comparator operations preserve numeric order (`10 > 2`). The composite key is used for duplicate detection, stale-event protection, same-timestamp ordering, and defensive validation. `DeviceInfo.lastContact` may remain local contact or processing metadata, but it must not be used to order source events because Kafka delivery can be delayed.
 
@@ -2341,6 +2356,12 @@ Normal Kafka lag is not an Analytics data gap. If the producer is at offset 5000
 
 Exceptional Kafka data-loss conditions are operational incidents, not normal availability-domain state. Examples include Kafka retention expiring before the consumer caught up, a topic being deleted or recreated, or offsets being manually reset past unprocessed data. Log, alert, and metric these conditions. Do not introduce Analytics-owned durable data-loss records unless a separate product requirement explicitly calls for historical completeness auditing.
 
+Kafka operational monitoring may expose consumer lag, offset positions, replay
+activity, retention incidents, and consumer-group health through Kafka metrics,
+Prometheus metrics, service dashboards, logs, alerts, or consumer-group
+monitoring. Those signals are separate from the availability-domain API
+contract.
+
 Final availability ingestion architecture:
 
 ```text
@@ -2368,6 +2389,47 @@ device_availability_state   device_availability_events
                          |
                          v
                 commit Kafka offset
+```
+
+Final responsibility split:
+
+```text
+Kafka:
+  reliable delivery/replay according to Kafka's normal consumer-group semantics
+  restart handling
+  offset management
+  lag monitoring
+
+Analytics ingestion:
+  current availability state
+  idempotent transition persistence
+
+Analytics API:
+  query currently persisted transition history
+  count persisted offline events
+  report observedWindow for those persisted events
+```
+
+The key API principle is:
+
+```text
+The availability API reports what Analytics has observed and persisted.
+It does not prove what Analytics has not yet received.
+```
+
+Explicitly out of scope for `availability-summary`:
+
+```text
+strong read-after-Kafka-ingestion consistency
+zero-lag guarantees
+source-to-API delivery SLA
+Kafka consumer freshness validation
+historical ingestion-completeness proof
+availability coverage proof
+durable gap persistence
+durable checkpoint persistence
+waiting for Kafka catch-up before answering
+high availability across Kafka/DB failure scenarios
 ```
 
 Add a `DeviceAvailabilityEvent` REST/storage object with `to_json` and `from_json` support in:
@@ -2588,15 +2650,19 @@ The producer must publish messages for one serialNumber in source-event order.
 Kafka partition ordering is then the primary ordering guarantee for all
 availability events belonging to one gateway.
 
+Connection messages are expected at intervals of approximately five seconds or
+more, so equal source event timestamps are not expected during normal operation
+when timestamp precision is at least seconds.
+
 Source timestamps and source sequences remain useful for duplicate detection,
 stale-event protection, same-timestamp ordering, and defensive validation. They
 must not be used to build a second durable Analytics ingestion watermark.
 
 If the source topic cannot provide serialNumber keying and producer-side
-per-serial ordering, Kafka alone cannot guarantee exact transition history for
-that gateway. Treat that as a producer/topic contract violation or a separate
-architecture requirement; do not add an Analytics PostgreSQL ingestion-progress or data-loss
-tracking system to compensate.
+per-serial ordering, Kafka alone cannot guarantee correctly ordered transition
+history for that gateway. Treat that as a producer/topic contract violation or a
+separate architecture requirement; do not add an Analytics PostgreSQL
+ingestion-progress or data-loss tracking system to compensate.
 ```
 
 Atomic transition and insert rule:
@@ -2748,13 +2814,14 @@ Stale or non-advancing events must not insert counted availability events and mu
 not update device_availability_state, even if their idempotency_key has not been
 seen before.
 
-Two different logical events with the same `event_time` must be ordered by a
-deterministic 64-bit numeric `source_sequence` (`BIGINT`). Exact Kafka redelivery
-should be identified by the idempotency key. If two different logical events share
-the same `event_time` and lack comparable non-null source sequences, or have identical
-source sequences, Analytics cannot deterministically order them. Log and metric
-the ambiguity, do not insert a counted transition for the ambiguous message, and
-do not create an Analytics ingestion-progress or data-loss table.
+Equal source timestamps are defensive edge cases, not the foundation of the
+availability architecture. Exact Kafka redelivery should be identified by the
+idempotency key. If two different logical events share the same `event_time`, use
+a reliable deterministic 64-bit numeric `source_sequence` (`BIGINT`) when one
+exists. If no reliable source sequence exists, log and metric the producer/source
+anomaly and apply the documented defensive policy for ambiguous duplicate-source
+data. Do not create an Analytics ingestion-progress or data-loss table for this
+edge case.
 ```
 
 ### Store Only State Transitions
@@ -2834,8 +2901,18 @@ The implementation requires `device_availability_state` unless a future design e
 
 ```text
 offline_count =
-    COUNT(event_type = 'offline')
+    count(
+      device_availability_events
+      where serialNumber = routerId
+      and event_type = 'offline'
+      and event_time >= startTime
+      and event_time < endTime
+    )
 ```
+
+`offline_count` is the number of persisted offline transition rows currently
+observed by Analytics for the requested interval. It is not proof that every
+source event for the interval has been ingested.
 
 Availability migration boundary:
 
@@ -2871,6 +2948,74 @@ WHERE serialNumber = :router_id
 ```
 
 Do not require `board_id = :resolvedBoardId` for the availability count. `board_id` is nullable event-time context and can differ from the router's current board after reassignment. The durable query identity for gateway availability history is `serialNumber`.
+
+The availability REST request path must not call Kafka, compare committed
+offsets to partition high watermarks, inspect consumer lag, wait for the
+consumer to catch up, or validate ingestion freshness. Kafka offset state is
+operational state, not API response data.
+
+Final availability query flow:
+
+```text
+Authenticate request
+validate routerId, timestampTill, and lookbackHours
+resolve router ownership
+validate retention and availabilityValidFrom
+query device_availability_events for serialNumber and [startTime, endTime)
+filter event_type = offline
+offline_count = number of persisted matching rows
+derive observedWindow from matching persisted offline rows
+return response
+```
+
+`observedWindow` for availability is derived only from persisted offline
+transition rows contributing to `offline_count`:
+
+```text
+observedWindow.startTime =
+  earliest persisted offline transition event_time contributing to offline_count
+
+observedWindow.endTime =
+  latest persisted offline transition event_time contributing to offline_count
+```
+
+Do not set `observedWindow` to the requested range merely because the query
+covers that range. It reflects observed persisted transition events, not
+ingestion coverage.
+
+Example:
+
+```text
+requestedWindow = [12:00, 14:00)
+persisted offline transition event_time values = [12:15, 13:20]
+
+offline_count = 2
+observedWindow = [12:15, 13:20]
+```
+
+Delayed Kafka message example:
+
+```text
+12:00 ping
+12:05 offline
+12:10 online
+12:20 offline event exists upstream but has not yet been consumed
+
+API request at 12:21:
+  persisted offline rows = [12:05]
+  offline_count = 1
+  observedWindow = [12:05, 12:05]
+
+Later, Kafka consumer processes the 12:20 event.
+
+Same historical API request:
+  persisted offline rows = [12:05, 12:20]
+  offline_count = 2
+  observedWindow = [12:05, 12:20]
+```
+
+Both responses are valid because the API reports the persisted observations
+available at request time.
 
 ### Range Before Availability Cutover
 
@@ -2910,8 +3055,11 @@ Use an HTTP error:
 }
 ```
 
-A zero result means no offline transition rows are currently persisted for the
-requested post-cutover interval. Kafka consumer lag is operational state and is
+A zero result means no persisted offline transition was observed in the
+requested post-cutover interval based on the data currently available in
+Analytics storage. It does not mean no outage definitely occurred, Kafka is
+fully consumed through `endTime`, all producer events have reached Analytics, or
+there are no delayed messages. Kafka consumer lag is operational state and is
 not represented as availability-domain response metadata.
 
 `offlineEventCount` is the number of offline transition rows in
