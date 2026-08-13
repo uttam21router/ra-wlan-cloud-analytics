@@ -1905,7 +1905,6 @@ connection_ip
 session_id
 event_id
 idempotency_key
-metadata
 ```
 
 ### Required Storage Implementation
@@ -1928,25 +1927,21 @@ Fields:
   serialNumber    TEXT
   event_type      TEXT
   event_time      BIGINT
-  source_sequence BIGINT NULL
   reason          TEXT
   connection_ip   TEXT
   session_id      TEXT
   event_id        TEXT
   idempotency_key TEXT NOT NULL
-  metadata        TEXT
 
 Indexes:
   availability_serial_time_index:
     serialNumber ASC
     event_time ASC
-    source_sequence ASC NULLS FIRST
 
   availability_board_serial_time_index:
     board_id ASC
     serialNumber ASC
     event_time ASC
-    source_sequence ASC NULLS FIRST
 
 Unique constraints:
   availability_idempotency_key_unique:
@@ -1957,12 +1952,10 @@ Optional indexes:
     event_id ASC
 ```
 
-SQL composite ordering semantics:
+SQL ordering semantics:
 
 ```text
-When querying device_availability_events by (event_time, source_sequence):
-- Ascending queries use ORDER BY event_time ASC, source_sequence ASC NULLS FIRST so unsequenced events (source_sequence = NULL) at a timestamp sort before sequenced events at the same timestamp.
-- Descending queries use ORDER BY event_time DESC, source_sequence DESC NULLS LAST so the event with the highest sequence number at a timestamp sorts first, and unsequenced events sort last.
+When querying device_availability_events, order by event_time only.
 ```
 
 `event_id` stores the normalized source event id when the payload provides one, using `payload.ping.uuid`, `payload.uuid`, or `payload.disconnection.uuid` only when that `uuid` is stable for the same logical source event.
@@ -1974,14 +1967,12 @@ Add a persisted current-state table for restart-safe transition detection:
 ```text
 device_availability_state
 -------------------------
-serialNumber
-board_id
-current_state
-last_event_time
-last_source_sequence
-last_idempotency_key
-updated_at
-metadata
+serialNumber          TEXT PRIMARY KEY
+board_id              TEXT NULL
+current_state         TEXT
+last_event_time       BIGINT
+last_idempotency_key  TEXT
+updated_at            BIGINT
 ```
 
 Required fields and constraints:
@@ -1992,10 +1983,8 @@ Fields:
   board_id             TEXT NULL
   current_state        TEXT
   last_event_time      BIGINT
-  last_source_sequence BIGINT NULL
   last_idempotency_key TEXT
   updated_at           BIGINT
-  metadata             TEXT
 
 Indexes:
   availability_state_board_index:
@@ -2009,13 +1998,25 @@ Constraints:
 Historical availability queries read this table and count persisted offline
 transition rows.
 
-`device_availability_state` is used during ingestion. It stores the latest
-accepted current state and source availability ordering key, supports
-restart-safe transition detection, and prevents repeated ping or disconnection
-messages from generating duplicate transitions. The REST handler must not derive
-historical availability counts from `device_availability_state`.
+`device_availability_state` exists only to persist:
 
-`last_event_time` and `last_source_sequence` form the persisted source ordering key after events have been consumed in Kafka partition order for the gateway. `last_event_time` must be populated from the normalized Kafka source timestamp (`event_time`), and `last_source_sequence` must be populated from a reliable source sequence, source offset within the producing system, or another deterministic 64-bit numeric value (`BIGINT`) when one exists. `source_sequence` and `last_source_sequence` are stored as `BIGINT NULL` so SQL and application-layer index and comparator operations preserve numeric order (`10 > 2`). The composite key is used for duplicate detection, stale-event protection, same-timestamp ordering, and defensive validation. `DeviceInfo.lastContact` may remain local contact or processing metadata, but it must not be used to order source events because Kafka delivery can be delayed.
+```text
+- the latest accepted availability state
+- the latest accepted source event timestamp
+- the latest logical event identity for idempotency
+- optional current board context
+- the state row update timestamp
+```
+
+It prevents repeated ping or disconnection messages from generating duplicate
+transitions. The REST handler must not derive historical availability counts from
+`device_availability_state`.
+
+`last_event_time` is the persisted source ordering key after events have been
+consumed in Kafka partition order for the gateway. It must be populated from the
+normalized Kafka source timestamp (`event_time`). `DeviceInfo.lastContact` may
+remain local contact or processing metadata, but it must not be used to order
+source events.
 
 Do not add Analytics-owned ingestion progress or durable data-loss tables for availability.
 
@@ -2026,7 +2027,13 @@ device_availability_events
 device_availability_state
 ```
 
-Kafka topic, partition, offset, message key, and consumer timestamp may be stored in event or state `metadata` for diagnostics only. They must not form the logical availability event identity and must not be persisted as an Analytics ingestion-progress record.
+Kafka topic, partition, offset, message key, consumer timestamp, message type,
+connection IP, disconnect reason, producer information, and other diagnostic
+details must not be stored in `device_availability_state`. Keep operational and
+debugging information in logs, metrics, traces, or other existing observability
+mechanisms. If diagnostic fields are required for a historical transition, model
+them explicitly in `device_availability_events` where already defined; do not
+add a generic metadata column solely for diagnostics.
 
 Expected Kafka and database processing contract:
 
@@ -2035,8 +2042,8 @@ Kafka message received
 normalize and validate event
 BEGIN database transaction
 lock/load device_availability_state for serialNumber
-apply idempotency and source ordering checks
-insert device_availability_events transition when required
+validate idempotency and event_time
+insert device_availability_events only on a real state transition
 update device_availability_state
 COMMIT database transaction
 commit Kafka offset
@@ -2072,7 +2079,7 @@ Restart and rebalance recovery must use the stable Kafka consumer group:
 2. Kafka resumes from the last committed offset for assigned partitions
 3. messages after that offset are replayed
 4. Analytics loads device_availability_state for each serialNumber as messages arrive
-5. idempotency and ordering checks prevent duplicate transition rows
+5. idempotency and event_time checks prevent duplicate transition rows
 6. processing continues and offsets are committed only after DB commit
 ```
 
@@ -2146,7 +2153,10 @@ Kafka:
   lag monitoring
 
 Analytics ingestion:
-  current availability state
+  restart-safe current availability state
+  latest accepted event_time
+  idempotency
+  transition detection
   idempotent transition persistence
 
 Analytics API:
@@ -2263,7 +2273,7 @@ First observed unrecognized connection message:
   do not insert a counted event
 ```
 
-In-memory transition checking is only an optimization. It is not sufficient for correctness because Kafka can redeliver messages and the service can restart after losing in-memory state. Transition detection must use `device_availability_state.current_state` and `device_availability_state.last_event_time` under the same transaction before writing `device_availability_events`. Duplicate connection messages must be rejected by source timestamp validation and storage-level idempotency before they can affect `offline_count`.
+In-memory transition checking is only an optimization. It is not sufficient for correctness because Kafka can redeliver messages and the service can restart after losing in-memory state. Transition detection must use `device_availability_state.current_state` and `device_availability_state.last_event_time` under the same transaction before writing `device_availability_events`. Duplicate connection messages must be rejected by `event_time` validation and storage-level idempotency before they can affect `offline_count`.
 
 Normalize connection messages before transition processing:
 
@@ -2356,57 +2366,72 @@ Minimum fields for derived idempotency keys:
 All counted availability events:
   serialNumber is required
   event_type is required
-  event_time is required and must have the highest precision available from the source
+  event_time is required and must satisfy the producer contract of strictly increasing source timestamps per serialNumber
 
 Offline events derived from disconnection:
   reason or source disconnect cause is required when available
   if reason/cause and connection_ip are missing:
     prefer stable source_event_id from payload.disconnection.uuid
     otherwise derive the key from serialNumber, message_type, event_type, and event_time
-  if reason/cause and connection_ip are missing and event_time precision is coarser than seconds:
-    do not write a counted offline event unless a stable source_event_id or session_id exists
 
 Online events derived from ping/capabilities:
   session_id is required when available
   if session_id is unavailable:
-    event_time plus message type must be precise enough to distinguish separate logical reconnects
-  if event_time is missing or too coarse to distinguish separate reconnects:
-    update current-state metadata only; do not write a counted online transition event
+    derive the key from serialNumber, message_type, event_type, and event_time
+  if event_time is missing or violates the strictly increasing per-serial producer contract:
+    do not move current state; do not write a counted online transition event
 
 Unrecognized connection messages:
   do not write counted availability events
-  store only current-state metadata when useful
+  do not use device_availability_state as a payload or diagnostics store
 ```
 
-If the minimum fields for the event type are not present, the implementation must not create a counted `device_availability_events` row. It may update non-counted metadata only when doing so cannot move `device_availability_state` backward or create a false transition.
+If the minimum fields for the event type are not present, the implementation must
+not create a counted `device_availability_events` row and must not use
+`device_availability_state` to store diagnostic details from that message.
 
 Do not include `board_id` in the idempotency key unless it is part of a stable source event id. Board ownership can change between delivery and redelivery, and including current ownership in a derived key can turn one logical event into multiple stored events.
 
-Do not include Kafka topic, partition, or offset in the derived logical `idempotency_key`. Kafka coordinates identify a broker record, not the logical connection event. They dedupe redelivery of the same Kafka record, but they do not dedupe the same logical connection event produced as a second Kafka record with a different offset. Store topic, partition, offset, message key, and consumer timestamp in `metadata` for tracing only.
+Do not include Kafka topic, partition, or offset in the derived logical
+`idempotency_key`. Kafka coordinates identify a broker record, not the logical
+connection event. They dedupe redelivery of the same Kafka record, but they do
+not dedupe the same logical connection event produced as a second Kafka record
+with a different offset. Keep Kafka coordinates and consumer timestamps in logs,
+metrics, or traces rather than `device_availability_state`.
 
 The same delivered logical connection event must always produce the same `idempotency_key`. If the implementation cannot build a stable or deterministic key for an event, it must not write that event as a counted availability transition; log it as an ingestion error instead.
 
 Ordering rule:
 
 ```text
-Connection events must be produced to Kafka with Kafka key = serialNumber.
-The producer must publish messages for one serialNumber in source-event order.
-Kafka partition ordering is then the primary ordering guarantee for all
-availability events belonging to one gateway.
+For each serialNumber:
+- Kafka key = serialNumber
+- events are produced in source-event order
+- source event_time is strictly increasing
 
-Connection messages are expected at intervals of approximately five seconds or
-more, so equal source event timestamps are not expected during normal operation
-when timestamp precision is at least seconds.
+Kafka partition ordering is therefore the ordering guarantee for all
+availability events belonging to one gateway. Analytics orders source events
+using only `event_time`.
 
-Source timestamps and source sequences remain useful for duplicate detection,
-stale-event protection, same-timestamp ordering, and defensive validation. They
-must not be used to build a second durable Analytics ingestion watermark.
+Because the producer guarantees strictly increasing source timestamps per
+serialNumber and writes those events to Kafka in that same order, normal
+processing sees:
 
-If the source topic cannot provide serialNumber keying and producer-side
-per-serial ordering, Kafka alone cannot guarantee correctly ordered transition
-history for that gateway. Treat that as a producer/topic contract violation or a
-separate architecture requirement; do not add an Analytics PostgreSQL
-ingestion-progress or data-loss tracking system to compensate.
+incoming event_time > last_event_time
+
+Analytics keeps only defensive checks for stale or duplicate/non-advancing
+messages. If a message has `event_time < last_event_time`, ignore it as stale.
+If a message has `event_time == last_event_time`, treat it as duplicate or
+non-advancing, do not create a transition, and do not move state. Equal source
+timestamps are not expected during normal operation.
+
+`last_idempotency_key` is retained for Kafka redelivery/idempotency protection.
+It must not participate in source-event ordering.
+
+If the source topic violates serialNumber keying, per-serial source-event order,
+or strictly increasing per-serial `event_time`, treat that as a producer/topic
+contract violation. Do not add Analytics PostgreSQL ingestion-progress,
+data-loss, or additional durable ordering state to compensate.
 ```
 
 Atomic transition and insert rule:
@@ -2416,15 +2441,27 @@ For each valid connection message consumed in Kafka partition order:
   BEGIN
 
   acquire a serialNumber-scoped transaction lock before reading state
+  determine incomingState from message_type:
+    ping or capabilities -> online
+    disconnection -> offline
+
   load device_availability_state row for serialNumber with write isolation
   if no state row exists:
     atomically create or lock the serialNumber state slot using one of:
       INSERT ... ON CONFLICT ... DO UPDATE/NOTHING followed by SELECT ... FOR UPDATE
       PostgreSQL advisory transaction lock
       serializable transaction with retry
-    treat previous state as unknown
+    if another transaction created the state row first, re-read it and continue
+    otherwise initialize current_state from incomingState
+    set last_event_time = event_time
+    set last_idempotency_key = idempotency_key
+    set board_id when known
+    set updated_at
+    do not insert an initial transition event
+    COMMIT
+    stop processing this message
 
-  -- Explicit scalar ordering comparison logic:
+  -- Event-time-only ordering check:
   if event_time < last_event_time:
     treat the message as stale
     do not insert an availability event
@@ -2433,41 +2470,13 @@ For each valid connection message consumed in Kafka partition order:
     stop processing this message
 
   if event_time == last_event_time:
-    if both source_sequence and last_source_sequence are present (non-null BIGINT):
-      if source_sequence < last_source_sequence:
-        treat the message as stale
-        do not insert an availability event
-        do not update device_availability_state
-        COMMIT
-        stop processing this message
+    treat the message as duplicate or non-advancing
+    do not insert an availability event
+    do not update device_availability_state
+    COMMIT
+    stop processing this message
 
-      if source_sequence == last_source_sequence:
-        if idempotency_key equals last_idempotency_key:
-          treat the message as an exact duplicate
-        else:
-          treat the message as ambiguous duplicate-source data
-          log and metric the ambiguity
-        do not insert an availability event
-        do not update device_availability_state
-        COMMIT
-        stop processing this message
-    else:
-      -- Equal timestamp without comparable non-null BIGINT sequences
-      if idempotency_key equals last_idempotency_key:
-        treat the message as an exact duplicate
-      else:
-        treat the message as ambiguous duplicate-source data
-        log and metric the ambiguity
-      do not insert an availability event
-      do not update device_availability_state
-      COMMIT
-      stop processing this message
-
-  -- event_time > last_event_time, or event_time == last_event_time with source_sequence > last_source_sequence:
-  determine incomingState from message_type:
-    ping or capabilities -> online
-    disconnection -> offline
-
+  -- event_time > last_event_time:
   if incomingState is online:
     if current_state is offline:
       INSERT online transition event with conflict-safe semantics
@@ -2475,16 +2484,16 @@ For each valid connection message consumed in Kafka partition order:
         update device_availability_state:
           current_state = online
           last_event_time = event_time
-          last_source_sequence = source_sequence
           last_idempotency_key = idempotency_key
           updated_at = processing time
+          board_id = boardId when known
       else:
         treat as duplicate and do not update state
     else if current_state is online:
-      update device_availability_state metadata, last_event_time, last_source_sequence, last_idempotency_key, and updated_at
+      update device_availability_state last_event_time, last_idempotency_key, updated_at, and board_id when known
       do not insert a transition event
     else:
-      update device_availability_state to online, last_event_time, and last_source_sequence
+      update device_availability_state to online, last_event_time, last_idempotency_key, updated_at, and board_id when known
       do not insert an initial online transition event
 
   if incomingState is offline:
@@ -2494,16 +2503,16 @@ For each valid connection message consumed in Kafka partition order:
         update device_availability_state:
           current_state = offline
           last_event_time = event_time
-          last_source_sequence = source_sequence
           last_idempotency_key = idempotency_key
           updated_at = processing time
+          board_id = boardId when known
       else:
         treat as duplicate and do not update state
     else if current_state is offline:
-      update device_availability_state metadata, last_event_time, last_source_sequence, last_idempotency_key, and updated_at
+      update device_availability_state last_event_time, last_idempotency_key, updated_at, and board_id when known
       do not insert a transition event
     else:
-      update device_availability_state to offline, last_event_time, and last_source_sequence
+      update device_availability_state to offline, last_event_time, last_idempotency_key, updated_at, and board_id when known
       do not insert an initial offline transition event because the prior state is unknown
 
   COMMIT
@@ -2515,10 +2524,11 @@ the unique idempotency constraint must not be treated as new offline transitions
 must not move `device_availability_state` backward or forward.
 
 This transaction shape assumes the connection topic is keyed by serialNumber and
-the producer publishes per-serial events in source-event order. Do not apply this
-state machine to a topic that can deliver out-of-order messages for one
-serialNumber unless a separate architecture explicitly defines that ordering
-guarantee outside Analytics PostgreSQL ingestion-progress or data-loss tables.
+the producer publishes per-serial events in source-event order with strictly
+increasing source `event_time`. Do not apply this state machine to a topic that
+violates that contract unless a separate architecture explicitly defines the
+ordering guarantee outside Analytics PostgreSQL ingestion-progress or data-loss
+tables.
 ```
 
 Equivalent transaction shape:
@@ -2531,20 +2541,17 @@ Atomically create or lock the device_availability_state row for :serialNumber.
 Read:
   current_state
   last_event_time
-  last_source_sequence
   last_idempotency_key
 
--- Validate scalar timestamp and sequence ordering key and determine whether state changed.
+-- Validate event_time and idempotency, then determine whether state changed.
 -- Insert into device_availability_events only if state changed.
 
-Update device_availability_state only when timestamp, sequence, and idempotency checks allow it:
+Update device_availability_state only when event_time and idempotency checks allow it:
   current_state = :newState
   last_event_time = :eventTime
-  last_source_sequence = :sourceSequence
   last_idempotency_key = :idempotencyKey
   updated_at = :processingTime
-  board_id = :boardId when known, otherwise keep existing or NULL according to metadata policy
-  metadata = source and processing metadata
+  board_id = :boardId when known, otherwise keep existing or NULL according to board-context policy
 
 COMMIT;
 ```
@@ -2552,20 +2559,14 @@ COMMIT;
 Staleness rule after ordering:
 
 ```text
-An event is stale when `event_time < last_event_time`, or when `event_time == last_event_time` and both `source_sequence` and `last_source_sequence` are present (non-null BIGINT) with `source_sequence < last_source_sequence`.
+An event is stale when `event_time < last_event_time`.
 
-Stale or non-advancing events must not insert counted availability events and must
-not update device_availability_state, even if their idempotency_key has not been
-seen before.
+An event is duplicate or non-advancing when `event_time == last_event_time`.
 
-Equal source timestamps are defensive edge cases, not the foundation of the
-availability architecture. Exact Kafka redelivery should be identified by the
-idempotency key. If two different logical events share the same `event_time`, use
-a reliable deterministic 64-bit numeric `source_sequence` (`BIGINT`) when one
-exists. If no reliable source sequence exists, log and metric the producer/source
-anomaly and apply the documented defensive policy for ambiguous duplicate-source
-data. Do not create an Analytics ingestion-progress or data-loss table for this
-edge case.
+Stale, duplicate, and non-advancing events must not insert counted availability
+events and must not update device_availability_state, even if their
+idempotency_key has not been seen before. The equal timestamp case is defensive
+only and is not expected during normal operation.
 ```
 
 ### Store Only State Transitions
@@ -2583,22 +2584,22 @@ Incorrect:
 every ping → store online event
 ```
 
-Every ping should not be treated as a new online transition. However, every source-newer ping that is accepted after Kafka partition-ordered consumption must still update `device_availability_state.last_event_time` and metadata.
+Every ping should not be treated as a new online transition. However, every source-newer ping that is accepted after Kafka partition-ordered consumption must still update `device_availability_state.last_event_time`, `last_idempotency_key`, `updated_at`, and `board_id` when known.
 
 Ping handling:
 
 ```text
-current_state=online  + ping -> update last_event_time and metadata only
-current_state=offline + ping after a prior offline state -> insert online event, set current_state=online, update last_event_time
-no state row + ping -> create current_state=online, update last_event_time, do not insert an online event
+current_state=online  + ping -> update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert a transition event
+current_state=offline + ping after a prior offline state -> insert online event, set current_state=online, update last_event_time, last_idempotency_key, updated_at, and board_id when known
+no state row + ping -> create current_state=online, update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert an online event
 ```
 
 Disconnection handling:
 
 ```text
-current_state=online  + disconnection -> insert offline event, set current_state=offline, update last_event_time
-current_state=offline + disconnection -> update last_event_time and metadata only when the source message is newer; do not insert another offline event
-no state row + disconnection -> create current_state=offline, update last_event_time, do not insert an offline transition event
+current_state=online  + disconnection -> insert offline event, set current_state=offline, update last_event_time, last_idempotency_key, updated_at, and board_id when known
+current_state=offline + disconnection -> update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert another offline event
+no state row + disconnection -> create current_state=offline, update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert an offline transition event
 ```
 
 Example:
@@ -2610,8 +2611,7 @@ Example:
 ```
 
 With Kafka key = serialNumber and producer-side per-serial ordering, Kafka
-preserves the gateway event order even when the consumer processes the messages
-later:
+preserves the gateway event order:
 
 ```text
 12:05 disconnection -> insert offline event, current_state=offline, last_event_time=12:05
@@ -2624,21 +2624,10 @@ producer publishes events for one serialNumber out of order, Kafka cannot provid
 the required per-gateway transition ordering. Treat that as an operational or
 producer-contract issue; do not model it with Analytics ingestion-progress or data-loss tables.
 
-Kafka delay example:
-
-```text
-Ping source time:          12:00
-Ping processed:            12:05
-Disconnection source time: 12:03
-Disconnection processed:   12:06
-```
-
-The `12:03` disconnection is not stale because it is newer than `device_availability_state.last_event_time = 12:00`. It must not be rejected by comparing against processing-time `DeviceInfo.lastContact = 12:05`.
-
 Review conclusion:
 
 ```text
-The implementation requires `device_availability_state` unless a future design explicitly names an existing persistent table with the same fields and locking guarantees. `last_event_time` must be updated for every source-newer ping, capabilities, or disconnection message accepted after Kafka partition-ordered consumption, even when no availability transition event is inserted. `DeviceInfo.lastContact` remains contact/processing metadata and is not the source-event ordering field.
+The implementation requires `device_availability_state` unless a future design explicitly names an existing persistent table with the same fields and locking guarantees. `last_event_time` must be updated for every source-newer ping, capabilities, or disconnection message accepted after Kafka partition-ordered consumption, even when no availability transition event is inserted. `last_idempotency_key` must be retained for Kafka redelivery/idempotency protection. `DeviceInfo.lastContact` remains contact/processing metadata and is not the source-event ordering field.
 ```
 
 ### Calculation
