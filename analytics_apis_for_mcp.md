@@ -10,7 +10,7 @@ This document defines the request format, response format, and implementation lo
 
 This specification is structured across two in-scope component areas:
 1. **MCP Analytics Behavior Specification**: Intended HTTP requests, parameter validation, response envelopes, and ownership/error semantics for future MCP-facing Analytics handlers.
-2. **Persistence & Pipeline Architecture Design**: Internal storage structures (`device_availability_events`, `device_availability_state`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), Kafka event consumption/ordering, and cutover semantics.
+2. **Persistence & Pipeline Architecture Design**: Internal storage structures (`device_availability_events`, `device_availability_state`), Kafka event consumption/ordering, Kafka offset commit semantics, and cutover semantics.
 
 Follow-up deliverables:
 - OpenAPI contract/schema updates in `openapi/owanalytics.yaml`.
@@ -20,11 +20,9 @@ Follow-up deliverables:
 > This PR does not update `openapi/owanalytics.yaml` and does not publish a
 > functional OpenAPI contract for these MCP analytics endpoints. The OpenAPI
 > contract/schema update is a follow-up deliverable. The specified production
-> architecture changes—including four new availability persistence structures
-> (`device_availability_events`, `device_availability_state`,
-> `device_availability_ingestion_checkpoint`,
-> `device_availability_ingestion_gaps`), Kafka event ordering/checkpointing
-> rules, and cutover migration rules—constitute a production architecture
+> architecture changes—including two new availability persistence structures
+> (`device_availability_events`, `device_availability_state`), Kafka event
+> ordering and offset commit rules, and cutover migration rules—constitute a production architecture
 > specification. Approving or merging this behavior specification PR does NOT bypass
 > separate explicit architecture design sign-off for backend schema additions and
 > production Kafka pipeline changes prior to production deployment.
@@ -317,9 +315,7 @@ observedWindow.endTime
 
 `observedWindow` must contain only the common temporal fields `startTime` and
 `endTime`. Endpoint-specific metadata must not be added inside
-`observedWindow`, and endpoints must not introduce alternate temporal field
-names such as `firstSampleAt`, `firstSampleTime`, `earliestActualStartTime`, or
-`latestActualEndTime`.
+`observedWindow`.
 
 For cumulative-counter differential summaries, exact effective-boundary samples
 are preferred. For endpoints with proven session lifetimes, effective boundaries
@@ -2122,17 +2118,7 @@ None
       "startTime": "2026-07-26T13:15:00Z",
       "endTime": "2026-07-27T09:45:00Z"
     },
-    "coverage": "full",
-    "accuracy": "exact",
-    "offlineEventCount": 6,
-    "availabilityCoverage": {
-      "coverageStart": "2026-07-26T11:55:00Z",
-      "stateKnownFrom": "2026-07-26T11:55:00Z",
-      "processedThrough": "2026-07-27T12:00:00Z",
-      "allowedIngestionDelaySeconds": 0,
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 6
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -2146,8 +2132,8 @@ For availability responses, `observedWindow` is the actual event-time range
 represented by the availability data used to produce the response. It is derived
 from offline transition events that contributed to `offline_count`; when no
 offline transition events contribute, both `observedWindow.startTime` and
-`observedWindow.endTime` are `null`. Completeness and ingestion progress are
-reported separately in `availabilityCoverage`.
+`observedWindow.endTime` are `null`. The response does not report Kafka consumer
+progress or lag as availability-domain data.
 
 ## API Logic
 
@@ -2290,50 +2276,99 @@ Constraints:
 
 `device_availability_events` stores only online/offline transition history. `device_availability_state` stores the authoritative current state and the latest accepted source availability ordering key.
 
-`last_event_time` and `last_source_sequence` form the persisted source ordering key after events have passed the required per-serial ordering mechanism. `last_event_time` must be populated from the normalized Kafka source timestamp (`event_time`), and `last_source_sequence` must be populated from a reliable source sequence, source offset within the producing system, or another deterministic 64-bit numeric value (`BIGINT`) when one exists. `source_sequence` and `last_source_sequence` are stored as `BIGINT NULL` so SQL and application-layer index and comparator operations preserve numeric order (`10 > 2`). The composite key is used for stale detection only after Analytics has established that no older transition for the same serialNumber can still be accepted. `DeviceInfo.lastContact` may remain local contact or processing metadata, but it must not be used to order source events because Kafka delivery can be delayed.
+`last_event_time` and `last_source_sequence` form the persisted source ordering key after events have been consumed in Kafka partition order for the gateway. `last_event_time` must be populated from the normalized Kafka source timestamp (`event_time`), and `last_source_sequence` must be populated from a reliable source sequence, source offset within the producing system, or another deterministic 64-bit numeric value (`BIGINT`) when one exists. `source_sequence` and `last_source_sequence` are stored as `BIGINT NULL` so SQL and application-layer index and comparator operations preserve numeric order (`10 > 2`). The composite key is used for duplicate detection, stale-event protection, same-timestamp ordering, and defensive validation. `DeviceInfo.lastContact` may remain local contact or processing metadata, but it must not be used to order source events because Kafka delivery can be delayed.
 
-Add persisted ingestion coverage tables for availability exactness:
+Do not add Analytics-owned ingestion progress or durable data-loss tables for availability.
 
-```text
-device_availability_ingestion_checkpoint
-----------------------------------------
-serialNumber
-coverage_start
-state_known_from
-processed_through_event_time
-partition
-offset
-ordering_strategy
-reorder_window_ms
-ingestion_gap_known
-updated_at
-metadata
-
-device_availability_ingestion_gaps
-----------------------------------
-serialNumber
-gap_start_event_time
-gap_end_event_time
-reason
-detected_at
-metadata
-```
-
-`processed_through_event_time` is a source-event-time watermark, not a Kafka processing-time or `DeviceInfo.lastContact` value. `state_known_from` stores the earliest source event timestamp from which gateway state is authoritatively established. When initial state is unproven (such as a first observed disconnection initializing state without prior state history), `state_known_from` is set to the timestamp of the first observed transition or explicit state proof (or an unproven gap is persisted in `device_availability_ingestion_gaps` for `[coverage_start, initial_observation_time)`). Kafka topic, partition, and offset are stored only as proof metadata.
-
-For availability coverage decisions over a requested interval `[startTime, endTime)`:
+Kafka consumer offsets are the source of truth for ingestion progress, replay after service restart, redelivery of uncommitted messages, consumer lag, and consumer-group rebalances. Analytics-owned availability state is limited to:
 
 ```text
-coverageTargetEnd = endTime - allowedIngestionDelaySeconds
+device_availability_events
+device_availability_state
 ```
 
-An exact result (`meta.coverage = "full"`, `meta.accuracy = "exact"`) is allowed only when the serialNumber checkpoint proves `coverage_start <= startTime`, `state_known_from <= startTime` (or no unproven initial gap), `processed_through_event_time >= endTime`, and no persisted gap overlaps `[startTime, endTime)`.
+Kafka topic, partition, offset, message key, and consumer timestamp may be stored in event or state `metadata` for diagnostics only. They must not form the logical availability event identity and must not be persisted as an Analytics ingestion-progress record.
 
-Evaluating coverage against `coverageTargetEnd = endTime - allowedIngestionDelaySeconds` does not prove that there were no offline transitions in `[coverageTargetEnd, endTime)`. Therefore, if `processed_through_event_time < endTime` (even when `processed_through_event_time >= coverageTargetEnd`), the requested interval `[startTime, endTime)` is not fully covered up to `endTime` and must be reported as partial coverage (`meta.coverage = "partial"`, `meta.accuracy = "lower_bound"`) with the effective/observed window covered so far ending at `processed_through_event_time` (or `coverageTargetEnd`). Set `allowedIngestionDelaySeconds` to the configured maximum tolerated ingestion/source-message delay for availability queries, and return it in `meta.availabilityCoverage`.
+Expected Kafka and database processing contract:
 
-The checkpoint must be advanced durably with event processing. For a message that changes availability state or updates same-state metadata, the state update, optional transition insert, and checkpoint update must commit in one database transaction before the corresponding Kafka offset is committed. Rebalances and restarts must reload the checkpoint and any persisted reorder-buffer state needed by the selected ordering strategy. If the implementation cannot prove continuity after a restart, rebalance, topic retention truncation, skipped unparseable connection message, reorder-window overflow, or offset discontinuity, it must persist an ingestion gap and stop returning exact coverage for overlapping ranges.
+```text
+Kafka message received
+normalize and validate event
+BEGIN database transaction
+lock/load device_availability_state for serialNumber
+apply idempotency and source ordering checks
+insert device_availability_events transition when required
+update device_availability_state
+COMMIT database transaction
+commit Kafka offset
+```
 
-When one serialNumber has no recent messages, do not infer coverage from an empty event table. The API may return an exact zero only if that serialNumber has a durable checkpoint whose `processed_through_event_time` reaches `endTime`; otherwise the result is partial/lower-bound or unavailable according to the coverage rules. A partition-level or source-level watermark may be used instead of per-message checkpoint advancement only if it is durable, serialNumber-scoped for the queried gateway, and can prove that no earlier source event for that gateway remains unprocessed.
+This is an at-least-once processing contract. The Kafka offset must not be committed before the database transaction succeeds. If the service crashes before the database commit, Kafka replays the message after restart. If the service crashes after the database commit but before the Kafka offset commit, Kafka may redeliver the message and storage-level idempotency must make the replay harmless. Kafka auto-commit must not acknowledge messages ahead of successful database commits.
+
+Restart and rebalance recovery must use the stable Kafka consumer group:
+
+```text
+1. consumer joins the same Kafka consumer group
+2. Kafka resumes from the last committed offset for assigned partitions
+3. messages after that offset are replayed
+4. Analytics loads device_availability_state for each serialNumber as messages arrive
+5. idempotency and ordering checks prevent duplicate transition rows
+6. processing continues and offsets are committed only after DB commit
+```
+
+Concrete restart scenario:
+
+```text
+offset 100 -> ping -> DB committed, Kafka offset committed
+offset 101 -> disconnection -> DB committed, Kafka offset committed
+offset 102 -> ping -> DB committed, service crashes before Kafka offset commit
+
+After restart:
+consumer rejoins the same consumer group
+Kafka resumes from the last committed position
+offset 102 may be replayed
+device_availability_state already reflects offset 102
+device_availability_events idempotency prevents a duplicate transition row
+offset 102 is committed after the replay transaction succeeds or no-ops safely
+consumer continues with offset 103
+```
+
+Consumer-group rebalance and partition reassignment follow the same rule: Kafka
+assigns partitions to a consumer in the stable group, resumes from committed
+offsets, and redelivers any messages whose offsets were not committed.
+
+Normal Kafka lag is not an Analytics data gap. If the producer is at offset 5000 and the consumer is at offset 4500, the service should keep consuming until it catches up. Operational monitoring should expose Kafka consumer lag through Kafka or observability metrics, not through availability-domain tables or API fields.
+
+Exceptional Kafka data-loss conditions are operational incidents, not normal availability-domain state. Examples include Kafka retention expiring before the consumer caught up, a topic being deleted or recreated, or offsets being manually reset past unprocessed data. Log, alert, and metric these conditions. Do not introduce Analytics-owned durable data-loss records unless a separate product requirement explicitly calls for historical completeness auditing.
+
+Final availability ingestion architecture:
+
+```text
+                 Kafka connection topic
+                         |
+                key = serialNumber
+                         |
+                         v
+                 Kafka consumer group
+                         |
+                partition ordering
+                         |
+                         v
+             normalize connection event
+                         |
+                         v
+              DB transaction / serial lock
+                   /              \
+                  v                v
+device_availability_state   device_availability_events
+       current state          transition history
+                  \                /
+                   \              /
+                    DB COMMIT
+                         |
+                         v
+                commit Kafka offset
+```
 
 Add a `DeviceAvailabilityEvent` REST/storage object with `to_json` and `from_json` support in:
 
@@ -2348,32 +2383,22 @@ Update `StorageService`:
 src/StorageService.h
   include storage/storage_device_availability_events.h
   include storage/storage_device_availability_state.h
-  include storage/storage_device_availability_ingestion_checkpoint.h
-  include storage/storage_device_availability_ingestion_gaps.h
   add DeviceAvailabilityEventsDB accessor
   add DeviceAvailabilityStateDB accessor
-  add DeviceAvailabilityIngestionCheckpointDB accessor
-  add DeviceAvailabilityIngestionGapsDB accessor
   add std::unique_ptr<DeviceAvailabilityEventsDB>
   add std::unique_ptr<DeviceAvailabilityStateDB>
-  add std::unique_ptr<DeviceAvailabilityIngestionCheckpointDB>
-  add std::unique_ptr<DeviceAvailabilityIngestionGapsDB>
 
 src/StorageService.cpp
   construct DeviceAvailabilityEventsDB
   construct DeviceAvailabilityStateDB
-  construct DeviceAvailabilityIngestionCheckpointDB
-  construct DeviceAvailabilityIngestionGapsDB
   call DeviceAvailabilityEventsDB->Create()
   call DeviceAvailabilityStateDB->Create()
-  call DeviceAvailabilityIngestionCheckpointDB->Create()
-  call DeviceAvailabilityIngestionGapsDB->Create()
   include availability retention cleanup if retention should match board timepoint cleanup
 ```
 
-Add a DB upgrade/migration path for the new tables. Existing deployments will start with no historical availability events. Define a fixed `availabilityValidFrom` timestamp as the deployment/migration time when availability-event persistence starts. The API should return `offline_count: 0` as an exact result only for successful empty queries whose requested range starts at or after `availabilityValidFrom` and is covered by the per-serial ingestion checkpoint; do not infer old events from `lastDisconnection`.
+Add a DB upgrade/migration path for the new tables. Existing deployments will start with no historical availability events. Define a fixed `availabilityValidFrom` timestamp as the deployment/migration time when availability-event persistence starts. The API should return `offline_count: 0` for successful empty queries whose requested range starts at or after `availabilityValidFrom`; do not infer old events from `lastDisconnection`.
 
-Add all availability storage files to `CMakeLists.txt`, including `storage_device_availability_events.*`, `storage_device_availability_state.*`, `storage_device_availability_ingestion_checkpoint.*`, and `storage_device_availability_ingestion_gaps.*`. Register database migration/upgrade logic for all availability tables so fresh databases and upgraded deployments create the event table, state table, checkpoint table, gap table, indexes, uniqueness constraints, and state constraints consistently.
+Add all availability storage files to `CMakeLists.txt`, including `storage_device_availability_events.*` and `storage_device_availability_state.*`. Register database migration/upgrade logic for these availability tables so fresh databases and upgraded deployments create the event table, state table, indexes, uniqueness constraints, and state constraints consistently.
 
 ### Ingestion Hook
 
@@ -2558,27 +2583,26 @@ The same delivered logical connection event must always produce the same `idempo
 Ordering rule:
 
 ```text
-Availability transition detection must process connection events in source-event
-order for each serialNumber.
+Connection events must be produced to Kafka with Kafka key = serialNumber.
+The producer must publish messages for one serialNumber in source-event order.
+Kafka partition ordering is then the primary ordering guarantee for all
+availability events belonging to one gateway.
 
-The preferred implementation is to produce Kafka connection messages in
-source-event order with serialNumber as the Kafka message key, so all events for
-one gateway are in one partition and retain gateway event order. If the source
-topic cannot provide that guarantee, Analytics must add a bounded event-time
-reorder window or an equivalent serialNumber-scoped ordering mechanism before
-applying the transition state machine.
+Source timestamps and source sequences remain useful for duplicate detection,
+stale-event protection, same-timestamp ordering, and defensive validation. They
+must not be used to build a second durable Analytics ingestion watermark.
 
-A newer same-state online event must not advance last_event_time in a way that
-causes an older offline transition for the same serialNumber to be discarded
-silently. If a deployment intentionally chooses best-effort counting instead of
-per-serial ordering, that lower-accuracy behavior must be documented separately
-and surfaced to callers; it must not be reported as exact availability counting.
+If the source topic cannot provide serialNumber keying and producer-side
+per-serial ordering, Kafka alone cannot guarantee exact transition history for
+that gateway. Treat that as a producer/topic contract violation or a separate
+architecture requirement; do not add an Analytics PostgreSQL ingestion-progress or data-loss
+tracking system to compensate.
 ```
 
 Atomic transition and insert rule:
 
 ```text
-For each valid connection message emitted by the per-serial ordering stage:
+For each valid connection message consumed in Kafka partition order:
   BEGIN
 
   acquire a serialNumber-scoped transaction lock before reading state
@@ -2611,8 +2635,8 @@ For each valid connection message emitted by the per-serial ordering stage:
         if idempotency_key equals last_idempotency_key:
           treat the message as an exact duplicate
         else:
-          persist an ingestion ambiguity gap for this serialNumber, event_time, and source_sequence
-          treat the message as ambiguous, not exact
+          treat the message as ambiguous duplicate-source data
+          log and metric the ambiguity
         do not insert an availability event
         do not update device_availability_state
         COMMIT
@@ -2622,8 +2646,8 @@ For each valid connection message emitted by the per-serial ordering stage:
       if idempotency_key equals last_idempotency_key:
         treat the message as an exact duplicate
       else:
-        persist an ingestion ambiguity gap for this serialNumber and event_time
-        treat the message as unordered / ambiguous, not exact
+        treat the message as ambiguous duplicate-source data
+        log and metric the ambiguity
       do not insert an availability event
       do not update device_availability_state
       COMMIT
@@ -2680,10 +2704,11 @@ The storage method must return whether a row was inserted. Duplicate events that
 the unique idempotency constraint must not be treated as new offline transitions and
 must not move `device_availability_state` backward or forward.
 
-This transaction shape assumes the selected ordering strategy has already made
-the message eligible for state-machine processing. Do not apply this scalar
-`last_event_time` staleness check directly to raw Kafka arrival order unless the
-connection topic is keyed by serialNumber and source-event ordered.
+This transaction shape assumes the connection topic is keyed by serialNumber and
+the producer publishes per-serial events in source-event order. Do not apply this
+state machine to a topic that can deliver out-of-order messages for one
+serialNumber unless a separate architecture explicitly defines that ordering
+guarantee outside Analytics PostgreSQL ingestion-progress or data-loss tables.
 ```
 
 Equivalent transaction shape:
@@ -2727,9 +2752,9 @@ Two different logical events with the same `event_time` must be ordered by a
 deterministic 64-bit numeric `source_sequence` (`BIGINT`). Exact Kafka redelivery
 should be identified by the idempotency key. If two different logical events share
 the same `event_time` and lack comparable non-null source sequences, or have identical
-source sequences, Analytics must persist an ingestion ambiguity gap for that source time
-and downgrade overlapping availability queries to partial/lower-bound coverage instead
-of silently discarding one transition as non-advancing or guessing order arbitrarily.
+source sequences, Analytics cannot deterministically order them. Log and metric
+the ambiguity, do not insert a counted transition for the ambiguous message, and
+do not create an Analytics ingestion-progress or data-loss table.
 ```
 
 ### Store Only State Transitions
@@ -2747,7 +2772,7 @@ Incorrect:
 every ping → store online event
 ```
 
-Every ping should not be treated as a new online transition. However, every source-newer ping that is accepted by the per-serial ordering stage must still update `device_availability_state.last_event_time` and metadata.
+Every ping should not be treated as a new online transition. However, every source-newer ping that is accepted after Kafka partition-ordered consumption must still update `device_availability_state.last_event_time` and metadata.
 
 Ping handling:
 
@@ -2773,11 +2798,9 @@ Example:
 12:10 ping source event
 ```
 
-If Kafka delivers the `12:10` ping before the `12:05` disconnection and the
-topic does not guarantee serialNumber ordering, Analytics must not immediately
-advance `last_event_time` to `12:10` and then reject the delayed `12:05`
-disconnection. With a bounded reorder window, both messages are ordered by
-source time before transition processing:
+With Kafka key = serialNumber and producer-side per-serial ordering, Kafka
+preserves the gateway event order even when the consumer processes the messages
+later:
 
 ```text
 12:05 disconnection -> insert offline event, current_state=offline, last_event_time=12:05
@@ -2785,9 +2808,10 @@ source time before transition processing:
 ```
 
 The final current state is online, and the outage from `12:05` to `12:10` remains
-present in transition history. If the implementation lacks serial-keyed
-source-event ordering or a bounded reorder window, this case is only best-effort
-and must not be surfaced as exact availability counting.
+present in transition history. If the topic is not keyed by serialNumber or the
+producer publishes events for one serialNumber out of order, Kafka cannot provide
+the required per-gateway transition ordering. Treat that as an operational or
+producer-contract issue; do not model it with Analytics ingestion-progress or data-loss tables.
 
 Kafka delay example:
 
@@ -2803,7 +2827,7 @@ The `12:03` disconnection is not stale because it is newer than `device_availabi
 Review conclusion:
 
 ```text
-The implementation requires `device_availability_state` unless a future design explicitly names an existing persistent table with the same fields and locking guarantees. `last_event_time` must be updated for every source-newer ping, capabilities, or disconnection message accepted by the per-serial ordering stage, even when no availability transition event is inserted. `DeviceInfo.lastContact` remains contact/processing metadata and is not the source-event ordering field.
+The implementation requires `device_availability_state` unless a future design explicitly names an existing persistent table with the same fields and locking guarantees. `last_event_time` must be updated for every source-newer ping, capabilities, or disconnection message accepted after Kafka partition-ordered consumption, even when no availability transition event is inserted. `DeviceInfo.lastContact` remains contact/processing metadata and is not the source-event ordering field.
 ```
 
 ### Calculation
@@ -2831,10 +2855,6 @@ If startTime < availabilityValidFrom:
 If startTime >= availabilityValidFrom:
   query device_availability_events normally
 ```
-
-For `meta.coverage = "none"` and `meta.accuracy = "not_applicable"`, return
-`data.offline_count = null`. Do not return a numeric `0` when the API has no
-coverage proof for the requested interval.
 
 Rejecting pre-cutover ranges prevents a successful zero response from meaning either
 "no outages occurred" or "Analytics was not collecting availability events yet."
@@ -2880,17 +2900,7 @@ Use an HTTP error:
       "startTime": null,
       "endTime": null
     },
-    "coverage": "full",
-    "accuracy": "exact",
-    "offlineEventCount": 0,
-    "availabilityCoverage": {
-      "coverageStart": "2026-07-20T00:00:00Z",
-      "stateKnownFrom": "2026-07-20T00:00:00Z",
-      "processedThrough": "2026-07-27T12:01:00Z",
-      "allowedIngestionDelaySeconds": 60,
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 0
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -2900,16 +2910,15 @@ Use an HTTP error:
 }
 ```
 
-An exact zero is valid only when availability coverage proves the complete requested interval up to `endTime`: `coverageStart <= startTime`, `stateKnownFrom <= startTime`, `processedThrough >= endTime`, `ingestionGapKnown = false`, and `proofSource != "unavailable"`. When `processedThrough < endTime` (even if `processedThrough >= endTime - allowedIngestionDelaySeconds`), the requested interval is not fully covered up to `endTime` and a zero matching event count must be reported as partial/lower-bound (`meta.coverage = "partial"`), or as unavailable with `offline_count: null` when no coverage proof exists.
+A zero result means no offline transition rows are currently persisted for the
+requested post-cutover interval. Kafka consumer lag is operational state and is
+not represented as availability-domain response metadata.
 
 `offlineEventCount` is the number of offline transition rows in
 `device_availability_events` that contribute to `offline_count`. Online recovery
 transition rows (`event_type = 'online'`) are stored in transition history for
 state tracking, but they do not contribute to `observedWindow`,
 `offlineEventCount`, or `offline_count`.
-
-When `meta.coverage = "none"` and `meta.accuracy = "not_applicable"`,
-`offlineEventCount` and `offline_count` are both `null`.
 
 ### Internal Error
 
