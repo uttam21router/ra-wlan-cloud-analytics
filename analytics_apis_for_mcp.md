@@ -138,13 +138,13 @@ wifi-clients/rssi-summary:
   response = fixed RSSI quality percentage aggregation schema
 
 availability-summary:
-  dataset retrieval = all_with_baseline
-  response = offline transition count
+  dataset retrieval = all
+  response = persisted offline transition count
 ```
 
-For `all`, retrieve every record in the requested range. For state-transition
-calculations, also retrieve the latest valid state at or before the requested
-start; this is `all_with_baseline`.
+For `all`, retrieve every record in the requested range. `availability-summary`
+uses `all` because it counts persisted offline transition rows in
+`[startTime, endTime)` and does not need a pre-window baseline.
 
 For `differential`, return the change in cumulative counter values over the
 requested time range:
@@ -2319,6 +2319,27 @@ commit Kafka offset
 ```
 
 This is an at-least-once processing contract. The Kafka offset must not be committed before the database transaction succeeds. If the service crashes before the database commit, Kafka replays the message after restart. If the service crashes after the database commit but before the Kafka offset commit, Kafka may redeliver the message and storage-level idempotency must make the replay harmless. Kafka auto-commit must not acknowledge messages ahead of successful database commits.
+
+Availability transition processing must preserve Kafka partition order. The
+default implementation should process messages from one Kafka partition
+sequentially for availability state transitions. If batching or concurrent
+processing is introduced later, offset commits must remain contiguous per
+partition: commit only the highest offset for which that record and every earlier
+uncommitted record in the same partition have successfully completed the
+database transaction. Never commit past an earlier failed, skipped, or
+unprocessed record in the same partition.
+
+Unsafe concurrent commit example:
+
+```text
+partition P:
+offset 100 -> DB success
+offset 101 -> DB fails
+offset 102 -> DB success
+
+Do not commit offset 102, because that would skip offset 101 after restart.
+The highest committable contiguous offset is 100.
+```
 
 Restart and rebalance recovery must use the stable Kafka consumer group:
 
