@@ -1971,7 +1971,6 @@ serialNumber          TEXT PRIMARY KEY
 board_id              TEXT NULL
 current_state         TEXT
 last_event_time       BIGINT
-last_idempotency_key  TEXT
 updated_at            BIGINT
 ```
 
@@ -1983,7 +1982,6 @@ Fields:
   board_id             TEXT NULL
   current_state        TEXT
   last_event_time      BIGINT
-  last_idempotency_key TEXT
   updated_at           BIGINT
 
 Indexes:
@@ -1991,7 +1989,7 @@ Indexes:
     board_id ASC
 
 Constraints:
-  current_state must be one of: online, offline, unknown
+  current_state IN ('online', 'offline', 'unknown')
 ```
 
 `device_availability_events` stores only online/offline transition history.
@@ -2003,7 +2001,6 @@ transition rows.
 ```text
 - the latest accepted availability state
 - the latest accepted source event timestamp
-- the latest logical event identity for idempotency
 - optional current board context
 - the state row update timestamp
 ```
@@ -2017,6 +2014,19 @@ consumed in Kafka partition order for the gateway. It must be populated from the
 normalized Kafka source timestamp (`event_time`). `DeviceInfo.lastContact` may
 remain local contact or processing metadata, but it must not be used to order
 source events.
+
+Availability ingestion responsibilities are separated as follows:
+
+```text
+device_availability_state.last_event_time
+  -> replay/non-advancing detection at state level
+
+device_availability_events.idempotency_key UNIQUE
+  -> storage-level duplicate transition protection
+
+Kafka committed offset
+  -> ingestion progress and replay position
+```
 
 Do not add Analytics-owned ingestion progress or durable data-loss tables for availability.
 
@@ -2042,14 +2052,14 @@ Kafka message received
 normalize and validate event
 BEGIN database transaction
 lock/load device_availability_state for serialNumber
-validate idempotency and event_time
+validate event_time
 insert device_availability_events only on a real state transition
 update device_availability_state
 COMMIT database transaction
 commit Kafka offset
 ```
 
-This is an at-least-once processing contract. The Kafka offset must not be committed before the database transaction succeeds. If the service crashes before the database commit, Kafka replays the message after restart. If the service crashes after the database commit but before the Kafka offset commit, Kafka may redeliver the message and storage-level idempotency must make the replay harmless. Kafka auto-commit must not acknowledge messages ahead of successful database commits.
+This is an at-least-once processing contract. The Kafka offset must not be committed before the database transaction succeeds. If the service crashes before the database commit, Kafka replays the message after restart. If the service crashes after the database commit but before the Kafka offset commit, Kafka may redeliver the message; the `event_time` check must make replay non-advancing, and the unique `device_availability_events.idempotency_key` constraint remains a safety net for duplicate transition inserts. Kafka auto-commit must not acknowledge messages ahead of successful database commits.
 
 Availability transition processing must preserve Kafka partition order. The
 default implementation should process messages from one Kafka partition
@@ -2079,7 +2089,7 @@ Restart and rebalance recovery must use the stable Kafka consumer group:
 2. Kafka resumes from the last committed offset for assigned partitions
 3. messages after that offset are replayed
 4. Analytics loads device_availability_state for each serialNumber as messages arrive
-5. idempotency and event_time checks prevent duplicate transition rows
+5. event_time checks prevent duplicate transition rows; event-table idempotency remains a storage safety net
 6. processing continues and offsets are committed only after DB commit
 ```
 
@@ -2095,7 +2105,8 @@ consumer rejoins the same consumer group
 Kafka resumes from the last committed position
 offset 102 may be replayed
 device_availability_state already reflects offset 102
-device_availability_events idempotency prevents a duplicate transition row
+event_time == last_event_time makes the replay a duplicate/non-advancing no-op
+device_availability_events idempotency remains a storage safety net if a duplicate transition insert is attempted
 offset 102 is committed after the replay transaction succeeds or no-ops safely
 consumer continues with offset 103
 ```
@@ -2155,7 +2166,6 @@ Kafka:
 Analytics ingestion:
   restart-safe current availability state
   latest accepted event_time
-  idempotency
   transition detection
   idempotent transition persistence
 
@@ -2240,6 +2250,20 @@ Ingestion-time board source:
 
 The ingestion path must not depend on HTTP request-time `ResolveRouterIdContext`. That resolver can use OWPROV to verify or refresh ownership for API requests, but Kafka connection ingestion should use the maintained `VenueCoordinator` ownership map and tolerate missing current board ownership.
 
+For `device_availability_state`, `board_id` is current ownership/context only.
+For every accepted source-newer event and every bootstrap state row:
+
+```text
+if VenueCoordinator has a current mapping:
+  state.board_id = mapped boardId
+else:
+  state.board_id = NULL
+```
+
+Do not keep a previous state-table `board_id` when the current map has no
+mapping. `device_availability_events.board_id` remains historical event-time
+context.
+
 Rules:
 
 ```text
@@ -2258,22 +2282,26 @@ Bootstrap rule when no `device_availability_state` row exists:
 First observed disconnection:
   insert state row with current_state = offline
   set last_event_time = event_time
-  set last_idempotency_key = idempotency_key
+  set board_id from the current VenueCoordinator mapping, or NULL when absent
+  set updated_at
   do not insert an offline transition event because the prior state is unknown
 
 First observed ping/capabilities:
   insert state row with current_state = online
   set last_event_time = event_time
-  set last_idempotency_key = idempotency_key
+  set board_id from the current VenueCoordinator mapping, or NULL when absent
+  set updated_at
   do not insert an online transition event
 
 First observed unrecognized connection message:
   insert or update state row with current_state = unknown only when useful
   set last_event_time only from a valid source timestamp
+  set board_id from the current VenueCoordinator mapping, or NULL when absent
+  set updated_at
   do not insert a counted event
 ```
 
-In-memory transition checking is only an optimization. It is not sufficient for correctness because Kafka can redeliver messages and the service can restart after losing in-memory state. Transition detection must use `device_availability_state.current_state` and `device_availability_state.last_event_time` under the same transaction before writing `device_availability_events`. Duplicate connection messages must be rejected by `event_time` validation and storage-level idempotency before they can affect `offline_count`.
+In-memory transition checking is only an optimization. It is not sufficient for correctness because Kafka can redeliver messages and the service can restart after losing in-memory state. Transition detection must use `device_availability_state.current_state` and `device_availability_state.last_event_time` under the same transaction before writing `device_availability_events`. Duplicate connection messages must be rejected by `event_time` validation before they can affect `offline_count`; the event-table idempotency constraint remains a storage safety net for duplicate transition inserts.
 
 Normalize connection messages before transition processing:
 
@@ -2425,8 +2453,21 @@ If a message has `event_time == last_event_time`, treat it as duplicate or
 non-advancing, do not create a transition, and do not move state. Equal source
 timestamps are not expected during normal operation.
 
-`last_idempotency_key` is retained for Kafka redelivery/idempotency protection.
-It must not participate in source-event ordering.
+Under the producer contract, the same `serialNumber` and `event_time` identifies
+a duplicate or replay. `device_availability_state` does not store an
+idempotency key. Keep the unique `idempotency_key` on
+`device_availability_events` as a database safety net for persisted
+transitions.
+
+Before a source-newer event updates `device_availability_state`, resolve
+`stateBoardId` from the current VenueCoordinator map:
+
+```text
+if current mapping exists:
+  stateBoardId = mapped boardId
+else:
+  stateBoardId = NULL
+```
 
 If the source topic violates serialNumber keying, per-serial source-event order,
 or strictly increasing per-serial `event_time`, treat that as a producer/topic
@@ -2454,8 +2495,7 @@ For each valid connection message consumed in Kafka partition order:
     if another transaction created the state row first, re-read it and continue
     otherwise initialize current_state from incomingState
     set last_event_time = event_time
-    set last_idempotency_key = idempotency_key
-    set board_id when known
+    set board_id = stateBoardId
     set updated_at
     do not insert an initial transition event
     COMMIT
@@ -2484,16 +2524,15 @@ For each valid connection message consumed in Kafka partition order:
         update device_availability_state:
           current_state = online
           last_event_time = event_time
-          last_idempotency_key = idempotency_key
           updated_at = processing time
-          board_id = boardId when known
+          board_id = stateBoardId
       else:
         treat as duplicate and do not update state
     else if current_state is online:
-      update device_availability_state last_event_time, last_idempotency_key, updated_at, and board_id when known
+      update device_availability_state last_event_time, updated_at, and board_id = stateBoardId
       do not insert a transition event
     else:
-      update device_availability_state to online, last_event_time, last_idempotency_key, updated_at, and board_id when known
+      update device_availability_state to online, last_event_time, updated_at, and board_id = stateBoardId
       do not insert an initial online transition event
 
   if incomingState is offline:
@@ -2503,16 +2542,15 @@ For each valid connection message consumed in Kafka partition order:
         update device_availability_state:
           current_state = offline
           last_event_time = event_time
-          last_idempotency_key = idempotency_key
           updated_at = processing time
-          board_id = boardId when known
+          board_id = stateBoardId
       else:
         treat as duplicate and do not update state
     else if current_state is offline:
-      update device_availability_state last_event_time, last_idempotency_key, updated_at, and board_id when known
+      update device_availability_state last_event_time, updated_at, and board_id = stateBoardId
       do not insert a transition event
     else:
-      update device_availability_state to offline, last_event_time, last_idempotency_key, updated_at, and board_id when known
+      update device_availability_state to offline, last_event_time, updated_at, and board_id = stateBoardId
       do not insert an initial offline transition event because the prior state is unknown
 
   COMMIT
@@ -2541,17 +2579,15 @@ Atomically create or lock the device_availability_state row for :serialNumber.
 Read:
   current_state
   last_event_time
-  last_idempotency_key
 
--- Validate event_time and idempotency, then determine whether state changed.
+-- Validate event_time, then determine whether state changed.
 -- Insert into device_availability_events only if state changed.
 
-Update device_availability_state only when event_time and idempotency checks allow it:
+Update device_availability_state only when event_time checks allow it:
   current_state = :newState
   last_event_time = :eventTime
-  last_idempotency_key = :idempotencyKey
   updated_at = :processingTime
-  board_id = :boardId when known, otherwise keep existing or NULL according to board-context policy
+  board_id = :stateBoardId, where stateBoardId is the current VenueCoordinator mapping or NULL
 
 COMMIT;
 ```
@@ -2564,9 +2600,8 @@ An event is stale when `event_time < last_event_time`.
 An event is duplicate or non-advancing when `event_time == last_event_time`.
 
 Stale, duplicate, and non-advancing events must not insert counted availability
-events and must not update device_availability_state, even if their
-idempotency_key has not been seen before. The equal timestamp case is defensive
-only and is not expected during normal operation.
+events and must not update device_availability_state. The equal timestamp case
+is defensive only and is not expected during normal operation.
 ```
 
 ### Store Only State Transitions
@@ -2584,22 +2619,22 @@ Incorrect:
 every ping → store online event
 ```
 
-Every ping should not be treated as a new online transition. However, every source-newer ping that is accepted after Kafka partition-ordered consumption must still update `device_availability_state.last_event_time`, `last_idempotency_key`, `updated_at`, and `board_id` when known.
+Every ping should not be treated as a new online transition. However, every source-newer ping that is accepted after Kafka partition-ordered consumption must still update `device_availability_state.last_event_time`, `updated_at`, and `board_id` from the current VenueCoordinator mapping or `NULL`.
 
 Ping handling:
 
 ```text
-current_state=online  + ping -> update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert a transition event
-current_state=offline + ping after a prior offline state -> insert online event, set current_state=online, update last_event_time, last_idempotency_key, updated_at, and board_id when known
-no state row + ping -> create current_state=online, update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert an online event
+current_state=online  + ping -> update last_event_time, updated_at, and board_id from the current map or NULL; do not insert a transition event
+current_state=offline + ping after a prior offline state -> insert online event, set current_state=online, update last_event_time, updated_at, and board_id from the current map or NULL
+no state row + ping -> create current_state=online, update last_event_time, updated_at, and board_id from the current map or NULL; do not insert an online event
 ```
 
 Disconnection handling:
 
 ```text
-current_state=online  + disconnection -> insert offline event, set current_state=offline, update last_event_time, last_idempotency_key, updated_at, and board_id when known
-current_state=offline + disconnection -> update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert another offline event
-no state row + disconnection -> create current_state=offline, update last_event_time, last_idempotency_key, updated_at, and board_id when known; do not insert an offline transition event
+current_state=online  + disconnection -> insert offline event, set current_state=offline, update last_event_time, updated_at, and board_id from the current map or NULL
+current_state=offline + disconnection -> update last_event_time, updated_at, and board_id from the current map or NULL; do not insert another offline event
+no state row + disconnection -> create current_state=offline, update last_event_time, updated_at, and board_id from the current map or NULL; do not insert an offline transition event
 ```
 
 Example:
@@ -2627,7 +2662,7 @@ producer-contract issue; do not model it with Analytics ingestion-progress or da
 Review conclusion:
 
 ```text
-The implementation requires `device_availability_state` unless a future design explicitly names an existing persistent table with the same fields and locking guarantees. `last_event_time` must be updated for every source-newer ping, capabilities, or disconnection message accepted after Kafka partition-ordered consumption, even when no availability transition event is inserted. `last_idempotency_key` must be retained for Kafka redelivery/idempotency protection. `DeviceInfo.lastContact` remains contact/processing metadata and is not the source-event ordering field.
+The implementation requires `device_availability_state` unless a future design explicitly names an existing persistent table with the same fields and locking guarantees. `last_event_time` must be updated for every source-newer ping, capabilities, or disconnection message accepted after Kafka partition-ordered consumption, even when no availability transition event is inserted. `board_id` must be set from the current VenueCoordinator mapping or NULL on every accepted source-newer state update. `DeviceInfo.lastContact` remains contact/processing metadata and is not the source-event ordering field.
 ```
 
 ### Calculation
@@ -2726,7 +2761,7 @@ offline_count = 2
 observedWindow = [12:15, 13:20]
 ```
 
-Delayed Kafka message example:
+Kafka consumer lag example:
 
 ```text
 12:00 ping
@@ -2791,8 +2826,9 @@ Use an HTTP error:
 A zero result means no persisted offline transition was observed in the
 requested post-cutover interval based on the data currently available in
 Analytics storage. It does not make claims about outages not yet observed,
-delayed messages, or Kafka consumer position. Kafka consumer lag is operational
-state and is not represented as availability-domain response metadata.
+unconsumed messages, or Kafka consumer position. Kafka consumer lag is
+operational state and is not represented as availability-domain response
+metadata.
 
 `offlineEventCount` is the number of offline transition rows in
 `device_availability_events` that contribute to `offline_count`. Online recovery
