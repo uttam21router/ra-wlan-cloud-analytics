@@ -40,13 +40,13 @@ components:
       in: path
       name: routerId
       required: true
-      description: Gateway serial number accepted by OWPROV inventory. Path-safe serial identifiers (1 to 64 alphanumeric characters, hyphens, and underscores; free of path separators and dot-segments) are accepted by syntax validation and resolved via OWPROV. Values containing path dot-segments, path separators, or spaces are rejected before OWPROV ownership resolution.
+      description: Gateway serial number accepted by OWPROV inventory. Path-safe serial identifiers (1 to 64 alphanumeric characters, hyphens, and underscores; free of path separators and dot-segments) are accepted by syntax validation and resolved via OWPROV. Values containing path dot-segments, path separators, spaces, control characters, or invalid encoded path separators are rejected before OWPROV ownership resolution.
       schema:
         $ref: '#/components/schemas/RouterId'
     TimestampTill:
       in: query
       name: timestampTill
-      description: Exclusive UTC upper bound for the summary window. The value must match YYYY-MM-DDTHH:mm:ssZ, must be semantically parsed as a real date-time, and must reject invalid dates or times such as 2026-99-99T88:77:66Z. Fractional seconds and timezone offsets such as +05:30 are invalid.
+      description: Exclusive UTC upper bound for the summary window. The raw query collection must contain timestampTill exactly once. The value must match YYYY-MM-DDTHH:mm:ssZ, must be semantically parsed as a real UTC date-time, and must reject invalid dates or times such as 2026-99-99T88:77:66Z. Missing timezones, fractional seconds, timezone offsets such as +05:30, repeated values, and timestamps beyond the configured server clock-skew tolerance are invalid.
       schema:
         $ref: '#/components/schemas/TimestampTill'
       required: true
@@ -57,8 +57,8 @@ components:
         Number of hours to look back from timestampTill. Must be greater than 0 and less than or equal to
         maxLookbackHours, where maxLookbackHours is derived from the configured monitoringDuration; the
         resulting half-open range must fit inside the configured retention window. Handlers must parse the
-        raw HTTP query parameter collection to ensure lookbackHours appears exactly once, is a non-fractional
-        integer, and does not overflow or repeat.
+        raw HTTP query parameter collection to ensure lookbackHours appears exactly once and reject repeated,
+        empty, fractional, partially numeric, overflowing, zero, and negative values.
       schema:
         type: integer
         format: int32
@@ -71,16 +71,19 @@ components:
       minLength: 1
       maxLength: 64
       pattern: '^[a-zA-Z0-9_-]+$'
+      description: Path-safe gateway serial number. Path separators, dot-segments, spaces, control characters, and invalid encoded path separators are rejected.
       example: "dc6279652334"
 
     TimestampTill:
       type: string
       format: date-time
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+      description: Strict RFC3339 UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format. Timezone offsets, missing timezone, fractional seconds, invalid calendar dates or times, and timestamps beyond configured server clock-skew tolerance are rejected.
       example: "2026-07-27T12:00:00Z"
 
     RequestedWindow:
       type: object
+      description: Exact requested half-open interval [startTime, endTime).
       required:
         - startTime
         - endTime
@@ -95,8 +98,8 @@ components:
     ObservedWindow:
       type: object
       description: >
-        Actual persisted sample/event timestamp range used to produce the response. startTime and
-        endTime are null when no valid persisted data contributes to the result.
+        Actual earliest/latest persisted sample or event timestamps that contributed to the result.
+        startTime and endTime are null when no valid persisted data contributes to the result.
       required:
         - startTime
         - endTime
@@ -997,20 +1000,23 @@ components:
           $ref: '#/components/schemas/ObservedWindow'
         min_memfree:
           type: integer
-          format: int64
+          format: uint64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Minimum reported free memory in bytes for the requested aggregation window.
         max_memfree:
           type: integer
-          format: int64
+          format: uint64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Maximum reported free memory in bytes for the requested aggregation window.
         avg_memfree:
           type: number
           format: double
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Arithmetic average of reported free-memory samples in bytes for the requested aggregation window.
 
@@ -1109,16 +1115,19 @@ components:
           $ref: '#/components/schemas/MacAddress'
         rx_bytes:
           type: integer
-          format: int64
+          format: uint64
           minimum: 0
+          maximum: 18446744073709551615
         tx_bytes:
           type: integer
-          format: int64
+          format: uint64
           minimum: 0
+          maximum: 18446744073709551615
         total_bytes:
           type: integer
-          format: int64
+          format: uint64
           minimum: 0
+          maximum: 18446744073709551615
         data_consume_rx:
           type: string
           description: Display-only decimal megabytes derived from rx_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
@@ -1295,8 +1304,7 @@ components:
       description: >
         Wrapped gateway availability summary response. The endpoint counts persisted offline
         transition rows in device_availability_events for the requested interval and reports the
-        observed event-time window for those rows. It does not expose Kafka progress, ingestion
-        completeness, coverage, or checkpoint proof.
+        observed event-time window for those rows.
       required:
         - meta
         - data
@@ -1680,6 +1688,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GatewayMemorySummary'
+              examples:
+                withSamples:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T12:03:00Z"
+                      endTime: "2026-07-27T11:57:00Z"
+                    min_memfree: 211374
+                    max_memfree: 215050
+                    avg_memfree: 212074.36
+                noSamples:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: null
+                      endTime: null
+                    min_memfree: null
+                    max_memfree: null
+                    avg_memfree: null
         400:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
@@ -1712,6 +1743,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GatewayWifiTemperatureSummary'
+              examples:
+                withSamples:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T12:04:00Z"
+                      endTime: "2026-07-27T11:55:00Z"
+                    min_wifi_temp_2.4G: 62
+                    max_wifi_temp_2.4G: 70
+                    avg_wifi_temp_2.4G: 66.64
+                    min_wifi_temp_5G: 56
+                    max_wifi_temp_5G: 65
+                    avg_wifi_temp_5G: 60.38
         400:
           $ref: '#/components/responses/TemperatureAnalyticsBadRequest'
         401:
@@ -1746,6 +1792,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientBandwidthConsumptionResponse'
+              examples:
+                withClients:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T11:55:00Z"
+                      endTime: "2026-07-27T12:05:00Z"
+                    items:
+                      - mac: "e2:51:95:ed:0f:28"
+                        rx_bytes: 106487500
+                        tx_bytes: 3851250
+                        total_bytes: 110338750
+                        data_consume_rx: "106.49 MB"
+                        data_consume_tx: "3.85 MB"
+                        total_data_usage: "110.34 MB"
+                    totalClients: 1
+                    truncated: false
         400:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
@@ -1778,6 +1843,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientRssiQualityResponse'
+              examples:
+                withClients:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T12:01:00Z"
+                      endTime: "2026-07-27T11:58:00Z"
+                    items:
+                      - mac: "e2:51:95:ed:0f:28"
+                        rssi_excellent_pct: 41.67
+                        rssi_good_pct: 50.0
+                        rssi_fair_pct: 1.67
+                        rssi_poor_pct: 6.67
+                        rssi_total_samples: 60
+                    totalClients: 1
+                    truncated: false
+                noResults:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: null
+                      endTime: null
+                    items: []
+                    totalClients: 0
+                    truncated: false
         400:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
@@ -1810,6 +1904,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GatewayAvailabilitySummaryResponse'
+              examples:
+                withEvents:
+                  value:
+                    meta:
+                      requestedWindow:
+                        startTime: "2026-07-26T12:00:00Z"
+                        endTime: "2026-07-27T12:00:00Z"
+                      observedWindow:
+                        startTime: "2026-07-26T13:15:00Z"
+                        endTime: "2026-07-27T09:45:00Z"
+                      offlineEventCount: 6
+                    data:
+                      gw_uuid: "60cf84f22290"
+                      fetch_status: success
+                      offline_count: 6
+                zeroEvents:
+                  value:
+                    meta:
+                      requestedWindow:
+                        startTime: "2026-07-26T12:00:00Z"
+                        endTime: "2026-07-27T12:00:00Z"
+                      observedWindow:
+                        startTime: null
+                        endTime: null
+                      offlineEventCount: 0
+                    data:
+                      gw_uuid: "60cf84f22290"
+                      fetch_status: success
+                      offline_count: 0
         400:
           $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
         401:
