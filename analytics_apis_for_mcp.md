@@ -756,29 +756,38 @@ Do not represent missing memory fields as `0`. A missing `memory_free` value and
 
 Ingestion should preserve syntactically and structurally valid source telemetry
 and avoid analytics-specific semantic validation. The typed memory resource
-model stores byte counts as unsigned values; negative memory values are
-structurally invalid for this ingestion contract and are omitted field-by-field,
-not preserved in `DeviceResourceTimePoint`. Parse each memory field
-independently, persist fields that can be represented as nonnegative 64-bit
-integers, and omit only the malformed or structurally invalid field. Do not
-apply cross-field checks such as `memory_free <= memory_total` during ingestion;
-those checks belong to the aggregation layer so source telemetry that is valid
-for the storage contract remains available for troubleshooting.
+model stores byte counts as unsigned values. The accepted range for each memory
+field is:
+
+```text
+0 <= memory_value <= UINT64_MAX
+```
+
+Negative memory values, fractional values, nonnumeric values, and values that
+overflow `uint64_t` are structurally invalid for this ingestion contract and are
+omitted field-by-field, not preserved in `DeviceResourceTimePoint`. Parse each
+memory field independently, persist fields that can be represented as unsigned
+64-bit integers, and omit only the malformed or structurally invalid field. Do
+not apply cross-field checks such as `memory_free <= memory_total` during
+ingestion; those checks belong to the aggregation layer so source telemetry that
+is valid for the storage contract remains available for troubleshooting.
 
 ```cpp
 AnalyticsObjects::DeviceResourceTimePoint resource;
 
-// Validate numeric type, integral value, non-negative byte-count range (>= 0), and 64-bit non-overflow before unsigned conversion.
+// Validate numeric type, integral value, byte-count range (0..UINT64_MAX), and unsigned 64-bit non-overflow before conversion.
 // Field-level preservation policy: malformed or structurally invalid free, total, cached, or buffered values are omitted independently.
-// Negative memory values are structurally invalid for this unsigned byte-count storage contract.
+// Negative, fractional, nonnumeric, and uint64_t-overflowing values are structurally invalid for this unsigned byte-count storage contract.
 // Do not apply analytics-specific semantic checks, such as free <= total, at ingestion time.
 auto parseMemoryField = [](const Poco::JSON::Object::Ptr &obj, const std::string &key) -> std::optional<uint64_t> {
     if (!obj->has(key) || obj->isNull(key)) return std::nullopt;
     try {
-        if (!obj->isNumeric(key)) return std::nullopt;
-        int64_t val = obj->getElement<int64_t>(key);
-        if (val < 0) return std::nullopt;
-        return static_cast<uint64_t>(val);
+        Poco::Dynamic::Var raw = obj->get(key);
+        if (!raw.isNumeric() || !raw.isInteger()) return std::nullopt;
+
+        uint64_t val = 0;
+        raw.convert(val); // Throws on negative values and overflow.
+        return val;
     } catch (...) {
         return std::nullopt;
     }
@@ -832,12 +841,13 @@ Return:
   observedWindow.endTime = latest timestamp of a memory_free sample contributing to the aggregation
 ```
 
-Memory values are bytes and must be nonnegative. If both `memory_free` and valid
-`memory_total` are present, `memory_free` must not exceed `memory_total`.
-Samples that violate this consistency rule are ignored rather than contributing
-to the summary. Invalid or missing `memory_cached` or `memory_buffered` values
-are ignored field-by-field and must not cause a valid `memory_free` sample to be
-dropped. For successful responses with samples, the invariant is:
+Memory values are bytes and must satisfy `0 <= memory_value <= UINT64_MAX`.
+If both `memory_free` and valid `memory_total` are present, `memory_free` must
+not exceed `memory_total`. Samples that violate this consistency rule are
+ignored rather than contributing to the summary. Invalid or missing
+`memory_cached` or `memory_buffered` values are ignored field-by-field and must
+not cause a valid `memory_free` sample to be dropped. For successful responses
+with samples, the invariant is:
 
 ```text
 min_memfree <= avg_memfree <= max_memfree
@@ -2222,7 +2232,19 @@ src/StorageService.cpp
   include availability retention cleanup if retention should match board timepoint cleanup
 ```
 
-Add a DB upgrade/migration path for the new tables. Existing deployments will start with no historical availability events. Define a fixed `availabilityValidFrom` timestamp as the deployment/migration time when availability-event persistence starts. The API should return `offline_count: 0` for successful empty queries whose requested range starts at or after `availabilityValidFrom`; do not infer old events from `lastDisconnection`.
+Add a DB upgrade/migration path for the new tables. Existing deployments will
+start with no historical availability events. Initialize a fixed
+`availabilityValidFrom` timestamp when availability-event persistence starts and
+persist it as `system_properties.availability_valid_from`. The API should return
+`offline_count: 0` for successful empty queries whose requested range starts at
+or after the persisted `availabilityValidFrom`; do not infer old events from
+`lastDisconnection`.
+
+`availabilityValidFrom` represents the timestamp from which this Analytics
+database can reliably claim that availability transition persistence was active.
+Once initialized, the persisted `system_properties` value is authoritative.
+Changing an environment variable or config file must not silently change the
+historical validity boundary.
 
 Add all availability storage files to `CMakeLists.txt`, including `storage_device_availability_events.*` and `storage_device_availability_state.*`. Register database migration/upgrade logic for these availability tables so fresh databases and upgraded deployments create the event table, state table, indexes, uniqueness constraints, and state constraints consistently.
 
@@ -2685,12 +2707,74 @@ source event for the interval has been ingested.
 Availability migration boundary:
 
 ```text
-availabilityValidFrom is a durable, deployment-wide timestamp loaded on service startup from:
-  1. Configuration file property `availability_valid_from` (in /etc/ucentral/owanalytics.json)
-  2. Environment variable `ANALYTICS_AVAILABILITY_VALID_FROM`
-  3. Persistent database migration metadata table (`system_properties` key `availability_valid_from`) populated during initial table creation.
+availabilityValidFrom is a durable, deployment-wide cutover timestamp for
+availability history. It represents the timestamp from which this Analytics
+database can reliably claim that availability transition persistence was active.
 
-All service replicas and process restarts MUST load the identical `availabilityValidFrom` timestamp from these durable configuration/DB sources to guarantee multi-replica and restart consistency. Dynamic process-start timestamps (e.g. std::chrono::system_clock::now() at startup) are strictly prohibited.
+The authoritative persisted source of truth is:
+  system_properties.availability_valid_from
+
+Configuration and environment values are first-time initialization inputs only.
+They are not equivalent runtime sources once the database property exists.
+Changing an environment variable or config file must not silently change the
+historical validity boundary.
+
+Initialization input precedence, used only when
+system_properties.availability_valid_from does not already exist:
+  ANALYTICS_AVAILABILITY_VALID_FROM
+    overrides
+  availability_valid_from from /etc/ucentral/owanalytics.json
+
+On service startup:
+  rawEnvValue =
+      ANALYTICS_AVAILABILITY_VALID_FROM if present, else unset
+
+  rawConfigValue =
+      availability_valid_from from /etc/ucentral/owanalytics.json if present,
+      else unset
+
+  persistedValue =
+      read system_properties.availability_valid_from
+
+  if persistedValue exists:
+      availabilityValidFrom = persistedValue
+
+      for each supplied rawEnvValue and rawConfigValue:
+          configuredValue = parse supplied value
+          if configuredValue is invalid:
+              fail startup with a clear invalid-configuration error
+
+          if configuredValue != persistedValue:
+              fail startup with a clear configuration-mismatch error:
+                availability_valid_from configuration mismatch:
+                configured value does not match persisted
+                system_properties.availability_valid_from
+
+  else:
+      rawConfiguredValue =
+          rawEnvValue if set
+          else rawConfigValue if set
+          else unset
+
+      if rawConfiguredValue is unset:
+          fail startup with a clear missing-configuration error
+
+      configuredValue = parse rawConfiguredValue
+      if configuredValue is invalid:
+          fail startup with a clear invalid-configuration error
+
+      insert system_properties.availability_valid_from = configuredValue
+      availabilityValidFrom = configuredValue
+
+      if another replica concurrently inserted the property first:
+          re-read system_properties.availability_valid_from
+          apply the persistedValue-exists mismatch checks above
+
+The persisted value must never be silently overwritten during a normal restart
+or deployment. All service replicas and process restarts MUST use the identical
+persisted system_properties.availability_valid_from timestamp to guarantee
+multi-replica and restart consistency. Dynamic process-start timestamps
+(e.g. std::chrono::system_clock::now() at startup) are strictly prohibited.
 
 If startTime < availabilityValidFrom:
   reject the request
