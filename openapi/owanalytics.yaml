@@ -534,11 +534,11 @@ components:
         temperature:
           type: integer
           format: int64
-          description: Legacy alias for wifi_temp; Wi-Fi radio temperature in degrees Celsius.
+          description: Legacy alias for wifi_temp; Wi-Fi radio temperature in degrees Celsius. A reported 0°C value is valid unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true; when no contract is available, the default is false.
         wifi_temp:
           type: integer
           format: int64
-          description: Wi-Fi radio temperature in degrees Celsius.
+          description: Wi-Fi radio temperature in degrees Celsius. A reported 0°C value is valid unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true; when no contract is available, the default is false.
         noise:
           type: integer
           format: int64
@@ -1032,9 +1032,11 @@ components:
         than averaging each radio first. Null applies independently per band: a band returns
         null min, max, and average values when that band has no valid temperature samples,
         even if another band has samples. A valid radio temperature sample is a present,
-        finite Celsius value where -40 <= temperature <= 125, excluding 0 because current
-        telemetry uses it as a missing-sensor sentinel. Missing, null, non-numeric, NaN,
-        infinite, 0, 255, and out-of-range values are excluded from aggregation.
+        finite Celsius value where -40 <= temperature <= 125. A reported 0°C value is valid
+        unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true;
+        when no contract is available, the default is false. Missing, null, non-numeric, NaN,
+        infinite, conditionally unavailable 0°C values, 255, and out-of-range values are
+        excluded from aggregation.
       required:
         - requestedWindow
         - observedWindow
