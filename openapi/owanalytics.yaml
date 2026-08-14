@@ -34,6 +34,214 @@ components:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Success'
     BadRequest:
       $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/BadRequest'
+    CommonAnalyticsBadRequest:
+      description: Invalid analytics request parameters.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommonAnalyticsBadRequestError'
+          examples:
+            invalidRouterId:
+              value:
+                error: invalid_router_id
+                message: routerId must be a valid path-safe OWPROV gateway serial number (1 to 64 alphanumeric characters, hyphens, or underscores)
+            invalidTimestamp:
+              value:
+                error: invalid_timestamp
+                message: timestampTill must be a valid UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format
+            invalidLookbackHours:
+              value:
+                error: invalid_lookback_hours
+                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+            lookbackOutsideRetention:
+              value:
+                error: lookback_outside_retention
+                message: Requested range is outside the configured monitoring retention window
+    TemperatureAnalyticsBadRequest:
+      description: Invalid request or temperature range before the supported migration cutover.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TemperatureBadRequestError'
+          examples:
+            invalidRouterId:
+              value:
+                error: invalid_router_id
+                message: routerId must be a valid path-safe OWPROV gateway serial number (1 to 64 alphanumeric characters, hyphens, or underscores)
+            invalidTimestamp:
+              value:
+                error: invalid_timestamp
+                message: timestampTill must be a valid UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format
+            invalidLookbackHours:
+              value:
+                error: invalid_lookback_hours
+                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+            lookbackOutsideRetention:
+              value:
+                error: lookback_outside_retention
+                message: Requested range is outside the configured monitoring retention window
+            temperatureBeforeCutover:
+              value:
+                error: temperature_range_before_cutover
+                message: The requested summary interval starts before the temperature migration cutover timestamp.
+    AvailabilityAnalyticsBadRequest:
+      description: Invalid request or availability range before the supported cutover.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AvailabilityBadRequestError'
+          examples:
+            invalidRouterId:
+              value:
+                error: invalid_router_id
+                message: routerId must be a valid path-safe OWPROV gateway serial number (1 to 64 alphanumeric characters, hyphens, or underscores)
+            invalidTimestamp:
+              value:
+                error: invalid_timestamp
+                message: timestampTill must be a valid UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format
+            invalidLookbackHours:
+              value:
+                error: invalid_lookback_hours
+                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+            lookbackOutsideRetention:
+              value:
+                error: lookback_outside_retention
+                message: Requested range is outside the configured monitoring retention window
+            availabilityBeforeCutover:
+              value:
+                error: availability_range_before_cutover
+                message: Availability history is only available for ranges starting at or after availabilityValidFrom
+    AnalyticsUnauthorized:
+      description: Bearer token is missing, invalid, or expired.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsUnauthorizedError'
+          examples:
+            unauthorized:
+              value:
+                error: unauthorized
+                message: Missing, invalid, or expired bearer token
+    AnalyticsNotFound:
+      description: Router was not found, caller cannot access it, or monitoring is not configured for the resolved router scope. Public 404 responses for inventory missing, empty venue, board not configured, and access denied are intentionally collapsed to not_found unless monitoring is not configured.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsNotFoundError'
+          examples:
+            notFound:
+              value:
+                error: not_found
+                message: Router was not found
+            monitoringNotConfigured:
+              value:
+                error: monitoring_not_configured
+                message: Monitoring is not configured for this router scope
+    AnalyticsConflict:
+      description: Monitoring is disabled or router ownership resolution found conflicting current board mappings.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsConflictError'
+          examples:
+            monitoringDisabled:
+              value:
+                error: monitoring_disabled
+                message: Monitoring is disabled for this router scope
+            multipleBoards:
+              value:
+                error: multiple_boards
+                message: Router is mapped to multiple current boards
+    MemorySummaryInternalError:
+      description: Memory summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemorySummaryInternalError'
+          examples:
+            memorySummaryFailed:
+              value:
+                error: memory_summary_query_failed
+                message: Unable to retrieve gateway memory history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    RadioTemperatureSummaryInternalError:
+      description: Radio temperature summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RadioTemperatureSummaryInternalError'
+          examples:
+            radioTemperatureSummaryFailed:
+              value:
+                error: radio_temperature_summary_query_failed
+                message: Unable to retrieve gateway radio temperature history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    WifiClientUsageInternalError:
+      description: Wi-Fi client usage summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WifiClientUsageInternalError'
+          examples:
+            wifiClientUsageFailed:
+              value:
+                error: wifi_client_usage_query_failed
+                message: Unable to retrieve Wi-Fi client usage history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    WifiClientRssiInternalError:
+      description: Wi-Fi client RSSI summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WifiClientRssiInternalError'
+          examples:
+            wifiClientRssiFailed:
+              value:
+                error: wifi_client_rssi_query_failed
+                message: Unable to retrieve Wi-Fi client RSSI history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    AvailabilityInternalError:
+      description: Availability summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AvailabilityInternalError'
+          examples:
+            availabilityQueryFailed:
+              value:
+                error: availability_query_failed
+                message: Unable to retrieve gateway availability history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    AnalyticsBadGateway:
+      description: Upstream provisioning service is unavailable or returned an invalid response after cache fallback was exhausted.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsBadGatewayError'
+          examples:
+            owprovUnavailable:
+              value:
+                error: owprov_unavailable
+                message: Upstream provisioning service is unavailable
+            owprovInvalidResponse:
+              value:
+                error: owprov_invalid_response
+                message: Upstream provisioning service returned an invalid response
 
   parameters:
     RouterIdPath:
@@ -485,26 +693,26 @@ components:
       properties:
         memory_free:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Available free memory in bytes.
         memory_total:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Total system memory in bytes.
         memory_cached:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Cached memory in bytes.
         memory_buffered:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Buffered memory in bytes.
 
@@ -871,19 +1079,6 @@ components:
         message:
           type: string
 
-    AnalyticsForbiddenError:
-      type: object
-      required:
-        - error
-        - message
-      properties:
-        error:
-          type: string
-          enum:
-            - forbidden
-        message:
-          type: string
-
     AnalyticsNotFoundError:
       type: object
       required:
@@ -1017,20 +1212,21 @@ components:
           $ref: '#/components/schemas/ObservedWindow'
         min_memfree:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Minimum reported free memory in bytes for the requested aggregation window.
         max_memfree:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Maximum reported free memory in bytes for the requested aggregation window.
         avg_memfree:
           type: number
           format: double
           minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Arithmetic average of reported free-memory samples in bytes for the requested aggregation window.
 
@@ -1131,16 +1327,16 @@ components:
           $ref: '#/components/schemas/MacAddress'
         rx_bytes:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
         tx_bytes:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
         total_bytes:
           type: integer
-          format: int64
           minimum: 0
+          maximum: 18446744073709551615
         data_consume_rx:
           type: string
           description: Display-only decimal megabytes derived from rx_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
@@ -1728,8 +1924,6 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
-        403:
-          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -1777,8 +1971,6 @@ paths:
           $ref: '#/components/responses/TemperatureAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
-        403:
-          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -1832,8 +2024,6 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
-        403:
-          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -1895,8 +2085,6 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
-        403:
-          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -1958,8 +2146,6 @@ paths:
           $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
-        403:
-          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
