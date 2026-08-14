@@ -485,30 +485,26 @@ components:
       properties:
         memory_free:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Available free memory in bytes.
         memory_total:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Total system memory in bytes.
         memory_cached:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Cached memory in bytes.
         memory_buffered:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Buffered memory in bytes.
 
@@ -1021,23 +1017,20 @@ components:
           $ref: '#/components/schemas/ObservedWindow'
         min_memfree:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Minimum reported free memory in bytes for the requested aggregation window.
         max_memfree:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Maximum reported free memory in bytes for the requested aggregation window.
         avg_memfree:
           type: number
           format: double
           minimum: 0
-          maximum: 18446744073709551615
           nullable: true
           description: Arithmetic average of reported free-memory samples in bytes for the requested aggregation window.
 
@@ -1138,19 +1131,16 @@ components:
           $ref: '#/components/schemas/MacAddress'
         rx_bytes:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
         tx_bytes:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
         total_bytes:
           type: integer
-          format: uint64
+          format: int64
           minimum: 0
-          maximum: 18446744073709551615
         data_consume_rx:
           type: string
           description: Display-only decimal megabytes derived from rx_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
