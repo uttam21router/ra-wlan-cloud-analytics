@@ -481,26 +481,34 @@ components:
 
     DeviceResourceTimePoint:
       type: object
-      description: Stored device resource telemetry including memory metrics.
+      description: Stored device resource telemetry including unsigned memory metrics.
       properties:
         memory_free:
           type: integer
-          format: int64
+          format: uint64
+          minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Available free memory in bytes.
         memory_total:
           type: integer
-          format: int64
+          format: uint64
+          minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Total system memory in bytes.
         memory_cached:
           type: integer
-          format: int64
+          format: uint64
+          minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Cached memory in bytes.
         memory_buffered:
           type: integer
-          format: int64
+          format: uint64
+          minimum: 0
+          maximum: 18446744073709551615
           nullable: true
           description: Buffered memory in bytes.
 
