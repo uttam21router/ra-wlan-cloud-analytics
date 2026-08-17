@@ -122,6 +122,17 @@ components:
               value:
                 error: unauthorized
                 message: Missing, invalid, or expired bearer token
+    AnalyticsForbidden:
+      description: Caller has visibility of the resolved router ownership scope, but lacks analytics.gateway_metrics.read permission for the requested operation. Do not use this response for nonexistent routers or routers outside the caller's accessible ownership scope; those cases are normalized to 404 not_found to avoid disclosing router existence.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsForbiddenError'
+          examples:
+            forbidden:
+              value:
+                error: forbidden
+                message: Caller lacks analytics.gateway_metrics.read permission for this router scope
     AnalyticsNotFound:
       description: Router was not found, caller cannot access it, or monitoring is not configured for the resolved router scope. Public 404 responses for inventory missing, empty venue, board not configured, and access denied are intentionally collapsed to not_found unless monitoring is not configured.
       content:
@@ -1079,6 +1090,19 @@ components:
         message:
           type: string
 
+    AnalyticsForbiddenError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - forbidden
+        message:
+          type: string
+
     AnalyticsNotFoundError:
       type: object
       required:
@@ -1924,6 +1948,8 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -1971,6 +1997,8 @@ paths:
           $ref: '#/components/responses/TemperatureAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -2024,6 +2052,8 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -2085,6 +2115,8 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
@@ -2146,6 +2178,8 @@ paths:
           $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
