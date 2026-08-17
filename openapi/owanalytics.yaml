@@ -27,13 +27,13 @@ components:
 
   responses:
     NotFound:
-      $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/NotFound'
+      $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/NotFound'
     Unauthorized:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Unauthorized'
     Success:
       $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/Success'
     BadRequest:
-      $ref: 'https://github.com/routerarchitects/wlan-cloud-ucentralsec/blob/main/openapi/owsec.yaml#/components/responses/BadRequest'
+      $ref: 'https://raw.githubusercontent.com/routerarchitects/ra-wlan-cloud-ucentralsec/main/openapi/owsec.yaml#/components/responses/BadRequest'
     CommonAnalyticsBadRequest:
       description: Invalid analytics request parameters.
       content:
