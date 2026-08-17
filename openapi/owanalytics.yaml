@@ -52,7 +52,7 @@ components:
             invalidLookbackHours:
               value:
                 error: invalid_lookback_hours
-                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+                message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
@@ -75,7 +75,7 @@ components:
             invalidLookbackHours:
               value:
                 error: invalid_lookback_hours
-                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+                message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
@@ -102,7 +102,7 @@ components:
             invalidLookbackHours:
               value:
                 error: invalid_lookback_hours
-                message: lookbackHours must be greater than 0 and within the configured monitoring retention
+                message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
@@ -318,19 +318,30 @@ components:
       type: object
       description: >
         Actual earliest/latest persisted sample or event timestamps that contributed to the result.
-        startTime and endTime are null when no valid persisted data contributes to the result.
+        startTime and endTime are both null when no valid persisted data contributes to the result;
+        otherwise both timestamps are populated.
       required:
         - startTime
         - endTime
-      properties:
-        startTime:
-          type: string
-          format: date-time
-          nullable: true
-        endTime:
-          type: string
-          format: date-time
-          nullable: true
+      oneOf:
+        - properties:
+            startTime:
+              type: string
+              format: date-time
+            endTime:
+              type: string
+              format: date-time
+        - properties:
+            startTime:
+              type: string
+              nullable: true
+              enum:
+                - null
+            endTime:
+              type: string
+              nullable: true
+              enum:
+                - null
 
     MacAddress:
       type: string
@@ -757,10 +768,11 @@ components:
         temperature:
           type: integer
           format: int64
-          description: Legacy alias for wifi_temp; Wi-Fi radio temperature in degrees Celsius. A reported 0°C value is valid unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true; when no contract is available, the default is false.
+          description: Legacy Wi-Fi radio temperature telemetry in degrees Celsius. This field MUST NOT be used as the source for radio-temperature-summary; that endpoint aggregates wifi_temp according to the post-cutover telemetry contract.
         wifi_temp:
           type: integer
           format: int64
+          nullable: true
           description: Wi-Fi radio temperature in degrees Celsius. A reported 0°C value is valid unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true; when no contract is available, the default is false.
         noise:
           type: integer
