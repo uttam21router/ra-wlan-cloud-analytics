@@ -3743,6 +3743,32 @@ Query the usage-summary API for a client with calculable RX/TX deltas.
 
 ---
 
+## TC-USAGE-033: Pre-retention sample is not used as a baseline
+
+### Test data
+
+```text
+retentionStart = 10:00:00Z
+requested window = [10:00:00Z, 11:00:00Z)
+
+09:55 sample: RX=1000, TX=500    (before retentionStart)
+10:30 sample: RX=3000, TX=1500
+10:50 sample: RX=5000, TX=2500
+```
+
+### Expected result
+
+```text
+RX delta = 2000
+TX delta = 1000
+```
+
+The request passes retention validation because `startTime == retentionStart`,
+but the `09:55` sample is not a permitted calculation input. The API calculates
+only the contained retained in-window differential from 10:30 to 10:50.
+
+---
+
 # 8. Wi-Fi Client RSSI Summary Test Cases
 
 ## Endpoint
