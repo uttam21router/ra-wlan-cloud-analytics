@@ -3207,7 +3207,7 @@ The API converts the byte totals to decimal megabytes.
 
 ---
 
-## TC-USAGE-002: Pre-window baseline is available
+## TC-USAGE-002: Pre-window sample is not counted in usage
 
 ### Test data
 
@@ -3226,14 +3226,14 @@ Requested start time:
 ### Expected result
 
 ```text
-RX delta = 5000
-TX delta = 2000
+RX delta = 3000
+TX delta = 1000
 ```
 
-The 09:59 baseline is outside the requested window. It is used as the start
-boundary for a bounded differential, but no public usage quality field is
-returned. The response exposes only the documented client byte totals and
-display strings.
+The 09:59 sample is outside the requested half-open window and is not subtracted
+into the returned byte totals. The API calculates only the contained in-window
+differential from 10:10 to 10:20 and exposes only the documented client byte
+totals and display strings.
 
 ---
 
@@ -3643,18 +3643,18 @@ serialNumber = routerId
 
 ---
 
-## TC-USAGE-027: Client with only outside-window boundary fallback samples
+## TC-USAGE-027: Client with only outside-window samples
 
 ### Test data
 
 * Requested time window: `[10:00:00Z, 11:00:00Z)`.
-* Database contains a sample for station MAC `aa:bb:cc:dd:ee:ff` at `09:58:00Z` (pre-window boundary sample within 2x interval tolerance).
+* Database contains a sample for station MAC `aa:bb:cc:dd:ee:ff` at `09:58:00Z`.
 * Database contains NO in-window observations (`[10:00:00Z, 11:00:00Z)`) and no proven session overlap during `[10:00:00Z, 11:00:00Z)` for station `aa:bb:cc:dd:ee:ff`.
 
 ### Expected result
 
 * Station MAC `aa:bb:cc:dd:ee:ff` is EXCLUDED from `items[]` and NOT counted in `totalClients`.
-* Outside-window fallback samples are used solely for calculating boundary differentials for clients with proven in-window presence or session overlap.
+* Outside-window samples are not used to calculate returned byte totals.
 * Response returns `items: []`, `totalClients: 0`, and `truncated: false`.
 
 ---
@@ -3691,39 +3691,39 @@ Query the usage-summary API for a client with calculable RX/TX deltas.
 
 ---
 
-## TC-USAGE-030: Fallback boundary sampling 2x interval tolerance threshold
+## TC-USAGE-030: Outside-window samples are not usage boundaries
 
 ### Test data
 
 * Requested time window: `[10:00:00Z, 11:00:00Z)`.
-* Expected collection interval = 300 seconds (5 minutes). Tolerance threshold = 2 * 300 = 600 seconds (10 minutes).
 * Client A samples:
-  * `09:51:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (pre-start fallback sample, 9 minutes before start, within 2x tolerance)
+  * `09:51:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (pre-start sample)
   * `10:30:00Z`: `rx_bytes = 2000000`, `tx_bytes = 2000000` (in-window observation proving presence)
-  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (exact end-boundary sample at effective end)
+  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (at exclusive end boundary)
 * Client B samples:
-  * `09:48:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (pre-start fallback sample, 12 minutes before start, outside 2x tolerance)
+  * `09:48:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (pre-start sample)
   * `10:30:00Z`: `rx_bytes = 2000000`, `tx_bytes = 2000000` (in-window observation proving presence)
-  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (exact end-boundary sample at effective end)
+  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (at exclusive end boundary)
 
 ### Expected result
 
-* Client A uses the 09:51:00Z sample as start boundary baseline and 11:00:00Z as exact end boundary; the public response reports the resulting byte totals without a public quality classification field.
-* Client B discards the 09:48:00Z sample because it exceeds 2x collection interval tolerance; Client B calculates delta starting from in-window sample at 10:30:00Z to exact end sample at 11:00:00Z.
+* Neither client uses the pre-start sample or the sample at `11:00:00Z` to calculate usage for `[10:00:00Z, 11:00:00Z)`.
+* Each client has only one in-window observation, so each returned item reports `rx_bytes = 0`, `tx_bytes = 0`, and `total_bytes = 0`.
+* `observedWindow.startTime` and `observedWindow.endTime` are both `"2026-07-27T10:30:00Z"`.
 
 ---
 
-## TC-USAGE-031: Result time window calculation and OpenAPI property naming
+## TC-USAGE-031: Observed window uses contributing in-window samples
 
 ### Test data
 
 * Requested time window `[10:00:00Z, 11:00:00Z)`.
-* Observations occur exactly at start boundary `10:00:00Z` and end boundary `11:00:00Z`.
+* Observations occur at `10:00:00Z` and `10:55:00Z`.
 
 ### Expected result
 
 * `observedWindow.startTime` = `"2026-07-27T10:00:00Z"` (earliest contributing sample at effective start).
-* `observedWindow.endTime` = `"2026-07-27T11:00:00Z"` (latest contributing sample at effective end).
+* `observedWindow.endTime` = `"2026-07-27T10:55:00Z"` (latest contributing sample inside the half-open window).
 * `requestedWindow` remains `"2026-07-27T10:00:00Z"` to `"2026-07-27T11:00:00Z"`.
 
 ---
