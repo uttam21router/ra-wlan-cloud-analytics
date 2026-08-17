@@ -24,11 +24,11 @@ get_gateway_offline_count
 
 The specification and test suite are modularized into three distinct architectural components:
 1. **Public API Contract Specification**: OpenAPI 3.0 schemas (`openapi/owanalytics.yaml` v2.7.0) defining external REST endpoints, query parameters, HTTP status codes, and response envelopes.
-2. **Persistence & Pipeline Architecture Design**: Backend storage structures (`device_availability_events`, `device_availability_state`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), Kafka event consumption/ordering semantics, and cutover/migration behavior.
+2. **Persistence & Pipeline Architecture Design**: Backend storage structures (`device_availability_events`, `device_availability_state`), Kafka event consumption semantics, and cutover/migration behavior.
 3. **Test Specification & Verification Matrix**: Independent verification matrix (this document) defining assertion criteria for API contracts, integration workflows, white-box database rules, and failure modes.
 
 > [!IMPORTANT]
-> This PR reframes and defines the complete target contract and test specification suite. The specified production architecture changes—including four new availability persistence tables (`device_availability_events`, `device_availability_state`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), Kafka event ordering/checkpointing semantics, cutover migration rules, and OpenAPI v2.7.0 endpoint schemas—constitute a production architecture specification. Approving or merging this test specification PR does NOT bypass separate explicit architecture design sign-off for backend schema additions and production Kafka pipeline changes prior to production deployment.
+> This PR reframes and defines the complete target contract and test specification suite. The specified production architecture changes—including availability persistence tables (`device_availability_events`, `device_availability_state`), Kafka event consumption semantics, cutover migration rules, and OpenAPI v2.7.0 endpoint schemas—constitute a production architecture specification. Approving or merging this test specification PR does NOT bypass separate explicit architecture design sign-off for backend schema additions and production Kafka pipeline changes prior to production deployment.
 
 The test cases cover:
 * API contract tests for request shapes, HTTP status codes, response schemas, parameter validation, filtering, and half-open time-range window semantics `[startTime, endTime)`.
@@ -53,14 +53,12 @@ Before executing the test cases:
 ```text
 device_availability_events
 device_availability_state
-device_availability_ingestion_checkpoint
-device_availability_ingestion_gaps
 timepoints
 wificlienthistory
 ```
 
 8. Gateway availability uses `device_availability_state` as the authoritative restart-safe state table and `device_availability_events` as the transition log. Kafka `disconnection` messages are treated as `offline`; Kafka `ping` and `capabilities` messages are treated as `online`. Exact transition counting requires serialNumber-scoped source-event ordering before state-machine processing. Every accepted source-newer message emitted by that ordering stage updates `device_availability_state.last_event_time`. `DeviceInfo.lastContact` is contact/processing metadata and is not used for source-event ordering.
-9. Availability success responses report the persisted offline transition rows currently available to Analytics; public API responses do not expose ingestion coverage metadata.
+9. Availability success responses report the persisted offline transition rows currently available to Analytics.
 10. Database records for the test gateway are cleared or isolated before each independent test.
 11. A valid authorization token is available for testing endpoint access.
 
@@ -733,7 +731,7 @@ Call `GET /api/v1/devices/{routerId}/availability-summary` with a calculated `st
 
 ### Objective
 
-Verify that the required restart-safe state table exists with deterministic fields, sequence tracking, and constraints.
+Verify that the required restart-safe state table exists with deterministic fields and constraints.
 
 ### Expected result
 
@@ -746,13 +744,11 @@ serialNumber
 board_id
 current_state
 last_event_time
-last_source_sequence
 last_idempotency_key
 updated_at
 metadata
 ```
 
-* `last_source_sequence` exists, is nullable (`BIGINT NULL`), and is stored as a 64-bit integer to preserve numeric ordering.
 * `current_state` accepts only `online`, `offline`, or `unknown`.
 * An index exists for `board_id` when board-scoped maintenance queries need it.
 
@@ -762,7 +758,7 @@ metadata
 
 ### Objective
 
-Verify that transition history is stored separately from current state with sequence-aware ordering indexes.
+Verify that transition history is stored separately from current state with serial/time lookup indexes.
 
 ### Expected result
 
@@ -775,7 +771,6 @@ serialNumber
 board_id
 event_type
 event_time
-source_sequence
 event_id
 idempotency_key
 reason
@@ -788,12 +783,11 @@ metadata
 * `serialNumber` is non-null.
 * `event_type` is non-null.
 * `event_time` is non-null.
-* `source_sequence` exists, is nullable (`BIGINT NULL`), and is stored as a 64-bit integer.
 * `idempotency_key` is non-null and unique.
 * `session_id` exists and is nullable.
-* Sequence-aware composite indexes exist to support deterministic event lookup and ordering, verified via `pg_get_indexdef()` or schema inspection:
-  * `availability_serial_time_index`: `(serialNumber ASC, event_time ASC, source_sequence ASC NULLS FIRST)`
-  * `availability_board_serial_time_index`: `(board_id ASC, serialNumber ASC, event_time ASC, source_sequence ASC NULLS FIRST)`
+* Composite indexes exist to support deterministic event lookup by serial and time, verified via `pg_get_indexdef()` or schema inspection:
+  * `availability_serial_time_index`: `(serialNumber ASC, event_time ASC)`
+  * `availability_board_serial_time_index`: `(board_id ASC, serialNumber ASC, event_time ASC)`
 * `event_type` accepts only stored transition values `online` and `offline`.
 
 ---
@@ -802,84 +796,23 @@ metadata
 
 ### Objective
 
-Verify that migration from a database without availability objects, or with a partial prior release schema missing sequence columns or coverage tables, creates all four required tables and sequence columns safely and idempotently.
+Verify that migration from a database without availability objects creates both required availability tables safely and idempotently.
 
 ### Steps
 
-1. Start with a database that has no availability objects, or a partial deployment database missing sequence columns or ingestion coverage tables.
+1. Start with a database that has no availability objects.
 2. Run Analytics migrations.
 3. Run Analytics migrations again.
 4. Inspect the schema and table definitions.
 
 ### Expected result
 
-* All four availability storage objects exist after migration:
+* Both availability storage objects exist after migration:
   * `device_availability_state`
   * `device_availability_events`
-  * `device_availability_ingestion_checkpoint`
-  * `device_availability_ingestion_gaps`
-* Both `source_sequence` (`device_availability_events`) and `last_source_sequence` (`device_availability_state`) exist as `BIGINT NULL`.
-* All sequence-aware indexes, primary keys, uniqueness constraints, and state check constraints exist.
+* All required indexes, primary keys, uniqueness constraints, and state check constraints exist.
 * Re-running migration does not drop, fail, or duplicate tables, columns, indexes, or constraints.
 * Existing `timepoints` and `wificlienthistory` data remains intact.
-
----
-
-## TC-AVAIL-SCHEMA-004: Ingestion checkpoint table schema exists
-
-### Objective
-
-Verify that durable per-serial ingestion coverage watermarks are stored in a dedicated checkpoint table.
-
-### Expected result
-
-* `device_availability_ingestion_checkpoint` exists.
-* `serialNumber` is the primary key.
-* Required fields exist:
-
-```text
-serialNumber
-coverage_start
-state_known_from
-processed_through_event_time
-partition
-offset
-ordering_strategy
-reorder_window_ms
-ingestion_gap_known
-updated_at
-metadata
-```
-
-* `coverage_start`, `state_known_from`, and `processed_through_event_time` exist and are 64-bit integers (`BIGINT`).
-* `ingestion_gap_known` exists and is boolean.
-
----
-
-## TC-AVAIL-SCHEMA-005: Ingestion gaps table schema exists
-
-### Objective
-
-Verify that persisted availability ingestion gaps are stored in a dedicated gaps table.
-
-### Expected result
-
-* `device_availability_ingestion_gaps` exists.
-* Required fields exist:
-
-```text
-serialNumber
-gap_start_event_time
-gap_end_event_time
-reason
-detected_at
-metadata
-```
-
-* `gap_start_event_time` and `gap_end_event_time` exist and are 64-bit integers (`BIGINT`).
-* An index exists to support range overlapping queries on `(serialNumber ASC, gap_start_event_time ASC, gap_end_event_time ASC)`.
-
----
 
 ### Availability state row query
 
@@ -888,7 +821,6 @@ SELECT serialNumber,
        board_id,
        current_state,
        last_event_time,
-       last_source_sequence,
        last_idempotency_key,
        updated_at,
        metadata
@@ -903,7 +835,7 @@ FOR UPDATE;
 SELECT *
 FROM device_availability_events
 WHERE serialNumber = '60cf84f22290'
-ORDER BY event_time DESC, source_sequence DESC NULLS LAST
+ORDER BY event_time DESC
 LIMIT 1;
 ```
 
@@ -913,14 +845,7 @@ LIMIT 1;
 SELECT *
 FROM device_availability_events
 WHERE serialNumber = '60cf84f22290'
-ORDER BY event_time ASC, source_sequence ASC NULLS FIRST;
-```
-
-SQL composite sequence ordering rules:
-
-```text
-- Ascending queries use ORDER BY event_time ASC, source_sequence ASC NULLS FIRST so unsequenced events (source_sequence = NULL) at a timestamp sort before sequenced events at the same timestamp.
-- Descending queries use ORDER BY event_time DESC, source_sequence DESC NULLS LAST so the event with the highest sequence number at a timestamp sorts first, and unsequenced events sort last.
+ORDER BY event_time ASC;
 ```
 
 ### Offline event count query
@@ -972,13 +897,8 @@ last_idempotency_key = ping idempotency key
 updated_at >= processing time
 ```
 
-* The checkpoint's `state_known_from` timestamp is set to the first ping source timestamp.
-* If requested window starts BEFORE the first ping (`startTime < state_known_from`):
-  * Prior state boundary is unknown.
-  * The availability-summary API still uses the documented `meta.requestedWindow`, `meta.observedWindow`, `meta.offlineEventCount`, and `data.offline_count` response shape.
-* If requested window starts AT OR AFTER the first ping (`startTime >= state_known_from`):
-  * State is authoritatively known as online throughout the window.
-  * The response returns `data.offline_count = 0`, `meta.offlineEventCount = 0`, and `meta.observedWindow.startTime = meta.observedWindow.endTime = null`.
+* The availability-summary API uses the documented `meta.requestedWindow`, `meta.observedWindow`, `meta.offlineEventCount`, and `data.offline_count` response shape.
+* A requested window with no persisted offline transition rows returns `data.offline_count = 0`, `meta.offlineEventCount = 0`, and `meta.observedWindow.startTime = meta.observedWindow.endTime = null`.
 
 ---
 
@@ -1624,8 +1544,6 @@ Verify successful empty results.
 ### Preconditions
 
 * The requested range starts at or after `availabilityValidFrom`.
-* The gateway has a durable `device_availability_ingestion_checkpoint` with `coverage_start <= startTime` and `processed_through_event_time >= endTime`.
-* No `device_availability_ingestion_gaps` row overlaps `[startTime, endTime)`.
 * The cutover behavior for ranges beginning before `availabilityValidFrom` is covered by `TC-COMMON-023`.
 
 ### Steps
@@ -1670,24 +1588,24 @@ interval based on data currently available in Analytics storage.
 
 ---
 
-## TC-AVAIL-018A: No offline events with partial ingestion progress
+## TC-AVAIL-018A: No offline events while Kafka consumer is still catching up
 
 ### Objective
 
-Verify that partial ingestion progress does not change the documented public
-availability response shape.
+Verify that Kafka lag does not change the documented public availability response
+shape. Kafka consumer lag is operational state, not availability-domain response
+metadata.
 
 ### Preconditions
 
 * The requested range starts at or after `availabilityValidFrom`.
 * No `offline` rows match `[startTime, endTime)`.
-* Internal ingestion checkpoint progress is before `endTime` or a known ingestion gap overlaps the requested range.
+* The Kafka consumer has not yet consumed all upstream source events for the interval.
 
 ### Steps
 
 1. Select a range with no matching offline rows.
-2. Set internal ingestion progress to overlap only part of the requested range.
-3. Call the availability-summary API.
+2. Call the availability-summary API while the consumer is still catching up.
 
 ### Expected result
 
@@ -1696,27 +1614,26 @@ availability response shape.
 * `meta.offlineEventCount = 0`.
 * `meta.observedWindow.startTime = null`.
 * `meta.observedWindow.endTime = null`.
-* The response does not include public coverage or accuracy fields.
+* The response includes only the documented availability fields.
 
 ---
 
-## TC-AVAIL-018B: No offline events with unavailable ingestion progress
+## TC-AVAIL-018B: No offline events when Kafka consumer position is unavailable
 
 ### Objective
 
-Verify that unavailable ingestion progress does not change the documented public
-availability response shape.
+Verify that unavailable Kafka consumer position does not change the documented
+public availability response shape.
 
 ### Preconditions
 
 * No `offline` rows match `[startTime, endTime)`.
-* No durable processed-through watermark exists.
+* Kafka consumer position cannot be inspected through the test harness.
 
 ### Steps
 
 1. Select a range with no matching offline rows.
-2. Make internal ingestion progress unavailable.
-3. Call the availability-summary API.
+2. Call the availability-summary API.
 
 ### Expected result
 
@@ -1725,7 +1642,7 @@ availability response shape.
 * `meta.offlineEventCount = 0`.
 * `meta.observedWindow.startTime = null`.
 * `meta.observedWindow.endTime = null`.
-* The response does not include public coverage or accuracy fields.
+* The response includes only the documented availability fields.
 
 ---
 
@@ -1740,13 +1657,11 @@ Verify that when the latest gateway source message is inside the allowed ingesti
 * The requested range starts at or after `availabilityValidFrom`.
 * No `offline` rows match `[startTime, endTime)`.
 * `allowedIngestionDelaySeconds = 60`.
-* The per-serial checkpoint has `coverage_start <= startTime`.
 * The latest processed source event for the gateway is a ping at `endTime - 30 seconds`.
-* No `device_availability_ingestion_gaps` row overlaps `[startTime, endTime - 30 seconds)`.
 
 ### Steps
 
-1. Set the availability checkpoint `processed_through_event_time = endTime - 30 seconds`.
+1. Ensure the latest currently persisted source event for the gateway is a ping at `endTime - 30 seconds`.
 2. Call the availability-summary API with `timestampTill = endTime`.
 
 ### Expected result
@@ -2080,7 +1995,7 @@ last_event_time = 12:04
 * State never moves backward.
 * No duplicate transition events are inserted.
 * State and event writes are atomic.
-* It is not valid to process the `12:04` online event first, mark the `12:03` offline event stale, and lose the outage. If the implementation intentionally chooses best-effort counting instead of an ordering guarantee, this test must be replaced by an explicit documented best-effort contract and must assert that the undercount is observable as degraded accuracy, not silently successful exact counting.
+* It is not valid to process the `12:04` online event first, mark the `12:03` offline event stale, and lose the outage. If the implementation intentionally chooses best-effort counting instead of an ordering guarantee, this test must be replaced by an explicit documented best-effort contract and must assert that the undercount is visible in internal logs or metrics, not silently hidden.
 
 ---
 
@@ -2196,81 +2111,7 @@ last_idempotency_key = ping-1210
 
 ---
 
-## TC-AVAIL-029A: Equal timestamp without source sequence creates ambiguity gap
-
-### Objective
-
-Verify that a distinct opposite-state message with the same source timestamp is
-not silently discarded when no reliable source sequence can prove ordering.
-
-### Steps
-
-1. Set `device_availability_state` to:
-
-```text
-current_state = online
-last_event_time = 12:10
-last_idempotency_key = ping-1210
-```
-
-2. Deliver a disconnection for the same gateway with `event_time = 12:10`, a different logical `idempotency_key`, and no reliable source sequence.
-3. Query `device_availability_state`, `device_availability_events`, and `device_availability_ingestion_gaps`.
-
-### Expected result
-
-* The disconnection is treated as unordered or ambiguous, not as an exact duplicate.
-* No offline transition event is inserted.
-* `device_availability_state` remains unchanged.
-* An ingestion ambiguity gap is persisted for the overlapping source time.
-* Availability queries overlapping the ambiguous source time still return the documented `meta.requestedWindow`, `meta.observedWindow`, `meta.offlineEventCount`, and `data.offline_count` shape.
-
----
-
-## TC-AVAIL-029B: Equal timestamp with source sequence preserves numeric transitions
-
-### Objective
-
-Verify that distinct opposite-state events sharing a timestamp are processed when
-a deterministic 64-bit numeric `source_sequence` (`BIGINT`) orders them, and that
-numeric comparison (`10 > 2`) is preserved rather than string lexicographical order.
-
-### Preconditions
-
-* Gateway state is initialized as online before `12:00:00`.
-* The source provides a reliable per-serial numeric sequence field (`BIGINT NULL`).
-
-### Steps
-
-1. Deliver a disconnection with:
-
-```text
-event_time = 12:00:00
-source_sequence = 2
-idempotency_key = offline-120000-2
-```
-
-2. Deliver a ping with:
-
-```text
-event_time = 12:00:00
-source_sequence = 10
-idempotency_key = online-120000-10
-```
-
-3. Query `device_availability_state` and `device_availability_events`.
-
-### Expected result
-
-* The offline transition is inserted with ordering key `(12:00:00, 2)`.
-* The online transition is inserted with ordering key `(12:00:00, 10)` because numeric comparison evaluates `10 > 2` (whereas string comparison would incorrectly evaluate `"10" < "2"`).
-* `device_availability_state.current_state = online`.
-* `device_availability_state.last_event_time = 12:00:00`.
-* `device_availability_state.last_source_sequence = 10`.
-* A full-coverage query over this interval returns `offline_count = 1`.
-
----
-
-## TC-AVAIL-029C: Delayed offline before newer same-state ping is not lost
+## TC-AVAIL-029A: Delayed offline before newer same-state ping is not lost
 
 ### Objective
 
@@ -2295,7 +2136,7 @@ transition when a newer same-state online ping arrives first.
 * The `12:10` ping is accepted as an online transition after the offline transition.
 * `device_availability_state.current_state = online`.
 * `device_availability_state.last_event_time = 12:10`.
-* `offline_count` for a full-coverage window containing `12:05` is `1`.
+* `offline_count` for a window containing `12:05` is `1`.
 * If the implementation cannot provide serial-keyed source-event ordering or a bounded reorder window for this sequence, the API must not silently undercount persisted offline rows.
 
 ---
@@ -2326,9 +2167,7 @@ counts observed online-to-offline transitions.
 
 * No `offline` transition event row is inserted.
 * A `device_availability_state` row is created with `current_state = offline` and `last_event_time` equal to the disconnection source timestamp.
-* The checkpoint's `state_known_from` timestamp is set to this first observed event timestamp (or an unproven gap is recorded for `[coverage_start, initial_event_time)`).
-* An availability-summary response for a window containing the first disconnection does not report an exact zero, because `state_known_from > startTime` proves the prior state boundary is unknown.
-* The availability-summary API uses the documented observed-data response shape; it does not expose public coverage or accuracy fields.
+* The availability-summary API uses the documented observed-data response shape.
 * A zero response reports no persisted offline transition rows in the requested interval.
 
 ---
@@ -3018,11 +2857,11 @@ Database contains historical row: sample time = 2026-07-29T09:59:59Z, wifi_temp 
 
 ---
 
-## TC-TEMP-008: Zero temperature treated as missing-sensor sentinel
+## TC-TEMP-008: Zero temperature follows telemetry contract
 
 ### Preconditions
 
-The sample contains:
+The post-cutover sample contains:
 
 ```text
 wifi_temp = 0
@@ -3030,9 +2869,8 @@ wifi_temp = 0
 
 ### Expected result
 
-* `wifi_temp = 0` is treated as an uninitialized or missing-sensor sentinel across all OpenWiFi telemetry.
-* The sample is excluded from temperature aggregation and does not contribute to min, max, or average calculations.
-* If all samples for a band have `wifi_temp = 0`, the response returns `null` for that band's min, max, and average fields.
+* If the persisted/resolved telemetry contract for that sample has `wifiTempZeroIsUnavailable = true`, the sample is excluded from temperature aggregation and does not contribute to min, max, or average calculations.
+* If the persisted/resolved telemetry contract has `wifiTempZeroIsUnavailable = false` or no contract can be resolved, `0°C` is a valid in-range measurement and contributes to min, max, and average calculations.
 
 ---
 
@@ -3055,10 +2893,10 @@ A post-cutover sample contains a numeric `wifi_temp` value.
 
 * A post-cutover numeric `wifi_temp` is included only when all of the following hold:
   * `-40 <= wifi_temp <= 125`
-  * `wifi_temp != 0`
   * `wifi_temp != 255`
+  * `wifi_temp != 0` only when the persisted/resolved telemetry contract has `wifiTempZeroIsUnavailable = true`
 * Explicit boundary values `-40` and `125` are valid inclusive measurements and are included in aggregation.
-* Sentinels and out-of-range values (`0`, `255`, `< -40`, and `> 125`) are excluded.
+* Sentinel and out-of-range values (`255`, `< -40`, and `> 125`) are excluded. `0°C` is excluded only under a telemetry contract that marks zero as unavailable.
 
 ---
 
@@ -3870,7 +3708,7 @@ Query the usage-summary API for a client with calculable RX/TX deltas.
 
 ### Expected result
 
-* Client A uses the 09:51:00Z sample as start boundary baseline and 11:00:00Z as exact end boundary; the public response reports the resulting byte totals without a usage accuracy field.
+* Client A uses the 09:51:00Z sample as start boundary baseline and 11:00:00Z as exact end boundary; the public response reports the resulting byte totals without a public quality classification field.
 * Client B discards the 09:48:00Z sample because it exceeds 2x collection interval tolerance; Client B calculates delta starting from in-window sample at 10:30:00Z to exact end sample at 11:00:00Z.
 
 ---
@@ -4392,7 +4230,7 @@ Availability:    data.fetch_status = success, data.offline_count = 0, meta.offli
 * Existing data remains available.
 * Missing new fields in old rows are handled safely.
 * New fields are stored correctly.
-* All four availability storage tables (`device_availability_state`, `device_availability_events`, `device_availability_ingestion_checkpoint`, `device_availability_ingestion_gaps`), both sequence columns (`source_sequence`, `last_source_sequence`), and associated sequence-aware indexes/constraints are created.
+* Both availability storage tables (`device_availability_state`, `device_availability_events`) and their required indexes/constraints are created.
 * No existing data is deleted unintentionally.
 
 ---
