@@ -60,7 +60,7 @@ wificlienthistory
 ```
 
 8. Gateway availability uses `device_availability_state` as the authoritative restart-safe state table and `device_availability_events` as the transition log. Kafka `disconnection` messages are treated as `offline`; Kafka `ping` and `capabilities` messages are treated as `online`. Exact transition counting requires serialNumber-scoped source-event ordering before state-machine processing. Every accepted source-newer message emitted by that ordering stage updates `device_availability_state.last_event_time`. `DeviceInfo.lastContact` is contact/processing metadata and is not used for source-event ordering.
-9. Availability exact-zero responses require durable per-serial coverage proof in `device_availability_ingestion_checkpoint` and no overlapping persisted gap in `device_availability_ingestion_gaps`.
+9. Availability success responses report the persisted offline transition rows currently available to Analytics; public API responses do not expose ingestion coverage metadata.
 10. Database records for the test gateway are cleared or isolated before each independent test.
 11. A valid authorization token is available for testing endpoint access.
 
@@ -194,7 +194,7 @@ GET /api/v1/devices/unknown.router/memory-summary
 
 ### Objective
 
-Verify the public `routerId` contract: path-safe strings only (1 to 64 alphanumeric characters, hyphens, or underscores matching `^[a-zA-Z0-9_-]+$`). Syntax validation runs before OWPROV ownership resolution.
+Verify the handler-level `routerId` contract: path-safe strings only (1 to 64 alphanumeric characters, hyphens, or underscores matching `^[a-zA-Z0-9_-]+$`). Syntax validation runs before OWPROV ownership resolution. These are unit/handler tests where the listed value is delivered to the handler as the decoded `routerId` path parameter.
 
 ### Requests and expected results
 
@@ -203,13 +203,33 @@ Verify the public `routerId` contract: path-safe strings only (1 to 64 alphanume
 | `abcdef123456` | Syntax is accepted. If the gateway does not exist or is outside scope, return HTTP `404 Not Found`, `error: "not_found"`. |
 | `gateway-serial-1234` | Syntax is accepted (non-hex alphanumeric string with hyphens). If the gateway does not exist in OWPROV, return HTTP `404 Not Found`, `error: "not_found"`. |
 | `ABCDEF123456` | Syntax is accepted. If the gateway does not exist or is outside scope, return HTTP `404 Not Found`, `error: "not_found"`. |
-| `.` | Handler-level validation returns HTTP `400 Bad Request`, `error: "invalid_router_id"`. End-to-end route tests may observe framework-level rejection first if the server normalizes dot-segments, but OWPROV lookup must not run. |
-| `..` | Handler-level validation returns HTTP `400 Bad Request`, `error: "invalid_router_id"`. End-to-end route tests may observe framework-level rejection first if the server normalizes dot-segments, but OWPROV lookup must not run. |
-| `abc%2Fdef123456` | Rejected before OWPROV lookup. Encoded path separators must not be decoded into a router ID that reaches ownership resolution. |
+| `.` | HTTP `400 Bad Request`, `error: "invalid_router_id"`. |
+| `..` | HTTP `400 Bad Request`, `error: "invalid_router_id"`. |
+| `abc/def123456` | HTTP `400 Bad Request`, `error: "invalid_router_id"` because path separators violate path-safety validation. |
+| `abc\\def123456` | HTTP `400 Bad Request`, `error: "invalid_router_id"` because path separators violate path-safety validation. |
 | `:::`, `router space` | HTTP `400 Bad Request`, `error: "invalid_router_id"` because punctuation or spaces violate path-safety validation. |
 | (string > 64 chars) | HTTP `400 Bad Request`, `error: "invalid_router_id"` because max length is 64 characters. |
 
 For all rejected syntax cases, OWPROV ownership lookup and metric aggregation are not executed.
+
+---
+
+## TC-COMMON-005B: Router ID HTTP route normalization and encoded separators
+
+### Objective
+
+Verify end-to-end HTTP routing rejects dangerous path forms before OWPROV ownership resolution, even when the framework normalizes dot-segments or encoded path separators before the Analytics handler can inspect the decoded path parameter.
+
+### Requests and expected results
+
+| Raw HTTP path segment | Allowed HTTP-level result |
+| --- | --- |
+| `.` | Either HTTP `400 Bad Request` with JSON `error: "invalid_router_id"` if the value reaches the handler, or framework-level HTTP `404 Not Found` / HTTP `400 Bad Request` before handler dispatch. |
+| `..` | Either HTTP `400 Bad Request` with JSON `error: "invalid_router_id"` if the value reaches the handler, or framework-level HTTP `404 Not Found` / HTTP `400 Bad Request` before handler dispatch. |
+| `abc%2Fdef123456` | Either HTTP `400 Bad Request` with JSON `error: "invalid_router_id"` if decoded and delivered as a handler parameter, or framework-level HTTP `404 Not Found` / HTTP `400 Bad Request` before handler dispatch. |
+| `abc%5Cdef123456` | Either HTTP `400 Bad Request` with JSON `error: "invalid_router_id"` if decoded and delivered as a handler parameter, or framework-level HTTP `404 Not Found` / HTTP `400 Bad Request` before handler dispatch. |
+
+For all allowed HTTP-level outcomes, OWPROV ownership lookup and metric aggregation must not execute. The path must never be accepted as a valid router serial, and encoded path separators must not be decoded into a router ID that reaches ownership resolution.
 
 ---
 
@@ -955,10 +975,10 @@ updated_at >= processing time
 * The checkpoint's `state_known_from` timestamp is set to the first ping source timestamp.
 * If requested window starts BEFORE the first ping (`startTime < state_known_from`):
   * Prior state boundary is unknown.
-  * The response returns `meta.coverage = "partial"`, `meta.accuracy = "lower_bound"`, and `meta.availabilityCoverage.stateKnownFrom` equal to the first ping timestamp.
+  * The availability-summary API still uses the documented `meta.requestedWindow`, `meta.observedWindow`, `meta.offlineEventCount`, and `data.offline_count` response shape.
 * If requested window starts AT OR AFTER the first ping (`startTime >= state_known_from`):
   * State is authoritatively known as online throughout the window.
-  * The response returns `meta.coverage = "full"`, `meta.accuracy = "exact"`, `data.offline_count = 0`, and `meta.availabilityCoverage.stateKnownFrom = first ping timestamp`.
+  * The response returns `data.offline_count = 0`, `meta.offlineEventCount = 0`, and `meta.observedWindow.startTime = meta.observedWindow.endTime = null`.
 
 ---
 
@@ -1054,38 +1074,10 @@ event_time = disconnection message timestamp
       "endTime": "<endTime>"
     },
     "observedWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
+      "startTime": "<firstOfflineEventAt>",
+      "endTime": "<lastOfflineEventAt>"
     },
-    "sourceWindow": {
-      "firstSampleAt": "<firstSourceAt>",
-      "lastSampleAt": "<lastSourceAt>"
-    },
-    "contributingWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
-    },
-    "selection": "boundary_assisted",
-    "coverage": "full",
-    "accuracy": "exact",
-    "sampleCount": 1,
-    "offlineEventCount": 1,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": false,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
-    "availabilityCoverage": {
-      "coverageStart": "<= startTime",
-      "stateKnownFrom": "<= startTime",
-      "processedThrough": ">= endTime",
-      "allowedIngestionDelaySeconds": "<configured availability ingestion delay>",
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 1
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -1264,37 +1256,10 @@ API result:
       "endTime": "<endTime>"
     },
     "observedWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
+      "startTime": "12:10",
+      "endTime": "12:10"
     },
-    "sourceWindow": {
-      "firstSampleAt": "<firstSourceAt>",
-      "lastSampleAt": "<lastSourceAt>"
-    },
-    "contributingWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
-    },
-    "selection": "boundary_assisted",
-    "coverage": "full",
-    "accuracy": "exact",
-    "sampleCount": 1,
-    "offlineEventCount": 1,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": false,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
-    "availabilityCoverage": {
-      "coverageStart": "<= startTime",
-      "processedThrough": ">= endTime",
-      "allowedIngestionDelaySeconds": "<configured availability ingestion delay>",
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 1
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -1384,37 +1349,10 @@ The API returns:
       "endTime": "<endTime>"
     },
     "observedWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
+      "startTime": "<firstOfflineEventAt>",
+      "endTime": "<lastOfflineEventAt>"
     },
-    "sourceWindow": {
-      "firstSampleAt": "<firstSourceAt>",
-      "lastSampleAt": "<lastSourceAt>"
-    },
-    "contributingWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
-    },
-    "selection": "boundary_assisted",
-    "coverage": "full",
-    "accuracy": "exact",
-    "sampleCount": 3,
-    "offlineEventCount": 3,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": false,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
-    "availabilityCoverage": {
-      "coverageStart": "<= startTime",
-      "processedThrough": ">= endTime",
-      "allowedIngestionDelaySeconds": "<configured availability ingestion delay>",
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 3
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -1697,13 +1635,10 @@ Verify successful empty results.
 
 ### Expected result
 
-* The response uses the top-level `meta` and `data` shape.
-* `meta.coverage = "full"`.
-* `meta.accuracy = "exact"`.
-* `meta.availabilityCoverage.coverageStart <= startTime`.
-* `meta.availabilityCoverage.processedThrough >= endTime`.
-* `meta.availabilityCoverage.ingestionGapKnown = false`.
-* `meta.availabilityCoverage.proofSource != "unavailable"`.
+* The response uses the documented top-level `meta` and `data` shape.
+* `meta.offlineEventCount = 0`.
+* `meta.observedWindow.startTime = null`.
+* `meta.observedWindow.endTime = null`.
 * `data.gw_uuid = "60cf84f22290"`.
 * `data.fetch_status = "success"`.
 * `data.offline_count = 0`.
@@ -1716,37 +1651,10 @@ Verify successful empty results.
       "endTime": "<endTime>"
     },
     "observedWindow": {
-      "firstSampleAt": null,
-      "lastSampleAt": null
+      "startTime": null,
+      "endTime": null
     },
-    "sourceWindow": {
-      "firstSampleAt": "<firstSourceAt>",
-      "lastSampleAt": "<lastSourceAt>"
-    },
-    "contributingWindow": {
-      "firstSampleAt": null,
-      "lastSampleAt": null
-    },
-    "selection": "boundary_assisted",
-    "coverage": "full",
-    "accuracy": "exact",
-    "sampleCount": 0,
-    "offlineEventCount": 0,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": false,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
-    "availabilityCoverage": {
-      "coverageStart": "<= startTime",
-      "processedThrough": ">= endTime",
-      "allowedIngestionDelaySeconds": "<configured availability ingestion delay>",
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 0
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -1756,70 +1664,68 @@ Verify successful empty results.
 }
 ```
 
-The API must not treat a full-coverage empty result as an error. Absence of
-matching offline rows is not enough by itself to prove an exact zero; if coverage
-is partial or unavailable, the response must use partial/lower-bound or no
-coverage semantics instead of reporting an exact zero.
+The API must not treat an empty observed result as an error. A zero result means
+no persisted offline transition row was observed in the requested post-cutover
+interval based on data currently available in Analytics storage.
 
 ---
 
-## TC-AVAIL-018A: No offline events with partial ingestion coverage
+## TC-AVAIL-018A: No offline events with partial ingestion progress
 
 ### Objective
 
-Verify that zero matching offline rows are not reported as an exact zero when the
-availability ingestion stream does not prove full interval coverage.
+Verify that partial ingestion progress does not change the documented public
+availability response shape.
 
 ### Preconditions
 
 * The requested range starts at or after `availabilityValidFrom`.
 * No `offline` rows match `[startTime, endTime)`.
-* `availabilityCoverage.processedThrough < endTime` or a known ingestion gap overlaps the covered portion of the requested range.
+* Internal ingestion checkpoint progress is before `endTime` or a known ingestion gap overlaps the requested range.
 
 ### Steps
 
 1. Select a range with no matching offline rows.
-2. Set availability coverage proof to overlap only part of the requested range.
+2. Set internal ingestion progress to overlap only part of the requested range.
 3. Call the availability-summary API.
 
 ### Expected result
 
 * HTTP `200 OK`.
 * `data.offline_count = 0`.
-* `meta.coverage = "partial"`.
-* `meta.accuracy = "lower_bound"`.
-* The response includes `meta.availabilityCoverage`.
-* The response must not describe the zero as exact full coverage.
+* `meta.offlineEventCount = 0`.
+* `meta.observedWindow.startTime = null`.
+* `meta.observedWindow.endTime = null`.
+* The response does not include public coverage or accuracy fields.
 
 ---
 
-## TC-AVAIL-018B: No offline events with unavailable ingestion coverage
+## TC-AVAIL-018B: No offline events with unavailable ingestion progress
 
 ### Objective
 
-Verify that the API does not present a zero matching count as a meaningful
-interval result when no durable availability coverage proof exists.
+Verify that unavailable ingestion progress does not change the documented public
+availability response shape.
 
 ### Preconditions
 
 * No `offline` rows match `[startTime, endTime)`.
-* `availabilityCoverage.proofSource = "unavailable"` or no durable processed-through watermark exists.
+* No durable processed-through watermark exists.
 
 ### Steps
 
 1. Select a range with no matching offline rows.
-2. Make availability coverage proof unavailable.
+2. Make internal ingestion progress unavailable.
 3. Call the availability-summary API.
 
 ### Expected result
 
 * HTTP `200 OK` when the storage query itself succeeds.
-* `meta.coverage = "none"`.
-* `meta.accuracy = "not_applicable"`.
-* `meta.sampleCount = null`.
-* `meta.offlineEventCount = null`.
-* `meta.availabilityCoverage.proofSource = "unavailable"`.
-* `data.offline_count = null`.
+* `data.offline_count = 0`.
+* `meta.offlineEventCount = 0`.
+* `meta.observedWindow.startTime = null`.
+* `meta.observedWindow.endTime = null`.
+* The response does not include public coverage or accuracy fields.
 
 ---
 
@@ -1827,7 +1733,7 @@ interval result when no durable availability coverage proof exists.
 
 ### Objective
 
-Verify that when the latest gateway source message is inside the allowed ingestion delay window (`endTime - 30 seconds`), the query reports partial coverage for `[startTime, endTime)` because ingestion has not yet reached `endTime`.
+Verify that when the latest gateway source message is inside the allowed ingestion delay window (`endTime - 30 seconds`), the public response still uses the documented observed-data shape.
 
 ### Preconditions
 
@@ -1846,11 +1752,10 @@ Verify that when the latest gateway source message is inside the allowed ingesti
 ### Expected result
 
 * HTTP `200 OK`.
-* `meta.coverage = "partial"`.
-* `meta.accuracy = "lower_bound"`.
-* `meta.availabilityCoverage.processedThrough < endTime`.
-* `meta.availabilityCoverage.ingestionGapKnown = false`.
 * `data.offline_count = 0`.
+* `meta.offlineEventCount = 0`.
+* `meta.observedWindow.startTime = null`.
+* `meta.observedWindow.endTime = null`.
 
 ---
 
@@ -1870,16 +1775,10 @@ Requested lookback: 24 hours
 ### Expected result
 
 * The old event is excluded by the half-open requested window.
-* `data.offline_count = 0` only when the response proves full availability coverage.
-* `meta.coverage = "full"`.
-* `meta.accuracy = "exact"`.
-* `meta.availabilityCoverage.coverageStart <= startTime`.
-* `meta.availabilityCoverage.processedThrough >= endTime`.
-* `meta.availabilityCoverage.ingestionGapKnown = false`.
-* `meta.availabilityCoverage.proofSource != "unavailable"`.
-
-If these coverage assertions fail, the zero matching count must be reported using
-partial/lower-bound or no-coverage semantics instead of as an exact zero.
+* `data.offline_count = 0`.
+* `meta.offlineEventCount = 0`.
+* `meta.observedWindow.startTime = null`.
+* `meta.observedWindow.endTime = null`.
 
 ---
 
@@ -1987,9 +1886,10 @@ GET /api/v1/devices/abc%2Fdef123456/availability-summary
   * Error is `not_found`.
   * The response proves the value passed syntax validation before OWPROV ownership resolution determined it was nonexistent or outside scope.
 
-* For dot-segment and encoded slash requests (`.`, `..`, `%2F`):
-  * Handler-level validation of `.` and `..` returns HTTP `400 Bad Request` with `error: "invalid_router_id"` when those values reach the handler as router IDs.
-  * End-to-end route tests may observe framework-level rejection before reaching the handler if the HTTP server normalizes dot-segments or rejects encoded path separators.
+* For dot-segment and encoded slash requests (`.`, `..`, `%2F`), the allowed HTTP-level results are:
+  * HTTP `400 Bad Request` with JSON `error: "invalid_router_id"` if the decoded value reaches the handler as `routerId`.
+  * Framework-level HTTP `404 Not Found` before handler dispatch.
+  * Framework-level HTTP `400 Bad Request` before handler dispatch.
   * These path values are never passed to OWPROV ownership resolution.
 
 ---
@@ -2133,10 +2033,8 @@ Verify that first-row creation is concurrency-safe and does not rely on locking 
 * Exactly one `device_availability_state` row exists.
 * The final state is `current_state = offline`.
 * No offline transition row is inserted because the prior state was unknown.
-* An availability-summary response for a window containing these first observations does not report an exact zero, because the prior state boundary is unknown.
-* The response uses `meta.coverage = "partial"` and `meta.accuracy = "lower_bound"` when durable coverage begins at the first observation, or `meta.coverage = "none"` and `meta.accuracy = "not_applicable"` when no coverage proof exists.
-* When `meta.coverage = "partial"`, `data.offline_count = 0` is allowed as a lower-bound count of stored offline transitions.
-* When `meta.coverage = "none"`, `meta.sampleCount = null`, `meta.offlineEventCount = null`, and `data.offline_count = null`.
+* An availability-summary response for a window containing these first observations uses the documented observed-data response shape.
+* When no offline transition row is persisted for the requested interval, `data.offline_count = 0`, `meta.offlineEventCount = 0`, and both observed-window timestamps are `null`.
 
 ---
 
@@ -2324,7 +2222,7 @@ last_idempotency_key = ping-1210
 * No offline transition event is inserted.
 * `device_availability_state` remains unchanged.
 * An ingestion ambiguity gap is persisted for the overlapping source time.
-* Availability queries overlapping the ambiguous source time do not return `meta.accuracy = "exact"`.
+* Availability queries overlapping the ambiguous source time still return the documented `meta.requestedWindow`, `meta.observedWindow`, `meta.offlineEventCount`, and `data.offline_count` shape.
 
 ---
 
@@ -2398,7 +2296,7 @@ transition when a newer same-state online ping arrives first.
 * `device_availability_state.current_state = online`.
 * `device_availability_state.last_event_time = 12:10`.
 * `offline_count` for a full-coverage window containing `12:05` is `1`.
-* If the implementation cannot provide serial-keyed source-event ordering or a bounded reorder window for this sequence, the API must not mark the count as `meta.accuracy = "exact"`.
+* If the implementation cannot provide serial-keyed source-event ordering or a bounded reorder window for this sequence, the API must not silently undercount persisted offline rows.
 
 ---
 
@@ -2430,8 +2328,8 @@ counts observed online-to-offline transitions.
 * A `device_availability_state` row is created with `current_state = offline` and `last_event_time` equal to the disconnection source timestamp.
 * The checkpoint's `state_known_from` timestamp is set to this first observed event timestamp (or an unproven gap is recorded for `[coverage_start, initial_event_time)`).
 * An availability-summary response for a window containing the first disconnection does not report an exact zero, because `state_known_from > startTime` proves the prior state boundary is unknown.
-* The response uses `meta.coverage = "partial"` and `meta.accuracy = "lower_bound"` when durable coverage begins at the first observation, or `meta.coverage = "none"` and `meta.accuracy = "not_applicable"` when no coverage proof exists.
-* A full-coverage exact-zero response is allowed only for a requested window that begins at or after `state_known_from` (`state_known_from <= startTime`) and is fully covered by the per-serial ingestion checkpoint (`processed_through_event_time >= endTime`).
+* The availability-summary API uses the documented observed-data response shape; it does not expose public coverage or accuracy fields.
+* A zero response reports no persisted offline transition rows in the requested interval.
 
 ---
 
@@ -2527,9 +2425,9 @@ Verify that online transition rows do not affect `offline_count`.
 
 * The API counts only the two stored `offline` rows.
 * Stored `online` rows are ignored by the offline count.
-* `meta.sampleCount = 2`.
 * `meta.offlineEventCount = 2`.
 * `offline_count` is `2`.
+* `meta.observedWindow` is bounded by the two offline rows (`12:10` and `12:30`); the `12:15` online row must not extend `observedWindow`.
 
 ---
 
@@ -2586,37 +2484,10 @@ Ethernet reconnected        → online event
       "endTime": "<endTime>"
     },
     "observedWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
+      "startTime": "<firstOfflineEventAt>",
+      "endTime": "<lastOfflineEventAt>"
     },
-    "sourceWindow": {
-      "firstSampleAt": "<firstSourceAt>",
-      "lastSampleAt": "<lastSourceAt>"
-    },
-    "contributingWindow": {
-      "firstSampleAt": "<firstOfflineEventAt>",
-      "lastSampleAt": "<lastOfflineEventAt>"
-    },
-    "selection": "boundary_assisted",
-    "coverage": "full",
-    "accuracy": "exact",
-    "sampleCount": 2,
-    "offlineEventCount": 2,
-    "effectiveSamplingIntervalSeconds": 0,
-    "allowedGapSeconds": 0,
-    "boundarySamplesUsed": {
-      "beforeStart": false,
-      "atStart": false,
-      "atEnd": false,
-      "afterEnd": false
-    },
-    "availabilityCoverage": {
-      "coverageStart": "<= startTime",
-      "processedThrough": ">= endTime",
-      "allowedIngestionDelaySeconds": "<configured availability ingestion delay>",
-      "ingestionGapKnown": false,
-      "proofSource": "serial_partition_checkpoint"
-    }
+    "offlineEventCount": 2
   },
   "data": {
     "gw_uuid": "60cf84f22290",
@@ -3442,14 +3313,13 @@ Expected response:
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
-    "earliestActualStartTime": "2026-07-26T12:00:00Z",
-    "latestActualEndTime": "2026-07-27T12:00:00Z",
-    "boundaryFallbackUsed": false
+  "observedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
   },
   "items": [
     {
@@ -3459,11 +3329,7 @@ Expected response:
       "total_bytes": 110338750,
       "data_consume_rx": "106.49 MB",
       "data_consume_tx": "3.85 MB",
-      "total_data_usage": "110.34 MB",
-      "usage_accuracy": "exact",
-      "incomplete": false,
-      "segment_count": 1,
-      "boundary_fallback_used": false
+      "total_data_usage": "110.34 MB"
     }
   ],
   "totalClients": 1,
@@ -3526,7 +3392,10 @@ RX delta = 5000
 TX delta = 2000
 ```
 
-The baseline itself is not counted as in-window traffic, but it is used to calculate the first delta.
+The 09:59 baseline is outside the requested window. It is used as the start
+boundary for a bounded differential, but no public usage quality field is
+returned. The response exposes only the documented client byte totals and
+display strings.
 
 ---
 
@@ -3548,8 +3417,6 @@ No earlier sample exists.
 * First cumulative sample contributes a delta of zero.
 * The API does not assume all `500000` and `100000` bytes were generated inside the requested range.
 * Later sample deltas are counted normally.
-* The client response has `usage_accuracy: "lower_bound"`.
-* The client response has `incomplete: true`.
 
 ---
 
@@ -3586,8 +3453,6 @@ No confirmed fixed-width rollover exists.
 * Delta for this sample is `0`.
 * `200` becomes the new baseline.
 * The implementation does not add `200` as traffic automatically.
-* The client response has `usage_accuracy: "lower_bound"`.
-* The client response has `incomplete: true`.
 
 ---
 
@@ -3823,14 +3688,13 @@ total = 0
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
-    "earliestActualStartTime": null,
-    "latestActualEndTime": null,
-    "boundaryFallbackUsed": false
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
   },
   "items": [],
   "totalClients": 0,
@@ -3968,24 +3832,24 @@ serialNumber = routerId
 ### Expected result
 
 * RX bytes are calculated independently: `3000000 - 1000000 = 2000000` bytes (`data_consume_rx = "2.00 MB"`).
-* TX bytes are uncalculable for 10:00:00Z sample; TX returns `0` bytes (required non-null integer in `calculation_segments`) and formatted `"0.00 MB"` in summary strings.
+* TX bytes are uncalculable for 10:00:00Z sample; TX returns `0` bytes and formatted `"0.00 MB"` in summary strings.
 * Segment `total_bytes` = `2000000 + 0 = 2000000`.
-* The stream usage accuracy is classified as `lower_bound`.
+* The public response still exposes only the documented usage item fields.
 * Client `11:22:33:44:55:66` is included in `items[]` and counted in `totalClients`.
 
 ---
 
-## TC-USAGE-029: Calculation details flag and segment non-null integer invariants
+## TC-USAGE-029: Usage item response field invariants
 
 ### Test data
 
-Query with `includeCalculationDetails=true` vs `includeCalculationDetails=false` (or omitted).
+Query the usage-summary API for a client with calculable RX/TX deltas.
 
 ### Expected result
 
-* When `includeCalculationDetails=false` or omitted: `items[]` contain all mandatory `ClientBandwidthConsumption` fields (`mac`, `rx_bytes`, `tx_bytes`, `total_bytes`, `data_consume_rx`, `data_consume_tx`, `total_data_usage`, `incomplete`, `segment_count`, `boundary_fallback_used`, `usage_accuracy`). The `calculation_segments` array is omitted.
-* When `includeCalculationDetails=true`: `items[]` additionally expose `calculation_segments[]`. Each segment object has non-null required integer fields `rx_bytes`, `tx_bytes`, and `total_bytes`.
-* The byte invariant `rx_bytes + tx_bytes == total_bytes` holds for every segment.
+* `items[]` contain only the mandatory `ClientBandwidthConsumption` fields: `mac`, `rx_bytes`, `tx_bytes`, `total_bytes`, `data_consume_rx`, `data_consume_tx`, and `total_data_usage`.
+* The byte invariant `rx_bytes + tx_bytes == total_bytes` holds for every returned client item.
+* The response does not expose calculation segments or usage quality fields.
 
 ---
 
@@ -4006,8 +3870,8 @@ Query with `includeCalculationDetails=true` vs `includeCalculationDetails=false`
 
 ### Expected result
 
-* Client A uses the 09:51:00Z sample as start boundary baseline and 11:00:00Z as exact end boundary; expected usage accuracy is deterministically `bounded_interval` (because `actual_start_time` 09:51 != `effective_start` 10:00).
-* Client B discards the 09:48:00Z sample because it exceeds 2x collection interval tolerance; Client B calculates delta starting from in-window sample at 10:30:00Z to exact end sample at 11:00:00Z, and is classified as `lower_bound`.
+* Client A uses the 09:51:00Z sample as start boundary baseline and 11:00:00Z as exact end boundary; the public response reports the resulting byte totals without a usage accuracy field.
+* Client B discards the 09:48:00Z sample because it exceeds 2x collection interval tolerance; Client B calculates delta starting from in-window sample at 10:30:00Z to exact end sample at 11:00:00Z.
 
 ---
 
@@ -4020,11 +3884,9 @@ Query with `includeCalculationDetails=true` vs `includeCalculationDetails=false`
 
 ### Expected result
 
-* `resultTimeWindow.earliestActualStartTime` = `"2026-07-27T10:00:00Z"` (earliest contributing sample at effective start).
-* `resultTimeWindow.latestActualEndTime` = `"2026-07-27T11:00:00Z"` (latest contributing sample at effective end).
-* `resultTimeWindow.boundaryFallbackUsed` = `false` (exact boundary samples present).
-* `items[].usage_accuracy` = `"exact"`.
-* `requestedTimeWindow` remains `"2026-07-27T10:00:00Z"` to `"2026-07-27T11:00:00Z"`.
+* `observedWindow.startTime` = `"2026-07-27T10:00:00Z"` (earliest contributing sample at effective start).
+* `observedWindow.endTime` = `"2026-07-27T11:00:00Z"` (latest contributing sample at effective end).
+* `requestedWindow` remains `"2026-07-27T10:00:00Z"` to `"2026-07-27T11:00:00Z"`.
 
 ---
 
@@ -4371,14 +4233,13 @@ NULL
 
 ```json
 {
-  "requestedTimeWindow": {
+  "requestedWindow": {
     "startTime": "2026-07-26T12:00:00Z",
     "endTime": "2026-07-27T12:00:00Z"
   },
-  "resultTimeWindow": {
-    "firstSampleTime": null,
-    "lastSampleTime": null,
-    "totalSamples": 0
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
   },
   "items": [],
   "totalClients": 0,
@@ -4476,11 +4337,11 @@ Memory API:      null summary fields
 Temperature API: null summary fields
 Usage API:       object envelope with items: [], totalClients: 0, truncated: false
 RSSI API:        object envelope with items: [], totalClients: 0, truncated: false
-Availability:    data.fetch_status = success, data.offline_count = 0, meta.coverage = full
+Availability:    data.fetch_status = success, data.offline_count = 0, meta.offlineEventCount = 0
 ```
 
 * All metric responses use HTTP `200 OK` when queries succeed but return no data.
-* Availability returns `data.fetch_status = "success"` and `data.offline_count = 0` as an exact result only when `startTime >= availabilityValidFrom`, `meta.coverage = "full"`, and `meta.availabilityCoverage.processedThrough >= endTime`.
+* Availability returns `data.fetch_status = "success"`, `data.offline_count = 0`, `meta.offlineEventCount = 0`, and `meta.observedWindow` with both timestamps `null` when no persisted offline rows match the requested interval.
 * If `startTime < availabilityValidFrom`, Availability returns `400 Bad Request` with `error: "availability_range_before_cutover"`.
 
 ---
@@ -4579,10 +4440,6 @@ total_bytes
 data_consume_rx
 data_consume_tx
 total_data_usage
-usage_accuracy
-incomplete
-segment_count
-boundary_fallback_used
 ```
 
 ---
@@ -4619,58 +4476,27 @@ fetch_status
 offline_count
 ```
 
-`offline_count` is an integer for `coverage = "full"` or `coverage = "partial"`.
-It is `null` for `coverage = "none"` and `accuracy = "not_applicable"`.
+`offline_count` is a non-negative integer in successful responses.
 
 Expected availability-specific `meta` fields:
 
 ```text
 requestedWindow
 observedWindow
-sourceWindow
-contributingWindow
-selection
-coverage
-accuracy
-sampleCount
 offlineEventCount
-effectiveSamplingIntervalSeconds
-allowedGapSeconds
-boundarySamplesUsed
-availabilityCoverage
 ```
 
-Expected `meta.availabilityCoverage` fields:
+For availability responses, `offlineEventCount` is the number of persisted
+offline transition rows in `device_availability_events` that contribute to
+`offline_count`:
 
 ```text
-coverageStart
-processedThrough
-allowedIngestionDelaySeconds
-ingestionGapKnown
-proofSource
+offlineEventCount = offline_count
 ```
 
-`coverageStart` and `processedThrough` are derived from durable per-serial
-availability ingestion checkpoint state, and `ingestionGapKnown` reflects
-persisted gaps that overlap the requested interval.
-
-For availability responses, `sampleCount` is retained for response-shape
-consistency with the other summary APIs. When `meta.coverage` is `"full"` or `"partial"`, `sampleCount` is defined as:
-
-```text
-sampleCount = offlineEventCount = offline_count
-```
-
-`sampleCount` and `offlineEventCount` both mean the number of offline transition rows in
-`device_availability_events` contributing to `offline_count`. Online recovery transition rows
-(`event_type = 'online'`) are stored in transition history for state tracking and `observedWindow` /
-`sourceWindow` bounds, but they do not contribute to `sampleCount`, `offlineEventCount`, or `offline_count`.
-For `"full"` or `"partial"` coverage, `sampleCount` always equals `offlineEventCount`.
-
-When `meta.coverage = "none"` and `meta.accuracy = "not_applicable"`, `sampleCount`, `offlineEventCount`,
-and `offline_count` are all `null`. `boundarySamplesUsed` is data-dependent: `beforeStart` is `true` only
-when a pre-start boundary event was actually selected by the query setup, and event counting does not require
-a pre-start boundary event.
+Online recovery transition rows (`event_type = 'online'`) are stored in
+transition history for state tracking, but they do not contribute to
+`observedWindow`, `offlineEventCount`, or `offline_count`.
 
 ---
 
@@ -4678,7 +4504,7 @@ a pre-start boundary event.
 
 ### Expected result
 
-* Usage (`GET /api/v1/devices/{routerId}/wifi-clients/usage-summary`) and RSSI (`GET /api/v1/devices/{routerId}/wifi-clients/rssi-summary`) summary responses are object envelopes containing `requestedTimeWindow`, `resultTimeWindow`, `items`, `totalClients`, and `truncated`.
+* Usage (`GET /api/v1/devices/{routerId}/wifi-clients/usage-summary`) and RSSI (`GET /api/v1/devices/{routerId}/wifi-clients/rssi-summary`) summary responses are object envelopes containing `requestedWindow`, `observedWindow`, `items`, `totalClients`, and `truncated`.
 * When no clients match the requested interval, `items` is an empty array `[]`, `totalClients` is `0`, and `truncated` is `false`.
 
 ---
@@ -4731,16 +4557,11 @@ total_bytes         non-negative integer
 data_consume_rx     formatted string using the documented unit
 data_consume_tx     formatted string using the documented unit
 total_data_usage    formatted string using the documented unit
-usage_accuracy      enum string: "exact", "bounded_interval", or "lower_bound"
-incomplete          boolean
-segment_count       non-negative integer
-boundary_fallback_used boolean
 ```
 
 * RSSI percentages are numeric.
 * RSSI sample count is an integer.
-* Offline count is a non-negative integer when coverage is "full" or "partial".
-* It is null when coverage is "none" and accuracy is "not_applicable".
+* Offline count and offlineEventCount are non-negative integers.
 
 ---
 
@@ -4762,7 +4583,7 @@ The PR implementation is functionally accepted when:
 12. RSSI thresholds and boundary values are classified correctly.
 13. Invalid RSSI values are ignored.
 14. RSSI percentages are calculated per client.
-15. Usage and RSSI client-summary responses use the documented object envelope shape (`requestedTimeWindow`, `resultTimeWindow`, `items`, `totalClients`, `truncated`) matching TC-CONTRACT-006.
+15. Usage and RSSI client-summary responses use the documented object envelope shape (`requestedWindow`, `observedWindow`, `items`, `totalClients`, `truncated`) matching TC-CONTRACT-006.
 16. Gateway shutdown and network loss create one offline transition each.
 17. Repeated pings and disconnections do not create duplicate transitions.
 18. Availability events remain queryable after board reassignment.
