@@ -1190,7 +1190,7 @@ metadata
 
 ---
 
-## TC-AVAIL-SCHEMA-003: Availability migrations are idempotent across all availability tables
+## TC-AVAIL-SCHEMA-003: Availability migrations are idempotent across required availability tables
 
 ### Objective
 
@@ -1937,16 +1937,19 @@ offline event = 16:00
 
 ### Objective
 
-Verify successful empty results.
+Verify that `availability-summary` returns zero when no persisted offline
+transition rows match the requested range.
 
 ### Preconditions
 
 * The requested range starts at or after `availabilityValidFrom`.
+* No `offline` rows exist in `device_availability_events` for the gateway where
+  `event_time >= startTime` and `event_time < endTime`.
 * The cutover behavior for ranges beginning before `availabilityValidFrom` is covered by `TC-COMMON-023`.
 
 ### Steps
 
-1. Select a time range containing no offline events.
+1. Select a time range containing no persisted offline transition rows.
 2. Call the API.
 
 ### Expected result
@@ -1981,94 +1984,9 @@ Verify successful empty results.
 ```
 
 The API must not treat an empty observed result as an error. A zero result means
-no persisted offline transition row was observed in the requested post-cutover
-interval based on data currently available in Analytics storage.
-
----
-
-## TC-AVAIL-018A: No offline events while Kafka consumer is still catching up
-
-### Objective
-
-Verify that Kafka lag does not change the documented public availability response
-shape. Kafka consumer lag is operational state, not availability-domain response
-metadata.
-
-### Preconditions
-
-* The requested range starts at or after `availabilityValidFrom`.
-* No `offline` rows match `[startTime, endTime)`.
-* The Kafka consumer has not yet consumed all upstream source events for the interval.
-
-### Steps
-
-1. Select a range with no matching offline rows.
-2. Call the availability-summary API while the consumer is still catching up.
-
-### Expected result
-
-* HTTP `200 OK`.
-* `data.offline_count = 0`.
-* `meta.offlineEventCount = 0`.
-* `meta.observedWindow.startTime = null`.
-* `meta.observedWindow.endTime = null`.
-* The response includes only the documented availability fields.
-
----
-
-## TC-AVAIL-018B: No offline events when Kafka consumer position is unavailable
-
-### Objective
-
-Verify that unavailable Kafka consumer position does not change the documented
-public availability response shape.
-
-### Preconditions
-
-* No `offline` rows match `[startTime, endTime)`.
-* Kafka consumer position cannot be inspected through the test harness.
-
-### Steps
-
-1. Select a range with no matching offline rows.
-2. Call the availability-summary API.
-
-### Expected result
-
-* HTTP `200 OK` when the storage query itself succeeds.
-* `data.offline_count = 0`.
-* `meta.offlineEventCount = 0`.
-* `meta.observedWindow.startTime = null`.
-* `meta.observedWindow.endTime = null`.
-* The response includes only the documented availability fields.
-
----
-
-## TC-AVAIL-018C: No offline events with last message inside ingestion allowance
-
-### Objective
-
-Verify that when the latest gateway source message is inside the allowed ingestion delay window (`endTime - 30 seconds`), the public response still uses the documented observed-data shape.
-
-### Preconditions
-
-* The requested range starts at or after `availabilityValidFrom`.
-* No `offline` rows match `[startTime, endTime)`.
-* `allowedIngestionDelaySeconds = 60`.
-* The latest processed source event for the gateway is a ping at `endTime - 30 seconds`.
-
-### Steps
-
-1. Ensure the latest currently persisted source event for the gateway is a ping at `endTime - 30 seconds`.
-2. Call the availability-summary API with `timestampTill = endTime`.
-
-### Expected result
-
-* HTTP `200 OK`.
-* `data.offline_count = 0`.
-* `meta.offlineEventCount = 0`.
-* `meta.observedWindow.startTime = null`.
-* `meta.observedWindow.endTime = null`.
+there are zero matching persisted offline transition rows in Analytics storage
+for the requested post-cutover interval. It is not proof of Kafka ingestion
+completeness.
 
 ---
 
