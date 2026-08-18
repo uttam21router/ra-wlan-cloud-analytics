@@ -940,8 +940,11 @@ Authorization: Bearer <valid-token>
 ### Expected result
 
 * HTTP `502 Bad Gateway`.
+* `Content-Type: application/json`.
 * Response conforms to `AnalyticsBadGatewayError`.
+* Required fields `error` and `message` exist.
 * Error is exactly `owprov_unavailable`.
+* `message` is a string.
 * Metric/database aggregation does not execute.
 * The response does not expose internal network details, hostnames, stack traces, or transport exceptions.
 
@@ -973,8 +976,11 @@ Examples include malformed response bodies, invalid JSON where JSON is expected,
 ### Expected result
 
 * HTTP `502 Bad Gateway`.
+* `Content-Type: application/json`.
 * Response conforms to `AnalyticsBadGatewayError`.
+* Required fields `error` and `message` exist.
 * Error is exactly `owprov_invalid_response`.
+* `message` is a string.
 * No arbitrary venue or board is selected.
 * Analytics metric queries are not executed.
 * Internal parsing exceptions are not exposed.
@@ -992,31 +998,7 @@ The same behavior applies to every Analytics API that requires OWPROV ownership 
 
 ---
 
-## TC-COMMON-028: Common 502 response schema for OWPROV failures
-
-### Inputs
-
-Run the representative `memory-summary` request with valid bearer authentication and no usable local/cache ownership fallback:
-
-| Simulated failure | Expected error |
-| --- | --- |
-| OWPROV unavailable | `owprov_unavailable` |
-| OWPROV returns invalid response | `owprov_invalid_response` |
-
-### Expected result
-
-* HTTP `502 Bad Gateway`.
-* `Content-Type: application/json`.
-* Response conforms to `AnalyticsBadGatewayError`.
-* Required fields `error` and `message` exist.
-* `error` matches the documented value for the simulated failure.
-* `message` is a string.
-* No internal exception details, hostnames, transport exceptions, stack traces, or parser diagnostics are leaked.
-* This common 502 contract applies to all Analytics endpoints whose ownership resolution depends on OWPROV.
-
----
-
-## TC-COMMON-029: Analytics query failure returns endpoint-specific internal error
+## TC-COMMON-028: Analytics query failure returns endpoint-specific internal error
 
 ### Preconditions
 
@@ -1076,7 +1058,7 @@ OpenAPI also permits `internal_error` in each endpoint-specific 500 schema. Use 
 | Multiple board mappings | `TC-COMMON-008` | 409 | `multiple_boards` |
 | OWPROV unavailable | `TC-COMMON-026` | 502 | `owprov_unavailable` |
 | OWPROV invalid response | `TC-COMMON-027` | 502 | `owprov_invalid_response` |
-| Analytics datastore/query failure | `TC-COMMON-029` | 500 | endpoint-specific query error |
+| Analytics datastore/query failure | `TC-COMMON-028` | 500 | endpoint-specific query error |
 
 The matrix points to the single authoritative test case for each logical scenario. Do not create endpoint-by-endpoint copies when a common or parameterized test covers the behavior.
 
