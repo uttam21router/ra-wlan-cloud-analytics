@@ -76,6 +76,32 @@ lookbackHours: 24
 
 # 3. Common Service Integration and API Contract Test Cases
 
+## Common request processing order
+
+For every Analytics API that may require OWPROV-based router ownership resolution, request handling follows this order:
+
+```text
+HTTP request
+    ↓
+Bearer-token authentication
+    ↓
+Authorization / required claims as applicable
+    ↓
+routerId/request validation
+    ↓
+local ownership resolution/cache lookup
+    ↓
+OWPROV lookup if required
+    ↓
+Analytics database/query processing
+```
+
+Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before `routerId`, `timestampTill`, or `lookbackHours` validation, before local ownership/cache resolution, before any OWPROV network request, and before Analytics datastore queries.
+
+Common behavior is tested once with a representative endpoint, usually `memory-summary`. The same behavior applies to all bearer-protected Analytics APIs that share the same OpenAPI response contract. Endpoint-specific tests exist only when the public error contract or behavior is genuinely endpoint-specific.
+
+---
+
 ## TC-COMMON-001: Valid router resolves from local ownership map
 
 ### Steps
@@ -113,13 +139,15 @@ serialNumber = 60cf84f22290
 
 ### Steps
 
-1. Remove or expire the gateway mapping from the local map.
-2. Keep the gateway registered in OWPROV.
-3. Call an API for the gateway.
-4. Observe the resolution process.
+1. Supply a valid bearer token.
+2. Remove or expire the gateway mapping from the local map.
+3. Keep the gateway registered in OWPROV.
+4. Call an API for the gateway.
+5. Observe the resolution process.
 
 ### Expected result
 
+* Bearer authentication succeeds before any local cache or OWPROV lookup.
 * Analytics performs a status-aware OWPROV inventory lookup.
 * The venue is read from `inventoryTag.venue`.
 * Board ownership is determined from the monitored venue device lists.
@@ -573,6 +601,35 @@ GET /api/v1/devices/60cf84f22290/memory-summary
 
 ---
 
+## TC-COMMON-017F: Repeated lookbackHours parameter
+
+### Request
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+    &lookbackHours=48
+Authorization: Bearer <valid-token>
+```
+
+Also test identical repeated values:
+
+```text
+lookbackHours=24&lookbackHours=24
+```
+
+### Expected result
+
+* HTTP `400 Bad Request`.
+* Error is `invalid_lookback_hours`.
+* Repeated query parameters are not silently resolved by choosing the first value, the last value, or an arbitrary value.
+* OWPROV ownership resolution is not performed.
+* Analytics metric/database aggregation is not performed.
+* The same validation applies to every Analytics API using the common `lookbackHours` parameter.
+
+---
+
 ## TC-COMMON-017G: Timestamp arithmetic underflow before Unix epoch
 
 ### Request
@@ -593,10 +650,30 @@ GET /api/v1/devices/60cf84f22290/memory-summary
 
 ## TC-COMMON-018: Missing authorization token
 
+### Request
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+```
+
+No `Authorization: Bearer ...` header is supplied.
+
+### Preconditions
+
+* The router is not available in the local ownership map, so a valid authenticated request would normally require an OWPROV lookup.
+
 ### Expected result
 
 * HTTP `401 Unauthorized`.
+* Error is `unauthorized`.
 * No gateway data is returned.
+* OWPROV is not called.
+* No ownership lookup against an external service occurs.
+* No Analytics database query occurs.
+* The router's existence or ownership is not disclosed.
+* The same authentication-before-OWPROV rule applies to every Analytics API that may require OWPROV-based router resolution.
 
 ---
 
@@ -615,21 +692,119 @@ Headers: missing `Authorization` header.
 * HTTP `401 Unauthorized`.
 * Error is `unauthorized`.
 * Phase 0 Bearer token authentication takes precedence over Phase 1 parameter validation. The request is rejected as unauthorized before parsing or validating `routerId`, `timestampTill`, or `lookbackHours`.
+* OWPROV is not called.
+* Analytics database queries are not executed.
 
 ---
 
-## TC-COMMON-019: User is not authorized for the gateway scope
+## TC-COMMON-018B: Malformed bearer token
 
-### Preconditions
+### Request
 
-* Caller has a valid token.
-* Caller lacks `analytics.gateway_metrics.read` on the resolved board, venue and parent entity.
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+Authorization: Bearer not-a-valid-token
+```
 
 ### Expected result
 
-* HTTP `404 Not Found`.
-* Error is `not_found`.
-* The response does not reveal whether the gateway exists.
+* HTTP `401 Unauthorized`.
+* Error is `unauthorized`.
+* OWPROV is not called.
+* Analytics database queries are not executed.
+* The same authentication behavior applies to the other bearer-protected Analytics APIs.
+
+---
+
+## TC-COMMON-018C: Expired bearer token
+
+### Request
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+Authorization: Bearer <expired-token>
+```
+
+### Expected result
+
+* HTTP `401 Unauthorized`.
+* Error is `unauthorized`.
+* OWPROV is not called.
+* Analytics database queries are not executed.
+* The same authentication behavior applies to the other bearer-protected Analytics APIs.
+
+---
+
+## TC-COMMON-018D: Wrong authorization scheme
+
+### Request
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+Authorization: Basic <credentials>
+```
+
+### Expected result
+
+* HTTP `401 Unauthorized`.
+* Error is `unauthorized`.
+* OWPROV is not called.
+* Analytics database queries are not executed.
+* The same authentication behavior applies to the other bearer-protected Analytics APIs.
+
+---
+
+## TC-COMMON-018E: API-key-only request
+
+### Request
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+X-API-KEY: <valid-key>
+```
+
+No `Authorization: Bearer ...` header is supplied.
+
+### Expected result
+
+* HTTP `401 Unauthorized`.
+* Error is `unauthorized`.
+* API key alone must not authorize a bearer-only Analytics operation.
+* OWPROV is not called.
+* Analytics database queries are not executed.
+* The same authentication behavior applies to the other bearer-protected Analytics APIs.
+
+---
+
+## TC-COMMON-019: Authenticated caller lacks analytics permission
+
+### Preconditions
+
+* Caller has a valid bearer token.
+* Router ownership resolves to a scope visible to the caller.
+* Caller lacks `analytics.gateway_metrics.read` for the requested operation on that resolved router scope.
+
+### Expected result
+
+* HTTP `403 Forbidden`.
+* Error is `forbidden`.
+* Authentication and authorization are distinguished:
+
+```text
+No valid identity -> 401 unauthorized
+Valid identity but insufficient analytics permission -> 403 forbidden
+```
+
+* Nonexistent routers and routers outside the caller's visible ownership scope are still normalized to `404 not_found` according to the OpenAPI `AnalyticsNotFound` contract.
+* The same authorization behavior applies to the other bearer-protected Analytics APIs.
 
 ---
 
@@ -706,6 +881,26 @@ Call `GET /api/v1/devices/{routerId}/availability-summary` with a calculated `st
 
 ---
 
+## TC-COMMON-024A: OWPROV failure with valid cached ownership fallback
+
+### Preconditions
+
+* Bearer authentication succeeds.
+* Request validation succeeds.
+* A usable unexpired router-resolution cache entry exists for the requested router.
+* OWPROV is unreachable, times out, refuses the connection, or otherwise cannot service the request.
+
+### Expected result
+
+* Authentication is completed before cache fallback or OWPROV processing is attempted.
+* Analytics may continue using the valid cached ownership entry according to the defined fallback contract.
+* The request proceeds to authorization and Analytics query processing for the cached ownership scope.
+* No `502 Bad Gateway` is returned solely because OWPROV is unavailable while a valid fallback is available.
+* If the cached ownership entry is expired, stale, mismatched, or otherwise unusable, fallback is prohibited and `TC-COMMON-026` applies.
+* This fallback behavior is tested once here and applies to every Analytics API that requires OWPROV-based router ownership resolution.
+
+---
+
 ## TC-COMMON-025: Router ownership version changes
 
 ### Preconditions
@@ -718,6 +913,172 @@ Call `GET /api/v1/devices/{routerId}/availability-summary` with a calculated `st
 * The stale cache entry is invalidated.
 * Router ownership is refreshed before aggregation.
 * Stale ownership cannot grant access to another caller's router data.
+
+---
+
+## TC-COMMON-026: OWPROV unavailable during ownership resolution
+
+### Preconditions
+
+* A valid bearer token is supplied.
+* The token is accepted before ownership resolution begins.
+* The `routerId` and query parameters are valid.
+* The router cannot be resolved from the local ownership map/cache.
+* Analytics therefore needs to query OWPROV.
+* OWPROV is unreachable, times out, refuses the connection, or otherwise cannot service the request.
+* No valid cached/fallback ownership information is available.
+
+### Request
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+Authorization: Bearer <valid-token>
+```
+
+### Expected result
+
+* HTTP `502 Bad Gateway`.
+* Response conforms to `AnalyticsBadGatewayError`.
+* Error is exactly `owprov_unavailable`.
+* Metric/database aggregation does not execute.
+* The response does not expose internal network details, hostnames, stack traces, or transport exceptions.
+
+Representative response:
+
+```json
+{
+  "error": "owprov_unavailable",
+  "message": "Upstream provisioning service is unavailable"
+}
+```
+
+The same behavior applies to all Analytics APIs that require OWPROV ownership resolution.
+
+---
+
+## TC-COMMON-027: OWPROV returns unusable ownership response
+
+### Preconditions
+
+* Valid bearer authentication succeeds first.
+* The `routerId` and query parameters are valid.
+* Local ownership resolution misses.
+* Analytics queries OWPROV.
+* OWPROV responds at the transport level, but the response cannot be safely used for ownership resolution.
+
+Examples include malformed response bodies, invalid JSON where JSON is expected, missing required inventory data, unexpected structure, or otherwise unusable provisioning data.
+
+### Expected result
+
+* HTTP `502 Bad Gateway`.
+* Response conforms to `AnalyticsBadGatewayError`.
+* Error is exactly `owprov_invalid_response`.
+* No arbitrary venue or board is selected.
+* Analytics metric queries are not executed.
+* Internal parsing exceptions are not exposed.
+
+Representative response:
+
+```json
+{
+  "error": "owprov_invalid_response",
+  "message": "Upstream provisioning service returned an invalid response"
+}
+```
+
+The same behavior applies to every Analytics API that requires OWPROV ownership resolution.
+
+---
+
+## TC-COMMON-028: Common 502 response schema for OWPROV failures
+
+### Inputs
+
+Run the representative `memory-summary` request with valid bearer authentication and no usable local/cache ownership fallback:
+
+| Simulated failure | Expected error |
+| --- | --- |
+| OWPROV unavailable | `owprov_unavailable` |
+| OWPROV returns invalid response | `owprov_invalid_response` |
+
+### Expected result
+
+* HTTP `502 Bad Gateway`.
+* `Content-Type: application/json`.
+* Response conforms to `AnalyticsBadGatewayError`.
+* Required fields `error` and `message` exist.
+* `error` matches the documented value for the simulated failure.
+* `message` is a string.
+* No internal exception details, hostnames, transport exceptions, stack traces, or parser diagnostics are leaked.
+* This common 502 contract applies to all Analytics endpoints whose ownership resolution depends on OWPROV.
+
+---
+
+## TC-COMMON-029: Analytics query failure returns endpoint-specific internal error
+
+### Preconditions
+
+* Bearer authentication succeeds.
+* Request validation succeeds.
+* Router ownership is successfully resolved.
+* Monitoring state allows the request to proceed.
+* The endpoint's underlying Analytics datastore query is forced to fail.
+
+### Parameter matrix
+
+| Endpoint | Expected error | Expected public message |
+| --- | --- | --- |
+| `memory-summary` | `memory_summary_query_failed` | `Unable to retrieve gateway memory history` |
+| `radio-temperature-summary` | `radio_temperature_summary_query_failed` | `Unable to retrieve gateway radio temperature history` |
+| `wifi-clients/usage-summary` | `wifi_client_usage_query_failed` | `Unable to retrieve Wi-Fi client usage history` |
+| `wifi-clients/rssi-summary` | `wifi_client_rssi_query_failed` | `Unable to retrieve Wi-Fi client RSSI history` |
+| `availability-summary` | `availability_query_failed` | `Unable to retrieve gateway availability history` |
+
+### Expected result
+
+* This is one parameterized test case, not five separate logical scenarios.
+* HTTP `500 Internal Server Error`.
+* `Content-Type: application/json`.
+* Response conforms to that endpoint's declared internal-error schema.
+* Required fields `error` and `message` exist.
+* `error` matches the endpoint-specific value in the matrix.
+* `message` has the expected public form from OpenAPI.
+* Empty-success responses must not be returned.
+* SQL, driver, stack-trace, table-name, host, or other internal diagnostic details are not exposed.
+* An endpoint must not return another endpoint's error enum. Invalid mappings include:
+
+```text
+memory-summary -> availability_query_failed
+rssi-summary -> wifi_client_usage_query_failed
+availability-summary -> memory_summary_query_failed
+```
+
+OpenAPI also permits `internal_error` in each endpoint-specific 500 schema. Use `internal_error` only for unexpected internal failures that are not attributable to the endpoint's normal datastore/query path; do not use it for the forced datastore query failure covered by this test.
+
+---
+
+## Negative-path verification matrix
+
+| Scenario | Authoritative test | Expected HTTP | Expected error |
+| --- | --- | ---: | --- |
+| Missing bearer token | `TC-COMMON-018` | 401 | `unauthorized` |
+| Malformed bearer token | `TC-COMMON-018B` | 401 | `unauthorized` |
+| Expired bearer token | `TC-COMMON-018C` | 401 | `unauthorized` |
+| Wrong authorization scheme | `TC-COMMON-018D` | 401 | `unauthorized` |
+| API-key-only authentication | `TC-COMMON-018E` | 401 | `unauthorized` |
+| Valid caller lacks analytics permission | `TC-COMMON-019` | 403 | `forbidden` |
+| Invalid router ID | `TC-COMMON-005` | 400 | `invalid_router_id` |
+| Repeated `timestampTill` | `TC-COMMON-012A` | 400 | `invalid_timestamp` |
+| Repeated `lookbackHours` | `TC-COMMON-017F` | 400 | `invalid_lookback_hours` |
+| Router inaccessible/not found | `TC-COMMON-004` | 404 | `not_found` |
+| Multiple board mappings | `TC-COMMON-008` | 409 | `multiple_boards` |
+| OWPROV unavailable | `TC-COMMON-026` | 502 | `owprov_unavailable` |
+| OWPROV invalid response | `TC-COMMON-027` | 502 | `owprov_invalid_response` |
+| Analytics datastore/query failure | `TC-COMMON-029` | 500 | endpoint-specific query error |
+
+The matrix points to the single authoritative test case for each logical scenario. Do not create endpoint-by-endpoint copies when a common or parameterized test covers the behavior.
 
 ---
 
@@ -4393,6 +4754,8 @@ Availability:    data.fetch_status = success, data.offline_count = 0, meta.offli
 Expected exact fields:
 
 ```text
+requestedWindow
+observedWindow
 min_memfree
 max_memfree
 avg_memfree
@@ -4405,6 +4768,8 @@ avg_memfree
 Expected exact fields:
 
 ```text
+requestedWindow
+observedWindow
 min_wifi_temp_2.4G
 max_wifi_temp_2.4G
 avg_wifi_temp_2.4G
@@ -4535,6 +4900,7 @@ total_bytes = rx_bytes + tx_bytes
 
 * Memory min and max are numeric or `null`.
 * Memory average is numeric or `null`.
+* Memory and temperature `requestedWindow` and `observedWindow` objects match the shared OpenAPI window schemas.
 * Temperature fields are numeric or `null`.
 * Usage summary client objects use these exact data types:
 
@@ -4561,22 +4927,28 @@ The PR implementation is functionally accepted when:
 1. All five endpoints are available in OpenAPI.
 2. Every endpoint uses the gateway serial number as `routerId`.
 3. Router ownership resolves correctly from the maintained local map.
-4. OWPROV fallback resolution distinguishes `404` and `409` status outcomes.
-5. Child-venue gateway resolution works.
-6. Timestamp and lookback validation is consistent.
-7. Memory aggregation ignores missing historical fields instead of treating them as zero.
-8. Temperature aggregation excludes synthetic or invalid fallback values.
-9. Client bandwidth is calculated from reset-safe counter deltas.
-10. A pre-window baseline is used when available.
-11. Counter resets, reconnects, BSSID changes and duplicates do not inflate usage.
-12. RSSI thresholds and boundary values are classified correctly.
-13. Invalid RSSI values are ignored.
-14. RSSI percentages are calculated per client.
-15. Usage and RSSI client-summary responses use the documented object envelope shape (`requestedWindow`, `observedWindow`, `items`, `totalClients`, `truncated`) matching TC-CONTRACT-006.
-16. Gateway shutdown and network loss create one offline transition each.
-17. Repeated pings and disconnections do not create duplicate transitions.
-18. Availability events remain queryable after board reassignment.
-19. Availability success responses include `fetch_status: "success"`.
-20. Empty successful queries return the documented empty response.
-21. Response field names and data types match the MCP contract exactly.
-22. Data from one gateway never appears in another gateway's response.
+4. Bearer authentication is enforced before router validation, local/cache ownership resolution, OWPROV lookup, or Analytics datastore queries.
+5. Missing, malformed, expired, wrong-scheme, and API-key-only authentication failures return `401 unauthorized` and never contact OWPROV.
+6. Valid authenticated callers without `analytics.gateway_metrics.read` on a visible resolved scope receive `403 forbidden`; inaccessible or nonexistent routers remain normalized to `404 not_found`.
+7. OWPROV fallback resolution distinguishes `404`, `409`, `502 owprov_unavailable`, and `502 owprov_invalid_response` outcomes.
+8. Valid usable cached ownership fallback is used only after successful bearer authentication and only when the cache entry is safe to use.
+9. Child-venue gateway resolution works.
+10. Timestamp and lookback validation is consistent, including rejection of repeated `timestampTill` and repeated `lookbackHours` before OWPROV or database work.
+11. Memory aggregation ignores missing historical fields instead of treating them as zero.
+12. Temperature aggregation excludes synthetic or invalid fallback values.
+13. Client bandwidth is calculated from reset-safe counter deltas.
+14. A pre-window baseline is used when available.
+15. Counter resets, reconnects, BSSID changes and duplicates do not inflate usage.
+16. RSSI thresholds and boundary values are classified correctly.
+17. Invalid RSSI values are ignored.
+18. RSSI percentages are calculated per client.
+19. Usage and RSSI client-summary responses use the documented object envelope shape (`requestedWindow`, `observedWindow`, `items`, `totalClients`, `truncated`) matching TC-CONTRACT-006.
+20. Memory and temperature successful responses include `requestedWindow` and `observedWindow` matching their OpenAPI schemas.
+21. Gateway shutdown and network loss create one offline transition each.
+22. Repeated pings and disconnections do not create duplicate transitions.
+23. Availability events remain queryable after board reassignment.
+24. Availability success responses include `fetch_status: "success"`.
+25. Empty successful queries return the documented empty response.
+26. 500 query-failure responses return the endpoint-specific documented error enum and do not leak internal diagnostics.
+27. Response field names and data types match the MCP contract exactly.
+28. Data from one gateway never appears in another gateway's response.
