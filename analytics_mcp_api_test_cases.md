@@ -87,7 +87,9 @@ Bearer-token authentication
     ↓
 Authorization / required claims as applicable
     ↓
-routerId/request validation
+Known query/path parameter validation
+    ↓
+Reject unsupported query parameters
     ↓
 local ownership resolution/cache lookup
     ↓
@@ -96,7 +98,7 @@ OWPROV lookup if required
 Analytics database/query processing
 ```
 
-Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before `routerId`, `timestampTill`, or `lookbackHours` validation, before local ownership/cache resolution, before any OWPROV network request, and before Analytics datastore queries.
+Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before `routerId`, `timestampTill`, `lookbackHours`, or unsupported-query-parameter validation, before local ownership/cache resolution, before any OWPROV network request, and before Analytics datastore queries.
 
 Common behavior is tested once with a representative endpoint, usually `memory-summary`. The same behavior applies to all bearer-protected Analytics APIs that share the same OpenAPI response contract. Endpoint-specific tests exist only when the public error contract or behavior is genuinely endpoint-specific.
 
@@ -648,6 +650,58 @@ lookbackHours=24&lookbackHours=24
 
 ---
 
+## TC-COMMON-017H: Unknown query parameter
+
+### Request
+
+Use the representative `memory-summary` endpoint:
+
+```http
+GET /api/v1/devices/60cf84f22290/memory-summary
+    ?timestampTill=2026-07-29T12:00:00Z
+    &lookbackHours=24
+    &unexpectedParam=value
+Authorization: Bearer <valid-token>
+```
+
+### Input variations
+
+Validate these as variations of the same logical scenario, not separate endpoint-specific tests:
+
+| Input variation | Expected behavior |
+| --- | --- |
+| `unexpectedParam=value` | Reject |
+| `foo=1&bar=2` | Reject |
+| `unexpectedParam=` | Reject |
+| `timestampTill=2026-07-29T12:00:00Z&lookbackHours=24&unexpectedParam=value` | Reject |
+| `timestampTill=2026-07-29T12:00:00Z&lookbackHours=24&lookbackHour=12` | Reject |
+
+The `lookbackHour` input must not be silently treated as `lookbackHours`.
+
+### Expected result
+
+* Bearer authentication succeeds before unsupported-query-parameter validation.
+* HTTP `400 Bad Request`.
+* Error is `invalid_query_parameter`.
+* Response conforms to the endpoint's OpenAPI bad-request schema.
+* The response message identifies the unsupported query parameter, for example:
+
+```json
+{
+  "error": "invalid_query_parameter",
+  "message": "Unsupported query parameter: unexpectedParam"
+}
+```
+
+* Unknown query parameters are not silently discarded.
+* Router ownership resolution is not performed.
+* OWPROV is not called.
+* Analytics datastore queries are not executed.
+* If bearer authentication is missing or invalid, `TC-COMMON-018` and `TC-COMMON-018A` precedence applies: the request returns `401 Unauthorized` before unsupported-query-parameter validation, and OWPROV is not called.
+* The same unknown-query-parameter behavior applies to all Analytics APIs using the common request contract. Separate endpoint-specific test cases must not be created unless an endpoint explicitly declares different query-parameter handling in OpenAPI.
+
+---
+
 ## TC-COMMON-018: Missing authorization token
 
 ### Request
@@ -1054,6 +1108,7 @@ OpenAPI also permits `internal_error` in each endpoint-specific 500 schema. Use 
 | Invalid router ID | `TC-COMMON-005` | 400 | `invalid_router_id` |
 | Repeated `timestampTill` | `TC-COMMON-012A` | 400 | `invalid_timestamp` |
 | Repeated `lookbackHours` | `TC-COMMON-017F` | 400 | `invalid_lookback_hours` |
+| Unknown/unsupported query parameter | `TC-COMMON-017H` | 400 | `invalid_query_parameter` |
 | Router inaccessible/not found | `TC-COMMON-004` | 404 | `not_found` |
 | Multiple board mappings | `TC-COMMON-008` | 409 | `multiple_boards` |
 | OWPROV unavailable | `TC-COMMON-026` | 502 | `owprov_unavailable` |
@@ -4915,7 +4970,7 @@ The PR implementation is functionally accepted when:
 7. OWPROV fallback resolution distinguishes `404`, `409`, `502 owprov_unavailable`, and `502 owprov_invalid_response` outcomes.
 8. Valid usable cached ownership fallback is used only after successful bearer authentication and only when the cache entry is safe to use.
 9. Child-venue gateway resolution works.
-10. Timestamp and lookback validation is consistent, including rejection of repeated `timestampTill` and repeated `lookbackHours` before OWPROV or database work.
+10. Timestamp, lookback, and query-parameter validation is consistent, including rejection of repeated `timestampTill`, repeated `lookbackHours`, and unknown query parameters before OWPROV or database work.
 11. Memory aggregation ignores missing historical fields instead of treating them as zero.
 12. Temperature aggregation excludes synthetic or invalid fallback values.
 13. Client bandwidth is calculated from reset-safe counter deltas.
