@@ -57,7 +57,7 @@ timepoints
 wificlienthistory
 ```
 
-8. Gateway availability uses `device_availability_state` as the authoritative restart-safe state table and `device_availability_events` as the transition log. Kafka `disconnection` messages are treated as `offline`; Kafka `ping` and `capabilities` messages are treated as `online`. Exact transition counting requires serialNumber-scoped source-event ordering before state-machine processing. Every accepted source-newer message emitted by that ordering stage updates `device_availability_state.last_event_time`. `DeviceInfo.lastContact` is contact/processing metadata and is not used for source-event ordering.
+8. Gateway availability uses `device_availability_state` as the authoritative restart-safe state table and `device_availability_events` as the transition log. Kafka `disconnection` messages are treated as `offline`; Kafka `ping` and `capabilities` messages are treated as `online`. Exact transition counting requires serialNumber-scoped source-event ordering before state-machine processing. Every accepted source-newer message emitted by that ordering stage updates `device_availability_state.last_event_time`. When monitoring is re-enabled after a disabled interval, affected gateway state is re-bootstrapped from the first accepted post-enable connection message without creating a counted transition. `DeviceInfo.lastContact` is contact/processing metadata and is not used for source-event ordering.
 9. Availability success responses report the persisted offline transition rows currently available to Analytics.
 10. Database records for the test gateway are cleared or isolated before each independent test.
 11. A valid authorization token is available for testing endpoint access.
@@ -2220,6 +2220,43 @@ last_idempotency_key = disconnection idempotency key
 
 ---
 
+## TC-AVAIL-030B: Monitoring re-enable re-bootstraps availability state
+
+### Objective
+
+Verify that stale `device_availability_state` from before a disabled monitoring
+interval is not trusted for transition detection after monitoring is re-enabled.
+
+### Preconditions
+
+* At `12:00`, `device_availability_state` for the gateway is:
+
+```text
+current_state = online
+last_event_time = 12:00
+```
+
+### Steps
+
+1. Disable monitoring for the affected router scope at `12:05`.
+2. Deliver a gateway `disconnection` source event at `12:10` while monitoring is disabled.
+3. Re-enable monitoring at `13:00`.
+4. Deliver a gateway `ping` source event at `13:05`.
+5. Deliver a gateway `disconnection` source event at `13:10`.
+6. Query `device_availability_state` and `device_availability_events`.
+7. Call availability-summary for `[12:00, 14:00)`.
+
+### Expected result
+
+* The `12:10` disconnection is not ingested and does not create an availability event.
+* Re-enabling monitoring deletes the stale state row or marks the gateway for equivalent unknown-state rebootstrap.
+* The `13:05` ping initializes `current_state = online` and `last_event_time = 13:05` without inserting an online transition event.
+* The `13:10` disconnection is the first observed post-bootstrap online-to-offline transition and inserts exactly one offline transition event.
+* Availability-summary reports `offline_count = 1` and `meta.offlineEventCount = 1` for `[12:00, 14:00)`.
+* The missed outage during the disabled interval is not reconstructed or counted.
+
+---
+
 ## TC-AVAIL-031: Separate gateways maintain independent latest states
 
 ### Objective
@@ -2371,6 +2408,14 @@ Expected response:
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:55:00Z"
+  },
   "min_memfree": 211374,
   "max_memfree": 215050,
   "avg_memfree": 212074.36
@@ -2394,6 +2439,14 @@ Timestamp    memory_free    memory_total
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:20:00Z"
+  },
   "min_memfree": 200000,
   "max_memfree": 300000,
   "avg_memfree": 250000.0
@@ -2415,6 +2468,14 @@ memory_total = 512000
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:00:00Z"
+  },
   "min_memfree": 212074,
   "max_memfree": 212074,
   "avg_memfree": 212074.0
@@ -2444,6 +2505,14 @@ Requested range:
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:00:00Z"
+  },
   "min_memfree": 200000,
   "max_memfree": 200000,
   "avg_memfree": 200000.0
@@ -2477,6 +2546,14 @@ endTime sample = 300000
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
+  },
   "min_memfree": null,
   "max_memfree": null,
   "avg_memfree": null
@@ -2617,6 +2694,14 @@ min_memfree <= avg_memfree <= max_memfree
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:10:00Z",
+    "endTime": "2026-07-27T10:20:00Z"
+  },
   "min_memfree": 200000,
   "max_memfree": 300000,
   "avg_memfree": 250000.0
@@ -2660,6 +2745,14 @@ min_memfree <= avg_memfree <= max_memfree
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:10:00Z",
+    "endTime": "2026-07-27T10:20:00Z"
+  },
   "min_memfree": 200000,
   "max_memfree": 300000,
   "avg_memfree": 250000.0
@@ -2724,6 +2817,14 @@ Expected response:
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T11:00:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T10:55:00Z"
+  },
   "min_wifi_temp_2.4G": 62,
   "max_wifi_temp_2.4G": 70,
   "avg_wifi_temp_2.4G": 66.64,
@@ -2748,6 +2849,14 @@ Expected response:
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T10:20:00Z"
+  },
   "min_wifi_temp_2.4G": 60,
   "max_wifi_temp_2.4G": 70,
   "avg_wifi_temp_2.4G": 65.0,
@@ -2765,6 +2874,14 @@ Expected response:
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T10:20:00Z"
+  },
   "min_wifi_temp_2.4G": 60,
   "max_wifi_temp_2.4G": 70,
   "avg_wifi_temp_2.4G": 65.0,
@@ -2791,6 +2908,14 @@ Expected response:
 
 ```json
 {
+  "requestedWindow": {
+    "startTime": "2026-07-29T10:00:00Z",
+    "endTime": "2026-07-29T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
+  },
   "min_wifi_temp_2.4G": null,
   "max_wifi_temp_2.4G": null,
   "avg_wifi_temp_2.4G": null,
