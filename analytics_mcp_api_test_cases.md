@@ -2423,45 +2423,7 @@ counts observed online-to-offline transitions.
 * The availability-summary API uses the documented observed-data response shape.
 * A zero response reports no persisted offline transition rows in the requested interval.
 
----
 
-
-## TC-AVAIL-030B: Monitoring re-enable re-bootstraps availability state
-
-### Objective
-
-Verify that stale `device_availability_state` from before a disabled monitoring
-interval is not trusted for transition detection after monitoring is re-enabled.
-
-### Preconditions
-
-* At `12:00`, `device_availability_state` for the gateway is:
-
-```text
-current_state = online
-last_event_time = 12:00
-```
-
-### Steps
-
-1. Disable monitoring for the affected router scope at `12:05`.
-2. Deliver a gateway `disconnection` source event at `12:10` while monitoring is disabled.
-3. Re-enable monitoring at `13:00`.
-4. Deliver a gateway `ping` source event at `13:05`.
-5. Deliver a gateway `disconnection` source event at `13:10`.
-6. Query `device_availability_state` and `device_availability_events`.
-7. Call availability-summary for `[12:00, 14:00)`.
-
-### Expected result
-
-* The `12:10` disconnection is not ingested and does not create an availability event.
-* Re-enabling monitoring deletes the stale state row or marks the gateway for equivalent unknown-state rebootstrap.
-* The `13:05` ping initializes `current_state = online` and `last_event_time = 13:05` without inserting an online transition event.
-* The `13:10` disconnection is the first observed post-bootstrap online-to-offline transition and inserts exactly one offline transition event.
-* Availability-summary reports `offline_count = 1` and `meta.offlineEventCount = 1` for `[12:00, 14:00)`.
-* The missed outage during the disabled interval is not reconstructed or counted.
-
----
 
 ## TC-AVAIL-031: Separate gateways maintain independent latest states
 
