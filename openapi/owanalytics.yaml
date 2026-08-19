@@ -53,6 +53,10 @@ components:
               value:
                 error: invalid_lookback_hours
                 message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
+            invalidQueryParameter:
+              value:
+                error: invalid_query_parameter
+                message: "Unsupported query parameter: unexpectedParam"
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
@@ -76,6 +80,10 @@ components:
               value:
                 error: invalid_lookback_hours
                 message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
+            invalidQueryParameter:
+              value:
+                error: invalid_query_parameter
+                message: "Unsupported query parameter: unexpectedParam"
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
@@ -103,6 +111,10 @@ components:
               value:
                 error: invalid_lookback_hours
                 message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
+            invalidQueryParameter:
+              value:
+                error: invalid_query_parameter
+                message: "Unsupported query parameter: unexpectedParam"
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
@@ -1051,6 +1063,7 @@ components:
             - invalid_router_id
             - invalid_timestamp
             - invalid_lookback_hours
+            - invalid_query_parameter
             - lookback_outside_retention
         message:
           type: string
@@ -1067,6 +1080,7 @@ components:
             - invalid_router_id
             - invalid_timestamp
             - invalid_lookback_hours
+            - invalid_query_parameter
             - lookback_outside_retention
             - temperature_range_before_cutover
         message:
@@ -1084,6 +1098,7 @@ components:
             - invalid_router_id
             - invalid_timestamp
             - invalid_lookback_hours
+            - invalid_query_parameter
             - lookback_outside_retention
             - availability_range_before_cutover
         message:
