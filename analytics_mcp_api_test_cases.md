@@ -85,20 +85,22 @@ HTTP request
     ↓
 Bearer-token authentication
     ↓
-Authorization / required claims as applicable
-    ↓
-Known query/path parameter validation
+Request / path / query parameter validation
     ↓
 Reject unsupported query parameters
     ↓
-local ownership resolution/cache lookup
+Local ownership resolution / cache lookup
     ↓
 OWPROV lookup if required
     ↓
-Analytics database/query processing
+Caller visibility & permission authorization (evaluated against resolved scope)
+    ↓
+Retention / cutover validation (availabilityValidFrom)
+    ↓
+Analytics database / query processing
 ```
 
-Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before `routerId`, `timestampTill`, `lookbackHours`, or unsupported-query-parameter validation, before local ownership/cache resolution, before any OWPROV network request, and before Analytics datastore queries.
+Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before request/path/query parameter validation, before local ownership/cache resolution, before OWPROV network lookup, before caller scope authorization, and before Analytics datastore queries. Pure request validation occurs before router ownership resolution; caller visibility and permission authorization (`analytics.gateway_metrics.read`) are evaluated against the resolved board/venue/entity scope.
 
 Common behavior is tested once with a representative endpoint, usually `memory-summary`. The same behavior applies to all bearer-protected Analytics APIs that share the same OpenAPI response contract. Endpoint-specific tests exist only when the public error contract or behavior is genuinely endpoint-specific.
 
@@ -670,21 +672,20 @@ Validate these as variations of the same logical scenario, not separate endpoint
 
 | Input variation | Expected behavior |
 | --- | --- |
-| `unexpectedParam=value` | Reject |
-| `foo=1&bar=2` | Reject |
-| `unexpectedParam=` | Reject |
 | `timestampTill=2026-07-29T12:00:00Z&lookbackHours=24&unexpectedParam=value` | Reject |
+| `timestampTill=2026-07-29T12:00:00Z&lookbackHours=24&foo=1&bar=2` | Reject |
+| `timestampTill=2026-07-29T12:00:00Z&lookbackHours=24&unexpectedParam=` | Reject |
 | `timestampTill=2026-07-29T12:00:00Z&lookbackHours=24&lookbackHour=12` | Reject |
 
-The `lookbackHour` input must not be silently treated as `lookbackHours`.
+The `lookbackHour` input must not be silently treated as `lookbackHours`. All input variations must include required query parameters (`timestampTill`, `lookbackHours`) so parameter presence validation succeeds before unsupported parameter rejection occurs.
 
 ### Expected result
 
-* Bearer authentication succeeds before unsupported-query-parameter validation.
+* Bearer authentication succeeds before parameter validation and unsupported parameter rejection.
 * HTTP `400 Bad Request`.
 * Error is `invalid_query_parameter`.
 * Response conforms to the endpoint's OpenAPI bad-request schema.
-* The response message identifies the unsupported query parameter, for example:
+* The response message identifies the unsupported query parameter. When multiple unsupported parameters are present, the message identifies the first unsupported parameter in raw query string order (e.g. `foo` for `foo=1&bar=2`):
 
 ```json
 {
@@ -920,6 +921,64 @@ Call `GET /api/v1/devices/{routerId}/availability-summary` with a calculated `st
 
 ---
 
+## TC-COMMON-023A: Future timestampTill exactly at allowed clock skew boundary
+
+### Request
+
+Assume captured current server time `capturedNow = 2026-07-29T12:00:00Z` and `allowedClockSkewSeconds = 60`.
+Call an endpoint with `timestampTill = 2026-07-29T12:01:00Z` (`capturedNow + 60s`) and `lookbackHours = 1`.
+
+### Expected result
+
+* HTTP `200 OK`.
+* Request is accepted because `timestampTill <= capturedNow + allowedClockSkewSeconds`.
+* The exact requested window is preserved without clamping (`requestedWindow.endTime = 2026-07-29T12:01:00Z`).
+
+---
+
+## TC-COMMON-023B: Future timestampTill exceeding allowed clock skew boundary
+
+### Request
+
+Assume captured current server time `capturedNow = 2026-07-29T12:00:00Z` and `allowedClockSkewSeconds = 60`.
+Call an endpoint with `timestampTill = 2026-07-29T12:01:01Z` (`capturedNow + 61s`, 1s beyond boundary).
+
+### Expected result
+
+* HTTP `400 Bad Request`.
+* Error is `invalid_timestamp`.
+* Message indicates `timestampTill` exceeds allowed clock skew boundary.
+* Metric aggregation is not executed.
+
+---
+
+## TC-COMMON-023C: Un-clamped window preservation for future timestamp within skew
+
+### Request
+
+Call an endpoint with `timestampTill` set to a future timestamp within `allowedClockSkewSeconds` (e.g. `capturedNow + 30s`).
+
+### Expected result
+
+* HTTP `200 OK`.
+* The API does NOT silently clamp `timestampTill` to `capturedNow`.
+* `requestedWindow.endTime` in the response envelope matches the exact requested future timestamp (`capturedNow + 30s`).
+
+---
+
+## TC-COMMON-023D: Single captured server clock evaluation per request
+
+### Objective
+
+Verify that current server time is captured exactly once per request execution (`capturedNow`) and used consistently throughout request validation.
+
+### Expected result
+
+* Internal clock evaluation uses one frozen `capturedNow` reference timestamp throughout parameter validation, clock-skew checks, and cutover validation.
+* Slight execution delays during handler processing do not cause inconsistent clock evaluation for a single request.
+
+---
+
 ## TC-COMMON-024: Router-resolution cache expires
 
 ### Preconditions
@@ -1142,9 +1201,7 @@ serialNumber
 board_id
 current_state
 last_event_time
-last_idempotency_key
 updated_at
-metadata
 ```
 
 * `current_state` accepts only `online`, `offline`, or `unknown`.
@@ -1174,7 +1231,6 @@ idempotency_key
 reason
 connection_ip
 session_id
-metadata
 ```
 
 * `id` exists and is the primary key.
@@ -1219,9 +1275,7 @@ SELECT serialNumber,
        board_id,
        current_state,
        last_event_time,
-       last_idempotency_key,
-       updated_at,
-       metadata
+       updated_at
 FROM device_availability_state
 WHERE serialNumber = '60cf84f22290'
 FOR UPDATE;
@@ -1291,7 +1345,6 @@ Verify that the first observed ping initializes `device_availability_state` as o
 serialNumber = 60cf84f22290
 current_state = online
 last_event_time = ping source timestamp
-last_idempotency_key = ping idempotency key
 updated_at >= processing time
 ```
 
@@ -1335,7 +1388,6 @@ Example messages:
 
 * No additional `online` event is inserted after the first online state.
 * `last_event_time` is updated to the latest source-newer ping timestamp accepted by the per-serial ordering stage.
-* `last_idempotency_key` is updated to the latest accepted ping idempotency key.
 * `current_state` remains `online`.
 * `offline_count` remains `0`.
 
@@ -1370,7 +1422,6 @@ Verify that physically powering off the gateway creates one offline transition.
 ```text
 current_state = offline
 last_event_time = disconnection source timestamp
-last_idempotency_key = disconnection idempotency key
 updated_at >= processing time
 ```
 
@@ -1518,7 +1569,7 @@ Verify that a powered-on gateway with no cloud connectivity is considered offlin
 
 * One offline transition is stored.
 * The gateway is considered offline even though it is still powered on.
-* The reason or metadata may indicate network or connection loss when available.
+* The reason field may indicate network or connection loss when available.
 * `offline_count` increases by `1`.
 
 ---
@@ -1551,7 +1602,6 @@ Verify that restoring power changes the gateway state from offline to online wit
 ```text
 current_state = online
 last_event_time = ping or capabilities source timestamp
-last_idempotency_key = ping or capabilities idempotency key
 updated_at >= processing time
 ```
 
@@ -1613,7 +1663,7 @@ Verify recovery after an Ethernet disconnection.
 * One `online` transition event is inserted.
 * No additional offline event is inserted.
 * `device_availability_state.current_state` becomes `online`.
-* `last_event_time`, `last_idempotency_key`, `updated_at`, and metadata are updated.
+* `last_event_time` and `updated_at` are updated.
 * Offline count remains unchanged.
 
 ---
@@ -1713,7 +1763,7 @@ Example:
 * Only the first offline transition is stored.
 * Later same-state disconnection messages are ignored.
 * For source-newer repeated disconnection messages accepted by the per-serial ordering stage while `current_state = offline`, `last_event_time` advances.
-* `last_idempotency_key`, `updated_at`, and metadata are updated for the latest accepted same-state message.
+* `updated_at` is updated for the latest accepted same-state message.
 * `offline_count` is `1`.
 
 ---
@@ -1741,7 +1791,7 @@ Verify storage-level idempotency when Kafka redelivers the same logical connecti
 
 * Both deliveries map to the same deterministic `idempotency_key` or source `event_id`.
 * Exactly one transition event row is inserted.
-* The duplicate delivery does not move `current_state`, `last_event_time`, `last_idempotency_key`, `updated_at`, or transition history.
+* The duplicate delivery does not move `current_state`, `last_event_time`, `updated_at`, or transition history.
 * `offline_count` is `1`.
 
 ---
@@ -1763,27 +1813,28 @@ Verify that Kafka offset is not used as the logical idempotency key.
 * Both records derive the same logical `idempotency_key`.
 * Exactly one offline transition row exists.
 * `device_availability_state` is updated once for the logical event.
-* Kafka topic, partition, and offset may appear in metadata only.
+* Kafka topic, partition, and offset belong in operational logs or metrics, not in generic database metadata columns.
 
 ---
 
-## TC-AVAIL-012B: Same UUID from different source namespaces is not conflated
+## TC-AVAIL-012B: Same UUID from different source namespaces derives distinct idempotency keys
 
 ### Objective
 
-Verify that `system.host` and `system.id` are part of the idempotency namespace.
+Verify that `system.host` and `system.id` are included in the idempotency key namespace so that identical UUID payloads from different source namespaces derive distinct idempotency keys.
 
-### Steps
+### Unit Test Steps
 
-1. Process a ping from source namespace A with `payload.ping.uuid = 44702320`.
-2. Process a different ping for the same gateway from source namespace B with the same UUID.
-3. Query `device_availability_state`.
+1. Construct disconnection message payload A from source namespace A (`system.host = hostA`, `system.id = idA`) with `payload.disconnection.uuid = 44702320` and source timestamp `12:00`.
+2. Construct disconnection message payload B for the same gateway from source namespace B (`system.host = hostB`, `system.id = idB`) with the same UUID (`44702320`) and source timestamp `12:05`.
+3. Pass message A through the idempotency key derivation function to obtain `keyA = derive_idempotency_key(msgA)`.
+4. Pass message B through the idempotency key derivation function to obtain `keyB = derive_idempotency_key(msgB)`.
 
 ### Expected result
 
-* The two messages derive different `idempotency_key` values because the source namespace differs.
-* If both messages are newer source events and same-state online, no transition row is inserted.
-* `last_event_time` advances only according to source timestamp ordering.
+* Key derivation outputs distinct `idempotency_key` strings (`keyA != keyB`) because source namespace fields (`system.host`, `system.id`) are included in the hash calculation.
+* Identical UUID payloads from separate namespaces are not conflated as duplicate deliveries.
+* This unit test asserts normalization and key derivation directly without requiring transition row persistence.
 
 ---
 
@@ -1824,7 +1875,7 @@ Verify that repeated online messages after an offline-to-online transition do no
 
 * Exactly one online transition event is inserted.
 * No additional offline event is inserted.
-* The source-newer repeated ping accepted by the per-serial ordering stage updates `last_event_time`, `last_idempotency_key`, `updated_at`, and metadata.
+* The source-newer repeated ping accepted by the per-serial ordering stage updates `last_event_time` and `updated_at`.
 * `offline_count` is unchanged.
 
 ---
@@ -2269,51 +2320,7 @@ Verify that first-row creation is concurrency-safe and does not rely on locking 
 
 ---
 
-## TC-AVAIL-028B: Opposite-state events arriving concurrently are serialized
 
-### Objective
-
-Verify that an offline and online source event for the same gateway are applied in source-event order, even when delivery to workers is concurrent.
-
-### Preconditions
-
-* `device_availability_state.current_state = online`.
-* Existing `last_event_time = 12:00`.
-
-### Steps
-
-1. Deliver an offline source event at `12:03`.
-2. Deliver an online source event at `12:04` concurrently.
-3. Query `device_availability_state` and transition history.
-
-### Expected result
-
-* The ingestion path provides one explicit ordering guarantee for each `serialNumber` before transition detection, such as:
-  * Kafka partitioning keyed by `serialNumber`, preserving gateway event order; or
-  * a bounded event-time reorder window; or
-  * an equivalent serialNumber-scoped ordering mechanism that prevents a newer online event from causing an older offline transition to be discarded silently.
-* Processing must produce the source-time outcome:
-
-```text
-12:03 offline is applied first
-offline transition event is inserted
-device_availability_state.current_state = offline
-last_event_time = 12:03
-
-12:04 online is applied second
-online transition event is inserted
-device_availability_state.current_state = online
-last_event_time = 12:04
-```
-
-* Final `device_availability_state.current_state = online`.
-* Final `last_event_time = 12:04`.
-* State never moves backward.
-* No duplicate transition events are inserted.
-* State and event writes are atomic.
-* It is not valid to process the `12:04` online event first, mark the `12:03` offline event stale, and lose the outage. If the implementation intentionally chooses best-effort counting instead of an ordering guarantee, this test must be replaced by an explicit documented best-effort contract and must assert that the undercount is visible in internal logs or metrics, not silently hidden.
-
----
 
 ## TC-AVAIL-028C: Event insert and state update roll back together
 
@@ -2386,76 +2393,6 @@ last_event_time = 12:10
 
 
 
-## TC-AVAIL-029: Stale out-of-order event is ignored
-
-### Objective
-
-Verify that an event older than `device_availability_state.last_event_time`
-cannot change availability history after the per-serial ordering strategy has
-advanced beyond that source time.
-
-### Preconditions
-
-* The connection topic is serialNumber-keyed and source-event ordered, or the bounded reorder window has already closed for source times up to `12:10`.
-* No ordering strategy can still accept a `12:05` transition for this serialNumber.
-
-### Steps
-
-1. Set `device_availability_state` to:
-
-```text
-current_state = online
-last_event_time = 12:10
-last_idempotency_key = ping-1210
-```
-
-2. Deliver a delayed `disconnection` message for the same gateway at `12:05`.
-3. Query `device_availability_state`.
-4. Query `device_availability_events`.
-
-### Expected result
-
-* The stale `12:05` event is ignored.
-* No offline event row is inserted.
-* `device_availability_state` remains:
-
-```text
-current_state = online
-last_event_time = 12:10
-last_idempotency_key = ping-1210
-```
-
----
-
-## TC-AVAIL-029A: Delayed offline before newer same-state ping is not lost
-
-### Objective
-
-Verify that out-of-order Kafka delivery does not silently drop an older offline
-transition when a newer same-state online ping arrives first.
-
-### Preconditions
-
-* Gateway state is initialized as online at `12:00`.
-* The deployment does not rely on raw Kafka arrival order unless the topic is keyed and source-event ordered by serialNumber.
-
-### Steps
-
-1. Deliver a ping with source `event_time = 12:10`.
-2. Deliver a disconnection for the same gateway with source `event_time = 12:05`.
-3. Flush the per-serial ordering mechanism for source times through `12:10`.
-4. Query `device_availability_state` and `device_availability_events`.
-
-### Expected result
-
-* The `12:05` disconnection is accepted as an offline transition.
-* The `12:10` ping is accepted as an online transition after the offline transition.
-* `device_availability_state.current_state = online`.
-* `device_availability_state.last_event_time = 12:10`.
-* `offline_count` for a window containing `12:05` is `1`.
-* If the implementation cannot provide serial-keyed source-event ordering or a bounded reorder window for this sequence, the API must not silently undercount persisted offline rows.
-
----
 
 ## TC-AVAIL-030: First event is a disconnection
 
@@ -2488,53 +2425,6 @@ counts observed online-to-offline transitions.
 
 ---
 
-## TC-AVAIL-030A: Delayed but source-newer event is accepted
-
-### Objective
-
-Verify that Kafka delivery delay does not cause a valid source-newer event to be rejected by processing-time `lastContact`.
-
-### Steps
-
-1. Process a ping with:
-
-```text
-source event_time = 12:00
-processed/contact time = 12:05
-```
-
-2. Confirm `device_availability_state` has:
-
-```text
-current_state = online
-last_event_time = 12:00
-updated_at = 12:05 or equivalent processing timestamp
-```
-
-3. Process a delayed disconnection with:
-
-```text
-source event_time = 12:03
-processed/contact time = 12:06
-```
-
-4. Query `device_availability_state` and `device_availability_events`.
-
-### Expected result
-
-* The disconnection is accepted because `12:03 > last_event_time 12:00`.
-* The implementation does not compare `12:03` against processing-time `DeviceInfo.lastContact = 12:05`.
-* One `offline` event row is inserted with `event_time = 12:03`.
-* `device_availability_state` ends with:
-
-```text
-current_state = offline
-last_event_time = 12:03
-updated_at = 12:06 or equivalent processing timestamp
-last_idempotency_key = disconnection idempotency key
-```
-
----
 
 ## TC-AVAIL-030B: Monitoring re-enable re-bootstraps availability state
 
@@ -2691,23 +2581,34 @@ Ethernet reconnected        → online event
 
 ---
 
-## TC-AVAIL-034: Multi-replica and process restart availabilityValidFrom consistency
+## TC-AVAIL-034: Multi-replica and process restart availabilityValidFrom consistency against persisted system_properties
 
 ### Objective
 
-Verify that `availabilityValidFrom` is loaded from a durable configuration key or DB migration metadata table so that multiple service replicas and restarted instances make identical cutover decisions.
+Verify that `availabilityValidFrom` is initialized once in `system_properties` (`availability_valid_from`) when availability persistence starts, and that any subsequent startup with a conflicting or invalid environment/configuration file value fails fast immediately.
+
+### Preconditions
+
+* Database `system_properties` table exists to persist durable system metadata key-value pairs.
 
 ### Steps
 
-1. Configure `availability_valid_from = 2026-07-01T00:00:00Z` in system configuration / DB properties.
-2. Start Replica A and Replica B.
-3. Issue a request with `startTime = 2026-06-30T23:00:00Z` (`startTime < availabilityValidFrom`) to both replicas.
-4. Restart Replica A and reissue the same request.
+1. Start Replica A and Replica B concurrently when availability persistence starts with initial environment/config `availability_valid_from = 2026-07-01T00:00:00Z`.
+2. Inspect `system_properties` in database storage.
+3. Issue a request with `startTime = 2026-06-30T23:00:00Z` (`startTime < availabilityValidFrom`) to both Replica A and Replica B.
+4. Modify the local environment variable or configuration file to a conflicting value (`2026-08-01T00:00:00Z`) or an invalid timestamp format (`invalid-date`).
+5. Attempt to start a process or replica with the conflicting or invalid configuration.
+6. Inspect startup exit code, log diagnostics, and database `system_properties`.
 
 ### Expected result
 
-* Both Replica A and Replica B reject the request with HTTP `400 Bad Request` and `error: "availability_range_before_cutover"`.
-* After restart, Replica A continues to return identical HTTP 400 rejection for `startTime < availabilityValidFrom`.
+* The cutover value is initialized exactly once in `system_properties.availability_valid_from` (`2026-07-01T00:00:00Z`).
+* Concurrent initialization by Replica A and Replica B converges safely on the same persisted value without race conditions or duplicate property inserts.
+* Both Replica A and Replica B reject requests with `startTime < availabilityValidFrom` with HTTP `400 Bad Request` (`error: "availability_range_before_cutover"`).
+* Startup with a conflicting configuration value (`2026-08-01T00:00:00Z`) or an invalid timestamp MUST fail immediately on process startup with a non-zero exit code (`fail-fast`).
+* Startup emits a clear configuration-mismatch error diagnostic.
+* The persisted `system_properties.availability_valid_from` value in database storage remains unchanged (`2026-07-01T00:00:00Z`).
+* Every service replica exhibits identical fail-fast startup behavior on configuration mismatch.
 * Dynamic process startup timestamps (e.g. `std::chrono::system_clock::now()`) are prohibited.
 
 ---
@@ -2996,7 +2897,11 @@ min_memfree <= avg_memfree <= max_memfree
 
 ---
 
-## TC-MEM-012A: Negative memory value is excluded
+## TC-MEM-012A: Negative memory_free value is excluded
+
+### Objective
+
+Verify that a negative or non-numeric `memory_free` value is excluded from free-memory summary aggregation.
 
 ### Test data
 
@@ -3024,13 +2929,17 @@ min_memfree <= avg_memfree <= max_memfree
 }
 ```
 
-* Sample-level rejection policy: When any present memory field (`free`, `total`, `cached`, `buffered`) is negative (`< 0`), non-numeric, or invalid, the ENTIRE memory sample is marked invalid and excluded from aggregation.
-* The 10:00 sample containing `memory_free = -1` (or negative `memory_total = -1`, negative `memory_cached = -1`, or negative `memory_buffered = -1`) is rejected as corrupted telemetry.
-* Corrupted memory samples do not affect `min_memfree`, `max_memfree`, or `avg_memfree`.
+* Field-level preservation policy: Memory fields are parsed independently. When `memory_free` itself is negative (`< 0`), non-numeric, or malformed, that invalid `memory_free` value is excluded from `min_memfree`, `max_memfree`, and `avg_memfree` summary calculations.
+* The 10:00 sample containing invalid `memory_free = -1` does not contribute to `memory_free` summary statistics.
+* Valid `memory_free` values at 10:10 (`200000`) and 10:20 (`300000`) are aggregated normally.
 
 ---
 
-## TC-MEM-012A1: Negative memory_total or cached/buffered rejects entire sample
+## TC-MEM-012A1: Invalid memory_total, cached, or buffered fields do not reject valid memory_free
+
+### Objective
+
+Verify that an invalid non-free memory field (such as negative `memory_total`, `cached`, or `buffered`) is omitted independently and does not invalidate an otherwise valid `memory_free` sample.
 
 ### Test data
 
@@ -3041,9 +2950,26 @@ min_memfree <= avg_memfree <= max_memfree
 
 ### Expected result
 
-* Sample 10:00 has valid `memory_free` but negative `memory_total`.
-* The entire 10:00 memory sample is rejected at ingestion/validation stage; `memory_free = 200000` is NOT retained or included in aggregation.
-* Aggregation uses only valid sample 10:10 (`min_memfree = 300000`, `max_memfree = 300000`, `avg_memfree = 300000.0`).
+```json
+{
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
+  },
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:10:00Z"
+  },
+  "min_memfree": 200000,
+  "max_memfree": 300000,
+  "avg_memfree": 250000.0
+}
+```
+
+* Sample 10:00 has valid `memory_free = 200000` but negative `memory_total = -1`.
+* Malformed non-free fields are omitted individually. The invalid `memory_total` is omitted so `memory_free = 200000` is NOT discarded and remains available to contribute to free-memory aggregation.
+* `memory_cached` and `memory_buffered` field validity does not affect free-memory sample inclusion.
+* Free-memory summary aggregation includes both 10:00 (`200000`) and 10:10 (`300000`), yielding `min_memfree = 200000`, `max_memfree = 300000`, and `avg_memfree = 250000.0`.
 
 ---
 
@@ -3312,6 +3238,44 @@ wifi_temp = 0
 
 * If the persisted/resolved telemetry contract for that sample has `wifiTempZeroIsUnavailable = true`, the sample is excluded from temperature aggregation and does not contribute to min, max, or average calculations.
 * If the persisted/resolved telemetry contract has `wifiTempZeroIsUnavailable = false` or no contract can be resolved, `0°C` is a valid in-range measurement and contributes to min, max, and average calculations.
+
+---
+
+## TC-TEMP-008A: Zero-sentinel resolved at ingestion time remains excluded after contract change
+
+### Objective
+
+Verify that zero-sentinel interpretation (`wifiTempZeroIsUnavailable = true`) is resolved and persisted at ingestion time so that later telemetry/device contract changes do not reinterpret historical telemetry at query time.
+
+### Steps
+
+1. Ingest a telemetry sample containing `wifi_temp = 0` at timestamp `10:00:00Z` while the active producer/device contract has `wifiTempZeroIsUnavailable = true`.
+2. Change the active producer/device telemetry contract to `wifiTempZeroIsUnavailable = false`.
+3. Call the `radio-temperature-summary` API for a time window containing `10:00:00Z`.
+
+### Expected result
+
+* The 0°C sample ingested at `10:00:00Z` remains excluded from temperature aggregation.
+* Querying historical intervals does not reinterpret stored samples based on the current/new telemetry contract state.
+
+---
+
+## TC-TEMP-008B: Valid zero measurement resolved at ingestion time remains included after contract change
+
+### Objective
+
+Verify that a valid 0°C measurement (`wifiTempZeroIsUnavailable = false`) resolved and persisted at ingestion time remains included in aggregation despite subsequent contract changes.
+
+### Steps
+
+1. Ingest a telemetry sample containing `wifi_temp = 0` at timestamp `10:00:00Z` while the active producer/device contract has `wifiTempZeroIsUnavailable = false`.
+2. Change the active producer/device telemetry contract to `wifiTempZeroIsUnavailable = true`.
+3. Call the `radio-temperature-summary` API for a time window containing `10:00:00Z`.
+
+### Expected result
+
+* The 0°C sample ingested at `10:00:00Z` remains included in temperature aggregation as a valid `0°C` measurement.
+* Updating the active telemetry contract does not retroactively discard valid historical 0°C samples.
 
 ---
 
@@ -3648,7 +3612,11 @@ The API converts the byte totals to decimal megabytes.
 
 ---
 
-## TC-USAGE-002: Pre-window sample is not counted in usage
+## TC-USAGE-002: Pre-window sample serves as starting baseline
+
+### Objective
+
+Verify that the latest sample at or before `startTime` serves as the starting boundary baseline for byte delta calculations.
 
 ### Test data
 
@@ -3658,23 +3626,20 @@ The API converts the byte totals to decimal megabytes.
 10:20 sample:   RX=6000, TX=2500
 ```
 
-Requested start time:
-
-```text
-10:00
-```
+Requested start time: `10:00:00Z`
+Requested end time: `10:30:00Z`
 
 ### Expected result
 
 ```text
-RX delta = 3000
-TX delta = 1000
+RX delta = 6000 - 1000 = 5000 bytes
+TX delta = 2500 - 500 = 2000 bytes
 ```
 
-The 09:59 sample is outside the requested half-open window and is not subtracted
-into the returned byte totals. The API calculates only the contained in-window
-differential from 10:10 to 10:20 and exposes only the documented client byte
-totals and display strings.
+* The `09:59` sample is the latest usable sample at or before `startTime` (`10:00`). It is used as the starting boundary baseline.
+* Cumulative bytes accumulated prior to `09:59` are subtracted out.
+* The API calculates the usage differential from `09:59` (baseline) to `10:20` (latest in-window sample).
+* `observedWindow.startTime` reports the timestamp of the boundary baseline sample (`09:59`), and `observedWindow.endTime` reports the timestamp of the latest included sample (`10:20`).
 
 ---
 
@@ -4126,31 +4091,42 @@ Query the usage-summary API for a client with calculable RX/TX deltas.
 
 ### Expected result
 
-* `items[]` contain only the mandatory `ClientBandwidthConsumption` fields: `mac`, `rx_bytes`, `tx_bytes`, `total_bytes`, `data_consume_rx`, `data_consume_tx`, and `total_data_usage`.
+* `items[]` contain the required `ClientBandwidthConsumption` fields: `mac`, `rx_bytes`, `tx_bytes`, `total_bytes`, `data_consume_rx`, `data_consume_tx`, and `total_data_usage`.
 * The byte invariant `rx_bytes + tx_bytes == total_bytes` holds for every returned client item.
 * The response does not expose calculation segments or usage quality fields.
 
 ---
 
-## TC-USAGE-030: Outside-window samples are not usage boundaries
+## TC-USAGE-030: Outside-window boundary samples serve as calculation aids
+
+### Objective
+
+Verify that pre-window baseline samples and boundary samples at `endTime` are used as boundary calculation aids for client usage differentials.
 
 ### Test data
 
 * Requested time window: `[10:00:00Z, 11:00:00Z)`.
 * Client A samples:
-  * `09:51:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (pre-start sample)
-  * `10:30:00Z`: `rx_bytes = 2000000`, `tx_bytes = 2000000` (in-window observation proving presence)
-  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (at exclusive end boundary)
+  * `09:51:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (latest pre-start baseline sample)
+  * `10:30:00Z`: `rx_bytes = 2000000`, `tx_bytes = 2000000` (in-window sample)
+  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (ending boundary calculation aid)
 * Client B samples:
-  * `09:48:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (pre-start sample)
-  * `10:30:00Z`: `rx_bytes = 2000000`, `tx_bytes = 2000000` (in-window observation proving presence)
-  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (at exclusive end boundary)
+  * `09:48:00Z`: `rx_bytes = 1000000`, `tx_bytes = 1000000` (latest pre-start baseline sample)
+  * `10:30:00Z`: `rx_bytes = 2000000`, `tx_bytes = 2000000` (in-window sample)
+  * `11:00:00Z`: `rx_bytes = 3000000`, `tx_bytes = 3000000` (ending boundary calculation aid)
 
 ### Expected result
 
-* Neither client uses the pre-start sample or the sample at `11:00:00Z` to calculate usage for `[10:00:00Z, 11:00:00Z)`.
-* Each client has only one in-window observation, so each returned item reports `rx_bytes = 0`, `tx_bytes = 0`, and `total_bytes = 0`.
-* `observedWindow.startTime` and `observedWindow.endTime` are both `"2026-07-27T10:30:00Z"`.
+* Client A uses `09:51:00Z` as starting boundary baseline and `11:00:00Z` as ending boundary:
+  * `rx_bytes` = 3000000 - 1000000 = 2000000
+  * `tx_bytes` = 3000000 - 1000000 = 2000000
+  * `total_bytes` = 4000000
+* Client B uses `09:48:00Z` as starting boundary baseline and `11:00:00Z` as ending boundary:
+  * `rx_bytes` = 3000000 - 1000000 = 2000000
+  * `tx_bytes` = 3000000 - 1000000 = 2000000
+  * `total_bytes` = 4000000
+* `observedWindow.startTime` reports the earliest boundary baseline timestamp used (`"2026-07-27T09:48:00Z"`).
+* `observedWindow.endTime` reports the ending boundary sample timestamp (`"2026-07-27T11:00:00Z"`).
 
 ---
 
@@ -4596,6 +4572,23 @@ The same client MAC appears on two gateways.
 
 ---
 
+## TC-RSSI-027: RSSI truncation, MAC ordering, and post-limit observedWindow isolation
+
+### Test data
+
+* 501 active Wi-Fi clients exist in the requested interval `[10:00:00Z, 11:00:00Z)`.
+* Client 501 (lexicographically highest normalized MAC string, e.g. `ff:ff:ff:ff:ff:ff`) has a unique sample timestamp at `10:59:00Z` that does not appear on any of the first 500 clients (whose samples end at `10:45:00Z`).
+
+### Expected result
+
+* Maximum 500 client items are returned in the `items[]` response array.
+* `totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
+* `truncated = true`.
+* Returned items in `items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
+* `observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `observedWindow.endTime` (which reports `10:45:00Z`).
+
+---
+
 # 9. Cross-API Consistency Test Cases
 
 ## TC-CROSS-001: Same time range across all APIs
@@ -4706,7 +4699,7 @@ Availability:    data.fetch_status = success, data.offline_count = 0, meta.offli
 
 ## TC-CONTRACT-001: Memory response field names
 
-Expected exact fields:
+Required fields (allowing compatible additive fields under OpenAPI 3.0):
 
 ```text
 requestedWindow
@@ -4720,7 +4713,7 @@ avg_memfree
 
 ## TC-CONTRACT-002: Temperature response field names
 
-Expected exact fields:
+Required fields (allowing compatible additive fields under OpenAPI 3.0):
 
 ```text
 requestedWindow
@@ -4739,7 +4732,7 @@ All temperature fields are reported in degrees Celsius.
 
 ## TC-CONTRACT-003: Usage response field names
 
-Expected exact fields:
+Required fields (allowing compatible additive fields under OpenAPI 3.0):
 
 ```text
 mac
@@ -4755,7 +4748,7 @@ total_data_usage
 
 ## TC-CONTRACT-004: RSSI response field names
 
-Expected exact fields:
+Required fields (allowing compatible additive fields under OpenAPI 3.0):
 
 ```text
 mac
@@ -4770,7 +4763,7 @@ rssi_total_samples
 
 ## TC-CONTRACT-005: Availability response field names
 
-Expected exact fields:
+Required fields (allowing compatible additive fields under OpenAPI 3.0):
 
 ```text
 meta
@@ -4882,7 +4875,7 @@ The PR implementation is functionally accepted when:
 1. All five endpoints are available in OpenAPI.
 2. Every endpoint uses the gateway serial number as `routerId`.
 3. Router ownership resolves correctly from the maintained local map.
-4. Bearer authentication is enforced before router validation, local/cache ownership resolution, OWPROV lookup, or Analytics datastore queries.
+4. Bearer authentication is enforced before parameter validation, router ownership resolution, caller authorization, or Analytics datastore queries.
 5. Missing, malformed, expired, wrong-scheme, and API-key-only authentication failures return `401 unauthorized` and never contact OWPROV.
 6. Valid authenticated callers without `analytics.gateway_metrics.read` on a visible resolved scope receive `403 forbidden`; inaccessible or nonexistent routers remain normalized to `404 not_found`.
 7. OWPROV fallback resolution distinguishes `404`, `409`, `502 owprov_unavailable`, and `502 owprov_invalid_response` outcomes.
