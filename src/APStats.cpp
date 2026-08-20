@@ -120,9 +120,9 @@ namespace OpenWifi {
 				auto unit = (*State)["unit"];
 				GetJSON("localtime", unit, DI_.lastState, (uint64_t)0);
 				GetJSON("uptime", unit, DI_.uptime, (uint64_t)0);
-				if (unit.contains("memory")) {
+				if (unit.contains("memory") && unit["memory"].is_object()) {
 					auto memory = unit["memory"];
-					uint64_t free_mem, total_mem;
+					uint64_t free_mem = 0, total_mem = 0;
 					GetJSON("free", memory, free_mem, (uint64_t)0);
 					GetJSON("total", memory, total_mem, (uint64_t)0);
 					if (total_mem) {
@@ -130,6 +130,29 @@ namespace OpenWifi {
 					} else {
 						DI_.memory = 0.0;
 					}
+
+					AnalyticsObjects::DeviceResourceTimePoint resource;
+					if (memory.contains("free") && memory["free"].is_number_unsigned()) {
+						resource.memory_free = memory["free"].get<uint64_t>();
+					} else if (memory.contains("free") && memory["free"].is_number_integer() && memory["free"].get<int64_t>() >= 0) {
+						resource.memory_free = static_cast<uint64_t>(memory["free"].get<int64_t>());
+					}
+					if (memory.contains("total") && memory["total"].is_number_unsigned()) {
+						resource.memory_total = memory["total"].get<uint64_t>();
+					} else if (memory.contains("total") && memory["total"].is_number_integer() && memory["total"].get<int64_t>() >= 0) {
+						resource.memory_total = static_cast<uint64_t>(memory["total"].get<int64_t>());
+					}
+					if (memory.contains("cached") && memory["cached"].is_number_unsigned()) {
+						resource.memory_cached = memory["cached"].get<uint64_t>();
+					} else if (memory.contains("cached") && memory["cached"].is_number_integer() && memory["cached"].get<int64_t>() >= 0) {
+						resource.memory_cached = static_cast<uint64_t>(memory["cached"].get<int64_t>());
+					}
+					if (memory.contains("buffered") && memory["buffered"].is_number_unsigned()) {
+						resource.memory_buffered = memory["buffered"].get<uint64_t>();
+					} else if (memory.contains("buffered") && memory["buffered"].is_number_integer() && memory["buffered"].get<int64_t>() >= 0) {
+						resource.memory_buffered = static_cast<uint64_t>(memory["buffered"].get<int64_t>());
+					}
+					DTP.resource_data = resource;
 				}
 			}
 

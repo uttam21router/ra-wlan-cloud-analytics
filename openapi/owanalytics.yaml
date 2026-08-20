@@ -2500,6 +2500,313 @@ paths:
         404:
           $ref: '#/components/responses/NotFound'
 
+  /devices/{routerId}/memory-summary:
+    get:
+      tags:
+        - MCP Analytics
+      summary: Retrieve gateway memory free summary
+      operationId: getGatewayFreeMemory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Memory summary response
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - requestedWindow
+                  - observedWindow
+                  - min_memfree
+                  - max_memfree
+                  - avg_memfree
+                properties:
+                  requestedWindow:
+                    $ref: '#/components/schemas/RequestedWindow'
+                  observedWindow:
+                    $ref: '#/components/schemas/ObservedWindow'
+                  min_memfree:
+                    type: integer
+                    nullable: true
+                  max_memfree:
+                    type: integer
+                    nullable: true
+                  avg_memfree:
+                    type: number
+                    nullable: true
+        400:
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/radio-temperature-summary:
+    get:
+      tags:
+        - MCP Analytics
+      summary: Retrieve gateway radio temperature summary
+      operationId: getGatewayWifiTemp
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Radio temperature summary response
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - requestedWindow
+                  - observedWindow
+                properties:
+                  requestedWindow:
+                    $ref: '#/components/schemas/RequestedWindow'
+                  observedWindow:
+                    $ref: '#/components/schemas/ObservedWindow'
+                  min_wifi_temp_2.4G:
+                    type: number
+                    nullable: true
+                  max_wifi_temp_2.4G:
+                    type: number
+                    nullable: true
+                  avg_wifi_temp_2.4G:
+                    type: number
+                    nullable: true
+                  min_wifi_temp_5G:
+                    type: number
+                    nullable: true
+                  max_wifi_temp_5G:
+                    type: number
+                    nullable: true
+                  avg_wifi_temp_5G:
+                    type: number
+                    nullable: true
+        400:
+          $ref: '#/components/responses/TemperatureAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/wifi-clients/usage-summary:
+    get:
+      tags:
+        - MCP Analytics
+      summary: Retrieve Wi-Fi client bandwidth usage summary
+      operationId: getDeviceBandwidthConsumption
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Wi-Fi client usage summary response
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - requestedWindow
+                  - observedWindow
+                  - items
+                  - totalClients
+                  - truncated
+                properties:
+                  requestedWindow:
+                    $ref: '#/components/schemas/RequestedWindow'
+                  observedWindow:
+                    $ref: '#/components/schemas/ObservedWindow'
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - mac
+                        - rx_bytes
+                        - tx_bytes
+                        - total_bytes
+                        - data_consume_rx
+                        - data_consume_tx
+                        - total_data_usage
+                      properties:
+                        mac:
+                          $ref: '#/components/schemas/MacAddress'
+                        rx_bytes:
+                          type: integer
+                        tx_bytes:
+                          type: integer
+                        total_bytes:
+                          type: integer
+                        data_consume_rx:
+                          type: string
+                        data_consume_tx:
+                          type: string
+                        total_data_usage:
+                          type: string
+                  totalClients:
+                    type: integer
+                  truncated:
+                    type: boolean
+        400:
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/wifi-clients/rssi-summary:
+    get:
+      tags:
+        - MCP Analytics
+      summary: Retrieve Wi-Fi client RSSI quality summary
+      operationId: getDeviceRssiQuality
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Wi-Fi client RSSI summary response
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - requestedWindow
+                  - observedWindow
+                  - items
+                  - totalClients
+                  - truncated
+                properties:
+                  requestedWindow:
+                    $ref: '#/components/schemas/RequestedWindow'
+                  observedWindow:
+                    $ref: '#/components/schemas/ObservedWindow'
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - mac
+                        - rssi_excellent_pct
+                        - rssi_good_pct
+                        - rssi_fair_pct
+                        - rssi_poor_pct
+                        - rssi_total_samples
+                      properties:
+                        mac:
+                          $ref: '#/components/schemas/MacAddress'
+                        rssi_excellent_pct:
+                          type: number
+                        rssi_good_pct:
+                          type: number
+                        rssi_fair_pct:
+                          type: number
+                        rssi_poor_pct:
+                          type: number
+                        rssi_total_samples:
+                          type: integer
+                  totalClients:
+                    type: integer
+                  truncated:
+                    type: boolean
+        400:
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/availability-summary:
+    get:
+      tags:
+        - MCP Analytics
+      summary: Retrieve gateway availability summary
+      operationId: getGatewayOfflineCount
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Availability summary response
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - meta
+                  - data
+                properties:
+                  meta:
+                    type: object
+                    required:
+                      - requestedWindow
+                      - observedWindow
+                      - offlineEventCount
+                    properties:
+                      requestedWindow:
+                        $ref: '#/components/schemas/RequestedWindow'
+                      observedWindow:
+                        $ref: '#/components/schemas/ObservedWindow'
+                      offlineEventCount:
+                        type: integer
+                  data:
+                    type: object
+                    required:
+                      - gw_uuid
+                      - fetch_status
+                      - offline_count
+                    properties:
+                      gw_uuid:
+                        type: string
+                      fetch_status:
+                        type: string
+                      offline_count:
+                        type: integer
+        400:
+          $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
   #########################################################################################
   ##
   ## These are endpoints that all services in the OpenWiFi stack must provide
