@@ -375,6 +375,9 @@ namespace OpenWifi {
 				for (const auto &assoc : ssid.associations) {
 					if (assoc.station.empty())
 						continue;
+					// Exclude invalid RSSI samples (0, positive, or below -127)
+					if (assoc.rssi == 0 || assoc.rssi > 0 || assoc.rssi < -127)
+						continue;
 					std::string mac = NormalizeMac(assoc.station);
 					clientRssi[mac].push_back(RSSISample{rec.timestamp, assoc.rssi});
 				}

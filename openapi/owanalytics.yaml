@@ -1245,7 +1245,10 @@ components:
     GatewayMemorySummary:
       type: object
       description: >
-        Gateway free memory summary in bytes.
+        Gateway free memory summary in bytes. Memory statistics are arithmetic aggregations of
+        stored memory_free samples whose timestamps fall within the requested half-open window.
+        They are not time-weighted. When samples exist, all values are nonnegative and satisfy
+        min_memfree <= avg_memfree <= max_memfree. When no valid memory samples exist, all fields are null.
       required:
         - data
         - meta
@@ -1292,7 +1295,13 @@ components:
     GatewayWifiTemperatureSummary:
       type: object
       description: >
-        Wi-Fi radio temperature summary.
+        Wi-Fi radio temperature summary. The 2.4 GHz JSON property names intentionally use
+        the dotted `2.4G` suffix to match the MCP API wire contract; clients should treat
+        these as literal JSON keys, not property paths. Temperature statistics are arithmetic
+        aggregations of valid radio temperature samples whose timestamps fall within the
+        requested half-open window. Null applies independently per band when that band has no valid
+        temperature samples. A valid radio temperature sample is a present Celsius value where
+        -40 <= temperature <= 125 and temperature != 255.
       required:
         - data
         - meta
@@ -1313,34 +1322,42 @@ components:
               type: number
               format: double
               nullable: true
+              description: Minimum reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius.
             max_wifi_temp_2.4G:
               type: number
               format: double
               nullable: true
+              description: Maximum reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius.
             avg_wifi_temp_2.4G:
               type: number
               format: double
               nullable: true
+              description: Arithmetic average of reported 2.4 GHz Wi-Fi radio temperature samples rounded to 2 decimal places.
             latest_wifi_temp_2.4G:
               type: number
               format: double
               nullable: true
+              description: Latest reported 2.4 GHz Wi-Fi radio temperature sample by timestamp.
             min_wifi_temp_5G:
               type: number
               format: double
               nullable: true
+              description: Minimum reported 5 GHz Wi-Fi radio temperature in degrees Celsius.
             max_wifi_temp_5G:
               type: number
               format: double
               nullable: true
+              description: Maximum reported 5 GHz Wi-Fi radio temperature in degrees Celsius.
             avg_wifi_temp_5G:
               type: number
               format: double
               nullable: true
+              description: Arithmetic average of reported 5 GHz Wi-Fi radio temperature samples rounded to 2 decimal places.
             latest_wifi_temp_5G:
               type: number
               format: double
               nullable: true
+              description: Latest reported 5 GHz Wi-Fi radio temperature sample by timestamp.
         meta:
           type: object
           required:
@@ -1392,7 +1409,8 @@ components:
     ClientBandwidthConsumptionResponse:
       type: object
       description: >
-        Wrapped Wi-Fi usage differential summary.
+        Wrapped Wi-Fi usage differential summary calculated from persisted samples currently
+        available to Analytics.
       required:
         - data
         - meta
@@ -1428,7 +1446,7 @@ components:
     ClientRssiQuality:
       type: object
       description: >
-        Per-client RSSI quality percentages calculated from valid RSSI samples only.
+        Per-client RSSI quality percentages calculated from valid RSSI samples (-127 <= RSSI < 0).
       required:
         - mac
         - rssi_excellent_pct
@@ -2626,25 +2644,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GatewayAvailabilitySummaryResponse'
-                      requestedWindow:
-                        $ref: '#/components/schemas/RequestedWindow'
-                      observedWindow:
-                        $ref: '#/components/schemas/ObservedWindow'
-                      offlineEventCount:
-                        type: integer
-                  data:
-                    type: object
-                    required:
-                      - gw_uuid
-                      - fetch_status
-                      - offline_count
-                    properties:
-                      gw_uuid:
-                        type: string
-                      fetch_status:
-                        type: string
-                      offline_count:
-                        type: integer
         400:
           $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
         401:

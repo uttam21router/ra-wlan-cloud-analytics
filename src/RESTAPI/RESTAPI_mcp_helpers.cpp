@@ -323,23 +323,18 @@ namespace OpenWifi::MCP {
 			}
 
 			if (matchedVenue != nullptr && matchedVenue->retention > 0) {
-				uint64_t retSec = matchedVenue->retention;
-				if (retSec <= 3650) {
-					retSec *= (24 * 3600);
-				}
-				outReq.monitoringDuration = retSec;
+				outReq.monitoringDuration = matchedVenue->retention;
 			} else {
 				outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
 			}
 
-			if (boardInfo.info.modified > 0) {
-				outReq.monitoringEnabledAt = boardInfo.info.modified;
-			} else if (boardInfo.info.created > 0) {
-				outReq.monitoringEnabledAt = boardInfo.info.created;
-			}
+			// Effective monitoring start is the board creation timestamp (or 0 if unpopulated).
+			// Do NOT use boardInfo.info.modified as routine board edits would move monitoringEnabledAt forward.
+			outReq.monitoringEnabledAt = boardInfo.info.created;
 			outReq.monitoringConfigurationExpiry = UINT64_MAX;
 		} else {
 			outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
+			outReq.monitoringEnabledAt = 0;
 			outReq.monitoringConfigurationExpiry = UINT64_MAX;
 		}
 
