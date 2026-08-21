@@ -19,7 +19,7 @@ namespace OpenWifi {
 		bool GetStats(const std::string &id, AnalyticsObjects::DeviceTimePointStats &S);
 		bool SelectRecords(const std::string &boardId, uint64_t FromDate, uint64_t LastDate,
 						   uint64_t MaxRecords, bool LatestPerDevice, DB::RecordVec &Recs);
-		bool SelectRecordsBySerial(const std::string &serialNumber, uint64_t FromDate, uint64_t LastDate,
+		bool SelectRecordsBySerial(const std::string &boardId, const std::string &serialNumber, uint64_t FromDate, uint64_t LastDate,
 								   uint64_t MaxRecords, DB::RecordVec &Recs);
 		bool DeleteBoard(const std::string &boardId);
 		bool DeleteTimeLine(const std::string &boardId, uint64_t fromDate, uint64_t endDate);

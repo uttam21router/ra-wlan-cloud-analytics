@@ -188,10 +188,10 @@ namespace OpenWifi {
 		return serials;
 	}
 
-	bool TimePointDB::SelectRecordsBySerial(const std::string &serialNumber, uint64_t FromDate,
+	bool TimePointDB::SelectRecordsBySerial(const std::string &boardId, const std::string &serialNumber, uint64_t FromDate,
 											uint64_t LastDate, uint64_t MaxRecords,
 											std::vector<AnalyticsObjects::DeviceTimePoint> &Recs) {
-		std::string WhereClause = fmt::format(" serialNumber='{}' ", ORM::Escape(serialNumber));
+		std::string WhereClause = fmt::format(" boardId='{}' and serialNumber='{}' ", ORM::Escape(boardId), ORM::Escape(serialNumber));
 		if (FromDate && LastDate) {
 			WhereClause += fmt::format(" and (timestamp >= {}) and (timestamp < {}) ", FromDate, LastDate);
 		} else if (FromDate) {

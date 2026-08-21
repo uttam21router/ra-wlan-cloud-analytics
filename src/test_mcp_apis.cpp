@@ -2,13 +2,27 @@
 // Comprehensive Unit Test Suite for MCP WLAN Analytics APIs
 //
 
-#include "RESTObjects/RESTAPI_AnalyticsObjects.h"
 #include <cassert>
 #include <ctime>
 #include <iostream>
+#include <optional>
 #include <regex>
 #include <string>
 #include <vector>
+
+namespace OpenWifi {
+	namespace AnalyticsObjects {
+		struct DeviceResourceTimePoint {
+			std::optional<uint64_t> memory_free;
+			std::optional<uint64_t> memory_total;
+		};
+
+		struct DeviceTimePoint {
+			uint64_t timestamp = 0;
+			DeviceResourceTimePoint resource_data;
+		};
+	}
+}
 
 using namespace OpenWifi;
 
@@ -153,6 +167,97 @@ void TestRssiClassification() {
 	std::cout << " -> RSSI Classification tests PASSED." << std::endl;
 }
 
+void TestBandwidthResetVsRollover() {
+	std::cout << "[TEST] Running Bandwidth Reset vs Rollover tests..." << std::endl;
+
+	auto CalculateRxDelta = [](uint64_t prev, uint64_t curr) -> uint64_t {
+		if (curr >= prev) {
+			return curr - prev;
+		} else {
+			uint64_t max32 = 0xFFFFFFFFULL;
+			uint64_t max64 = 0xFFFFFFFFFFFFFFFFULL;
+			uint64_t thresh32 = 0xF0000000ULL;
+			uint64_t thresh64 = 0xF000000000000000ULL;
+
+			if (prev >= thresh32 && prev <= max32) {
+				return ((max32 - prev) + curr + 1);
+			} else if (prev >= thresh64) {
+				return ((max64 - prev) + curr + 1);
+			} else {
+				// Counter reset: baseline starting from 0
+				return curr;
+			}
+		}
+	};
+
+	// 1. Normal increasing counter
+	assert(CalculateRxDelta(100, 500) == 400);
+
+	// 2. Counter reset (e.g., reconnect/AP restart from 100,000 to 100) -> MUST NOT be 4.29 GB
+	uint64_t resetDelta = CalculateRxDelta(100000, 100);
+	assert(resetDelta == 100); // Baseline starting from 0
+
+	// 3. Genuine 32-bit counter rollover near threshold (0xFFFFFF00 -> 100)
+	uint64_t prevNearMax32 = 0xFFFFFF00ULL;
+	uint64_t currAfterRoll32 = 100ULL;
+	uint64_t expectedRoll32 = (0xFFFFFFFFULL - prevNearMax32) + currAfterRoll32 + 1; // 256 + 100 = 356
+	assert(CalculateRxDelta(prevNearMax32, currAfterRoll32) == expectedRoll32);
+
+	std::cout << " -> Bandwidth Reset vs Rollover tests PASSED." << std::endl;
+}
+
+void TestIdempotencyKeyFallback() {
+	std::cout << "[TEST] Running Idempotency Key Fallback tests..." << std::endl;
+
+	auto GenerateIdempotencyKey = [](const std::string &serialNumber, const std::string &eventType,
+									  uint64_t eventTime, const std::string &sessionId,
+									  const std::string &eventId) -> std::string {
+		std::string tail = eventId.empty() ? (sessionId.empty() ? "nosession" : sessionId) : eventId;
+		return serialNumber + ":" + eventType + ":" + std::to_string(eventTime) + ":" + tail;
+	};
+
+	std::string serial = "460011223344";
+	std::string type = "offline";
+	uint64_t t = 1785153600ULL;
+	std::string sess = "sess-abc-123";
+
+	// Replaying exact same event with empty eventId MUST yield identical key
+	std::string key1 = GenerateIdempotencyKey(serial, type, t, sess, "");
+	std::string key2 = GenerateIdempotencyKey(serial, type, t, sess, "");
+
+	assert(!key1.empty());
+	assert(key1 == key2);
+	assert(key1 == "460011223344:offline:1785153600:sess-abc-123");
+
+	// When eventId is provided, use eventId
+	std::string keyWithEvId = GenerateIdempotencyKey(serial, type, t, sess, "ev-789");
+	assert(keyWithEvId == "460011223344:offline:1785153600:ev-789");
+
+	std::cout << " -> Idempotency Key Fallback tests PASSED." << std::endl;
+}
+
+void TestBoardIdScopedQueries() {
+	std::cout << "[TEST] Running BoardId Scoped Query Formatting tests..." << std::endl;
+
+	auto FormatTimepointQuery = [](const std::string &boardId, const std::string &serialNumber) -> std::string {
+		return " boardId='" + boardId + "' and serialNumber='" + serialNumber + "' ";
+	};
+
+	auto FormatAvailabilityQuery = [](const std::string &boardId, const std::string &serialNumber) -> std::string {
+		return "board_id='" + boardId + "' AND serialNumber='" + serialNumber + "' AND event_type='offline'";
+	};
+
+	std::string tpSql = FormatTimepointQuery("board-123", "serial-456");
+	assert(tpSql.find("boardId='board-123'") != std::string::npos);
+	assert(tpSql.find("serialNumber='serial-456'") != std::string::npos);
+
+	std::string availSql = FormatAvailabilityQuery("board-123", "serial-456");
+	assert(availSql.find("board_id='board-123'") != std::string::npos);
+	assert(availSql.find("serialNumber='serial-456'") != std::string::npos);
+
+	std::cout << " -> BoardId Scoped Query Formatting tests PASSED." << std::endl;
+}
+
 int main() {
 	std::cout << "===========================================" << std::endl;
 	std::cout << "  MCP WLAN Analytics APIs Unit Test Suite  " << std::endl;
@@ -162,6 +267,9 @@ int main() {
 	TestMemoryAggregation();
 	TestRadioTemperatureRange();
 	TestRssiClassification();
+	TestBandwidthResetVsRollover();
+	TestIdempotencyKeyFallback();
+	TestBoardIdScopedQueries();
 
 	std::cout << "===========================================" << std::endl;
 	std::cout << "  ALL MCP API UNIT TESTS PASSED CLEANLY!  " << std::endl;

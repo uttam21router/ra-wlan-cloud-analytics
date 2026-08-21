@@ -49,7 +49,7 @@ namespace OpenWifi {
 		}
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
-		StorageService()->TimePointsDB().SelectRecordsBySerial(req.routerId, req.startTimeEpoch,
+		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
 															   req.endTimeEpoch, 100000, recs);
 
 		std::vector<uint64_t> memoryFreeSamples;
@@ -105,7 +105,7 @@ namespace OpenWifi {
 		}
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
-		StorageService()->TimePointsDB().SelectRecordsBySerial(req.routerId, req.startTimeEpoch,
+		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
 															   req.endTimeEpoch, 100000, recs);
 
 		std::vector<double> temps24G;
@@ -191,7 +191,7 @@ namespace OpenWifi {
 		}
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
-		StorageService()->TimePointsDB().SelectRecordsBySerial(req.routerId, req.startTimeEpoch,
+		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
 															   req.endTimeEpoch, 100000, recs);
 
 		struct ClientSample {
@@ -242,13 +242,19 @@ namespace OpenWifi {
 					if (curr.rx_bytes >= prev.rx_bytes) {
 						totalRx += (curr.rx_bytes - prev.rx_bytes);
 					} else {
-						// Single 64-bit rollover handling if not ambiguous reset
+						// Only apply rollover if prev counter was near 32-bit or 64-bit upper boundary
 						uint64_t max32 = 0xFFFFFFFFULL;
 						uint64_t max64 = 0xFFFFFFFFFFFFFFFFULL;
-						if (prev.rx_bytes <= max32 && curr.rx_bytes < prev.rx_bytes) {
+						uint64_t thresh32 = 0xF0000000ULL;
+						uint64_t thresh64 = 0xF000000000000000ULL;
+
+						if (prev.rx_bytes >= thresh32 && prev.rx_bytes <= max32) {
 							totalRx += ((max32 - prev.rx_bytes) + curr.rx_bytes + 1);
-						} else if (prev.rx_bytes > max32 && curr.rx_bytes < prev.rx_bytes) {
+						} else if (prev.rx_bytes >= thresh64) {
 							totalRx += ((max64 - prev.rx_bytes) + curr.rx_bytes + 1);
+						} else {
+							// Counter reset / AP restart / reconnect baseline
+							totalRx += curr.rx_bytes;
 						}
 					}
 
@@ -258,10 +264,15 @@ namespace OpenWifi {
 					} else {
 						uint64_t max32 = 0xFFFFFFFFULL;
 						uint64_t max64 = 0xFFFFFFFFFFFFFFFFULL;
-						if (prev.tx_bytes <= max32 && curr.tx_bytes < prev.tx_bytes) {
+						uint64_t thresh32 = 0xF0000000ULL;
+						uint64_t thresh64 = 0xF000000000000000ULL;
+
+						if (prev.tx_bytes >= thresh32 && prev.tx_bytes <= max32) {
 							totalTx += ((max32 - prev.tx_bytes) + curr.tx_bytes + 1);
-						} else if (prev.tx_bytes > max32 && curr.tx_bytes < prev.tx_bytes) {
+						} else if (prev.tx_bytes >= thresh64) {
 							totalTx += ((max64 - prev.tx_bytes) + curr.tx_bytes + 1);
+						} else {
+							totalTx += curr.tx_bytes;
 						}
 					}
 				}
@@ -316,7 +327,7 @@ namespace OpenWifi {
 		}
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
-		StorageService()->TimePointsDB().SelectRecordsBySerial(req.routerId, req.startTimeEpoch,
+		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
 															   req.endTimeEpoch, 100000, recs);
 
 		struct RSSISample {
@@ -418,7 +429,7 @@ namespace OpenWifi {
 		std::optional<uint64_t> latestTime;
 
 		uint64_t offlineCount = StorageService()->AvailabilityEventsDB().GetOfflineEvents(
-			req.routerId, req.startTimeEpoch, req.endTimeEpoch, earliestTime, latestTime);
+			req.resolvedBoardId, req.routerId, req.startTimeEpoch, req.endTimeEpoch, earliestTime, latestTime);
 
 		AnalyticsObjects::MCPAvailabilitySummary resp;
 		resp.meta.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);

@@ -440,6 +440,19 @@ namespace OpenWifi {
 			poco_information(Logger(), fmt::format("{}: stats failed parsing.", DI_.serialNumber));
 		}
 
+		poco_information(
+			Logger(),
+			fmt::format(
+				"{}: analytics persistence state: got_base={}, got_connection={}, "
+				"got_health={}, timestamp={}, boardId={}, venueId={}",
+				DI_.serialNumber,
+				got_base,
+				got_connection,
+				got_health,
+				DTP.timestamp,
+				boardId_,
+				venue_id_));
+
 		if (got_base) {
 			// calculate new point based on base, save new point, move DTP into base...
 			AnalyticsObjects::DeviceTimePoint db_DTP = DTP;
@@ -584,12 +597,46 @@ namespace OpenWifi {
 				db_DTP.id = MicroServiceCreateUUID();
 				db_DTP.boardId = boardId_;
 				db_DTP.serialNumber = db_DTP.device_info.serialNumber;
-				StorageService()->TimePointsDB().CreateRecord(db_DTP);
+				bool saved = StorageService()->TimePointsDB().CreateRecord(db_DTP);
+				if (saved) {
+					poco_information(
+						Logger(),
+						fmt::format(
+							"{}: analytics timepoint persisted: id={}, boardId={}, timestamp={}",
+							DI_.serialNumber,
+							db_DTP.id,
+							db_DTP.boardId,
+							db_DTP.timestamp));
+				} else {
+					poco_error(
+						Logger(),
+						fmt::format(
+							"{}: failed to persist analytics timepoint: id={}, boardId={}, timestamp={}",
+							DI_.serialNumber,
+							db_DTP.id,
+							db_DTP.boardId,
+							db_DTP.timestamp));
+				}
+			} else {
+				poco_warning(
+					Logger(),
+					fmt::format(
+						"{}: skipping analytics timepoint persistence: "
+						"got_connection={}, got_health={}",
+						DI_.serialNumber,
+						got_connection,
+						got_health));
 			}
 			tp_base_ = DTP;
 		} else {
 			tp_base_ = DTP;
 			got_base = true;
+			poco_information(
+				Logger(),
+				fmt::format(
+					"{}: initialized analytics base sample: timestamp={}",
+					DI_.serialNumber,
+					DTP.timestamp));
 		}
 	}
 
@@ -598,7 +645,12 @@ namespace OpenWifi {
 		DI_.lastContact = Utils::Now();
 		try {
 			if (Connection->contains("ping")) {
-				got_connection = true;
+				if (!got_connection) {
+					got_connection = true;
+					poco_information(
+						Logger(),
+						fmt::format("{}: got_connection set to true", DI_.serialNumber));
+				}
 				poco_trace(Logger(), fmt::format("{}: ping message.", DI_.serialNumber));
 				DI_.connected = true;
 				DI_.lastPing = Utils::Now();
@@ -622,7 +674,12 @@ namespace OpenWifi {
 				DI_.connected = false;
 			} else if (Connection->contains("capabilities")) {
 				poco_trace(Logger(), fmt::format("{}: connection message.", DI_.serialNumber));
-				got_connection = true;
+				if (!got_connection) {
+					got_connection = true;
+					poco_information(
+						Logger(),
+						fmt::format("{}: got_connection set to true", DI_.serialNumber));
+				}
 				DI_.connected = true;
 				DI_.lastConnection = Utils::Now();
 				auto ConnectionData = (*Connection)["capabilities"];
@@ -644,7 +701,12 @@ namespace OpenWifi {
 
 	void AP::UpdateHealth(const std::shared_ptr<nlohmann::json> &Health) {
 		try {
-			got_health = true;
+			if (!got_health) {
+				got_health = true;
+				poco_information(
+					Logger(),
+					fmt::format("{}: got_health set to true", DI_.serialNumber));
+			}
 			GetJSON("timestamp", *Health, DI_.lastHealth, (uint64_t)0);
 			GetJSON("sanity", *Health, DI_.health, (uint64_t)0);
 			poco_trace(Logger(), fmt::format("{}: health message.", DI_.serialNumber));

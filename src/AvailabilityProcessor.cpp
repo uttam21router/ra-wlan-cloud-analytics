@@ -92,11 +92,12 @@ namespace OpenWifi {
 
 					if (!eventType.empty() && !serialNumber.empty()) {
 						// Resolve board_id from current VenueCoordinator / RouterIdResolver mapping
-						std::string boardId;
 						auto res = RouterIdResolverService()->ResolveRouterIdContext(nullptr, serialNumber);
-						if (res.status == RouterIdResolutionStatus::Success) {
-							boardId = res.resolvedBoardId;
+						if (res.status != RouterIdResolutionStatus::Success || res.resolvedBoardId.empty()) {
+							poco_warning(Logger(), fmt::format("Skipping availability processing for router {}: board resolution failed", serialNumber));
+							continue;
 						}
+						std::string boardId = res.resolvedBoardId;
 
 						// Load existing availability state
 						DeviceAvailabilityState currentState;
@@ -120,7 +121,7 @@ namespace OpenWifi {
 								bool stateChanged = (currentState.current_state != eventType);
 
 								if (stateChanged) {
-									// Insert transition event
+									// Insert transition event and update state atomically
 									DeviceAvailabilityEvent eventRow;
 									eventRow.id = MicroServiceCreateUUID();
 									eventRow.serialNumber = serialNumber;
@@ -131,18 +132,23 @@ namespace OpenWifi {
 									eventRow.event_id = eventId;
 									eventRow.idempotency_key =
 										fmt::format("{}:{}:{}:{}", serialNumber, eventType, eventTime,
-													eventId.empty() ? eventRow.id : eventId);
+													eventId.empty() ? (sessionId.empty() ? "nosession" : sessionId) : eventId);
 
-									StorageService()->AvailabilityEventsDB().RecordEvent(eventRow);
+									DeviceAvailabilityState nextState = currentState;
+									nextState.board_id = boardId;
+									nextState.current_state = eventType;
+									nextState.last_event_time = eventTime;
+									nextState.updated_at = nowSec;
+
+									StorageService()->AvailabilityEventsDB().RecordTransitionAndState(eventRow, nextState);
+								} else {
+									// Update last event time and board_id if state didn't change
+									currentState.board_id = boardId;
+									currentState.last_event_time = eventTime;
+									currentState.updated_at = nowSec;
+
+									StorageService()->AvailabilityStateDB().UpdateState(currentState);
 								}
-
-								// Atomic update of current state
-								currentState.board_id = boardId;
-								currentState.current_state = eventType;
-								currentState.last_event_time = eventTime;
-								currentState.updated_at = nowSec;
-
-								StorageService()->AvailabilityStateDB().UpdateState(currentState);
 							}
 							// If eventTime <= last_event_time, ignore stale/duplicate event
 						}

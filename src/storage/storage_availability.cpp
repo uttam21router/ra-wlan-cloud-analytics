@@ -5,6 +5,7 @@
 #include "storage_availability.h"
 #include "fmt/format.h"
 #include "framework/RESTAPI_utils.h"
+#include "Poco/Data/Transaction.h"
 
 template <>
 void ORM::DB<OpenWifi::DeviceAvailabilityEventRecordType, OpenWifi::DeviceAvailabilityEvent>::Convert(
@@ -144,9 +145,9 @@ namespace OpenWifi {
 	static ORM::IndexVec AvailabilityEvents_Indexes{
 		{std::string("avail_serial_time_idx"),
 		 ORM::IndexEntryVec{{std::string("serialNumber"), ORM::Indextype::ASC},
-							{std::string("event_time"), ORM::Indextype::ASC}}},
+							{std::string("event_time"), ORM::Indextype::ASC}}, false},
 		{std::string("avail_idempotency_idx"),
-		 ORM::IndexEntryVec{{std::string("idempotency_key"), ORM::Indextype::ASC}}}};
+		 ORM::IndexEntryVec{{std::string("idempotency_key"), ORM::Indextype::ASC}}, true}};
 
 	DeviceAvailabilityEventsDB::DeviceAvailabilityEventsDB(OpenWifi::DBType T,
 															Poco::Data::SessionPool &P,
@@ -154,15 +155,16 @@ namespace OpenWifi {
 		: DB(T, "device_availability_events", AvailabilityEvents_Fields, AvailabilityEvents_Indexes,
 			 P, L, "dae") {}
 
-	uint64_t DeviceAvailabilityEventsDB::GetOfflineEvents(const std::string &serialNumber,
+	uint64_t DeviceAvailabilityEventsDB::GetOfflineEvents(const std::string &boardId,
+														  const std::string &serialNumber,
 														  uint64_t startTime, uint64_t endTime,
 														  std::optional<uint64_t> &earliestTime,
 														  std::optional<uint64_t> &latestTime) {
 		earliestTime.reset();
 		latestTime.reset();
 		std::string whereClause = fmt::format(
-			"serialNumber='{}' AND event_type='offline' AND event_time >= {} AND event_time < {}",
-			ORM::Escape(serialNumber), startTime, endTime);
+			"board_id='{}' AND serialNumber='{}' AND event_type='offline' AND event_time >= {} AND event_time < {}",
+			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
 
 		std::vector<DeviceAvailabilityEvent> recs;
 		GetRecords(0, 100000, recs, whereClause, " ORDER BY event_time ASC ");
@@ -178,6 +180,57 @@ namespace OpenWifi {
 
 	bool DeviceAvailabilityEventsDB::RecordEvent(const DeviceAvailabilityEvent &event) {
 		return CreateRecord(event);
+	}
+
+	bool DeviceAvailabilityEventsDB::RecordTransitionAndState(const DeviceAvailabilityEvent &event,
+															  const DeviceAvailabilityState &state) {
+		try {
+			Poco::Data::Session Session = Pool_.get();
+			Poco::Data::Transaction Tx(Session);
+
+			// 1. Insert transition event into device_availability_events table
+			Poco::Data::Statement Insert(Session);
+			DeviceAvailabilityEventRecordType RT;
+			Convert(event, RT);
+			std::string St = "insert into " + TableName_ + " ( " + SelectFields() + " ) values " + SelectList();
+			Insert << ConvertParams(St), Poco::Data::Keywords::use(RT);
+			Insert.execute();
+
+			// 2. Upsert current state into device_availability_state table
+			Poco::Data::Statement SelectState(Session);
+			DeviceAvailabilityStateRecordType StateRT;
+			std::string StateSelectSt = "select serialNumber, board_id, current_state, last_event_time, updated_at from device_availability_state where serialNumber=? limit 1";
+			auto serialCopy = state.serialNumber;
+			SelectState << ConvertParams(StateSelectSt), Poco::Data::Keywords::into(StateRT), Poco::Data::Keywords::use(serialCopy);
+			bool exists = (SelectState.execute() == 1);
+
+			DeviceAvailabilityStateRecordType InStateRT;
+			InStateRT.set<0>(state.serialNumber);
+			InStateRT.set<1>(state.board_id);
+			InStateRT.set<2>(state.current_state);
+			InStateRT.set<3>(state.last_event_time);
+			InStateRT.set<4>(state.updated_at);
+
+			if (exists) {
+				Poco::Data::Statement UpdateState(Session);
+				std::string StateUpdateSt = "update device_availability_state set serialNumber=?, board_id=?, current_state=?, last_event_time=?, updated_at=? where serialNumber=?";
+				UpdateState << ConvertParams(StateUpdateSt), Poco::Data::Keywords::use(InStateRT), Poco::Data::Keywords::use(serialCopy);
+				UpdateState.execute();
+			} else {
+				Poco::Data::Statement CreateState(Session);
+				std::string StateCreateSt = "insert into device_availability_state ( serialNumber, board_id, current_state, last_event_time, updated_at ) values (?, ?, ?, ?, ?)";
+				CreateState << ConvertParams(StateCreateSt), Poco::Data::Keywords::use(InStateRT);
+				CreateState.execute();
+			}
+
+			Tx.commit();
+			return true;
+		} catch (const Poco::Exception &E) {
+			Logger_.log(E);
+		} catch (const std::exception &E) {
+			Logger_.error(fmt::format("RecordTransitionAndState error: {}", E.what()));
+		}
+		return false;
 	}
 
 	static ORM::FieldVec AvailabilityState_Fields{

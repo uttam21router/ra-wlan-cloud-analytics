@@ -12,6 +12,8 @@
 
 namespace OpenWifi {
 
+	struct DeviceAvailabilityState;
+
 	struct DeviceAvailabilityEvent {
 		std::string id;
 		std::string serialNumber;
@@ -35,11 +37,13 @@ namespace OpenWifi {
 	  public:
 		DeviceAvailabilityEventsDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L);
 
-		uint64_t GetOfflineEvents(const std::string &serialNumber, uint64_t startTime,
+		uint64_t GetOfflineEvents(const std::string &boardId, const std::string &serialNumber, uint64_t startTime,
 								 uint64_t endTime, std::optional<uint64_t> &earliestTime,
 								 std::optional<uint64_t> &latestTime);
 
 		bool RecordEvent(const DeviceAvailabilityEvent &event);
+		bool RecordTransitionAndState(const DeviceAvailabilityEvent &event,
+									  const DeviceAvailabilityState &state);
 	};
 
 	struct DeviceAvailabilityState {
