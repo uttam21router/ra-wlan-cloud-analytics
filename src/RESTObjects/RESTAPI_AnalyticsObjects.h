@@ -372,25 +372,44 @@ namespace OpenWifi {
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
 
-		struct MCPGatewayMemorySummary {
+		struct MCPMetaWindow {
 			MCPRequestedWindow requestedWindow;
 			MCPObservedWindow observedWindow;
-			std::optional<uint64_t> min_memfree;
-			std::optional<uint64_t> max_memfree;
-			std::optional<double> avg_memfree;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPGatewayMemorySummary {
+			struct Data {
+				std::optional<uint64_t> min_memfree;
+				std::optional<uint64_t> max_memfree;
+				std::optional<uint64_t> avg_memfree;
+				std::optional<uint64_t> latest_memfree;
+
+				void to_json(Poco::JSON::Object &Obj) const;
+			} data;
+
+			MCPMetaWindow meta;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
 
 		struct MCPRadioTempSummary {
-			MCPRequestedWindow requestedWindow;
-			MCPObservedWindow observedWindow;
-			std::optional<double> min_wifi_temp_2_4G;
-			std::optional<double> max_wifi_temp_2_4G;
-			std::optional<double> avg_wifi_temp_2_4G;
-			std::optional<double> min_wifi_temp_5G;
-			std::optional<double> max_wifi_temp_5G;
-			std::optional<double> avg_wifi_temp_5G;
+			struct Data {
+				std::optional<double> min_wifi_temp_2_4G;
+				std::optional<double> max_wifi_temp_2_4G;
+				std::optional<double> avg_wifi_temp_2_4G;
+				std::optional<double> latest_wifi_temp_2_4G;
+
+				std::optional<double> min_wifi_temp_5G;
+				std::optional<double> max_wifi_temp_5G;
+				std::optional<double> avg_wifi_temp_5G;
+				std::optional<double> latest_wifi_temp_5G;
+
+				void to_json(Poco::JSON::Object &Obj) const;
+			} data;
+
+			MCPMetaWindow meta;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
@@ -408,11 +427,15 @@ namespace OpenWifi {
 		};
 
 		struct MCPClientUsageSummary {
-			MCPRequestedWindow requestedWindow;
-			MCPObservedWindow observedWindow;
-			std::vector<MCPClientUsageItem> items;
-			uint64_t totalClients = 0;
-			bool truncated = false;
+			struct Data {
+				std::vector<MCPClientUsageItem> items;
+				uint64_t totalClients = 0;
+				bool truncated = false;
+
+				void to_json(Poco::JSON::Object &Obj) const;
+			} data;
+
+			MCPMetaWindow meta;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
@@ -429,11 +452,15 @@ namespace OpenWifi {
 		};
 
 		struct MCPClientRssiSummary {
-			MCPRequestedWindow requestedWindow;
-			MCPObservedWindow observedWindow;
-			std::vector<MCPClientRssiItem> items;
-			uint64_t totalClients = 0;
-			bool truncated = false;
+			struct Data {
+				std::vector<MCPClientRssiItem> items;
+				uint64_t totalClients = 0;
+				bool truncated = false;
+
+				void to_json(Poco::JSON::Object &Obj) const;
+			} data;
+
+			MCPMetaWindow meta;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
@@ -448,8 +475,8 @@ namespace OpenWifi {
 			} meta;
 
 			struct Data {
-				std::string gw_uuid;
 				std::string fetch_status = "success";
+				std::string gw_uuid;
 				uint64_t offline_count = 0;
 
 				void to_json(Poco::JSON::Object &Obj) const;

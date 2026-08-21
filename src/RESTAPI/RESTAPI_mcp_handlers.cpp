@@ -55,6 +55,8 @@ namespace OpenWifi {
 		std::vector<uint64_t> memoryFreeSamples;
 		std::optional<uint64_t> earliestTime;
 		std::optional<uint64_t> latestTime;
+		std::optional<uint64_t> latestSampleTime;
+		std::optional<uint64_t> latestMemfreeVal;
 
 		for (const auto &rec : recs) {
 			if (rec.resource_data.memory_free.has_value()) {
@@ -72,26 +74,31 @@ namespace OpenWifi {
 				if (!latestTime.has_value() || rec.timestamp > latestTime.value()) {
 					latestTime = rec.timestamp;
 				}
+				if (!latestSampleTime.has_value() || rec.timestamp >= latestSampleTime.value()) {
+					latestSampleTime = rec.timestamp;
+					latestMemfreeVal = freeVal;
+				}
 			}
 		}
 
 		AnalyticsObjects::MCPGatewayMemorySummary resp;
-		resp.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
-		resp.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
+		resp.meta.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
+		resp.meta.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
 
 		if (!memoryFreeSamples.empty()) {
 			uint64_t minVal = *std::min_element(memoryFreeSamples.begin(), memoryFreeSamples.end());
 			uint64_t maxVal = *std::max_element(memoryFreeSamples.begin(), memoryFreeSamples.end());
 			double sumVal = 0.0;
 			for (auto v : memoryFreeSamples)
-				sumVal += v;
-			double avgVal = sumVal / static_cast<double>(memoryFreeSamples.size());
+				sumVal += static_cast<double>(v);
+			uint64_t avgVal = static_cast<uint64_t>(std::llround(sumVal / static_cast<double>(memoryFreeSamples.size())));
 
-			resp.min_memfree = minVal;
-			resp.max_memfree = maxVal;
-			resp.avg_memfree = avgVal;
-			resp.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
-			resp.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
+			resp.data.min_memfree = minVal;
+			resp.data.max_memfree = maxVal;
+			resp.data.avg_memfree = avgVal;
+			resp.data.latest_memfree = latestMemfreeVal;
+			resp.meta.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
+			resp.meta.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
 		}
 
 		ReturnObject(resp);
@@ -112,6 +119,11 @@ namespace OpenWifi {
 		std::vector<double> temps5G;
 		std::optional<uint64_t> earliestTime;
 		std::optional<uint64_t> latestTime;
+
+		std::optional<uint64_t> latest24GTime;
+		std::optional<double> latest24GVal;
+		std::optional<uint64_t> latest5GTime;
+		std::optional<double> latest5GVal;
 
 		for (const auto &rec : recs) {
 			for (const auto &radio : rec.radio_data) {
@@ -136,9 +148,17 @@ namespace OpenWifi {
 
 				if (radio.band == 2) {
 					temps24G.push_back(dTemp);
+					if (!latest24GTime.has_value() || rec.timestamp >= latest24GTime.value()) {
+						latest24GTime = rec.timestamp;
+						latest24GVal = dTemp;
+					}
 					sampleUsed = true;
 				} else if (radio.band == 5) {
 					temps5G.push_back(dTemp);
+					if (!latest5GTime.has_value() || rec.timestamp >= latest5GTime.value()) {
+						latest5GTime = rec.timestamp;
+						latest5GVal = dTemp;
+					}
 					sampleUsed = true;
 				}
 
@@ -154,30 +174,34 @@ namespace OpenWifi {
 		}
 
 		AnalyticsObjects::MCPRadioTempSummary resp;
-		resp.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
-		resp.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
+		resp.meta.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
+		resp.meta.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
 
 		if (!temps24G.empty()) {
-			resp.min_wifi_temp_2_4G = *std::min_element(temps24G.begin(), temps24G.end());
-			resp.max_wifi_temp_2_4G = *std::max_element(temps24G.begin(), temps24G.end());
+			resp.data.min_wifi_temp_2_4G = *std::min_element(temps24G.begin(), temps24G.end());
+			resp.data.max_wifi_temp_2_4G = *std::max_element(temps24G.begin(), temps24G.end());
 			double sum = 0.0;
 			for (double t : temps24G)
 				sum += t;
-			resp.avg_wifi_temp_2_4G = sum / static_cast<double>(temps24G.size());
+			double avg = sum / static_cast<double>(temps24G.size());
+			resp.data.avg_wifi_temp_2_4G = std::round(avg * 100.0) / 100.0;
+			resp.data.latest_wifi_temp_2_4G = latest24GVal;
 		}
 
 		if (!temps5G.empty()) {
-			resp.min_wifi_temp_5G = *std::min_element(temps5G.begin(), temps5G.end());
-			resp.max_wifi_temp_5G = *std::max_element(temps5G.begin(), temps5G.end());
+			resp.data.min_wifi_temp_5G = *std::min_element(temps5G.begin(), temps5G.end());
+			resp.data.max_wifi_temp_5G = *std::max_element(temps5G.begin(), temps5G.end());
 			double sum = 0.0;
 			for (double t : temps5G)
 				sum += t;
-			resp.avg_wifi_temp_5G = sum / static_cast<double>(temps5G.size());
+			double avg = sum / static_cast<double>(temps5G.size());
+			resp.data.avg_wifi_temp_5G = std::round(avg * 100.0) / 100.0;
+			resp.data.latest_wifi_temp_5G = latest5GVal;
 		}
 
 		if (earliestTime.has_value()) {
-			resp.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
-			resp.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
+			resp.meta.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
+			resp.meta.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
 		}
 
 		ReturnObject(resp);
@@ -292,21 +316,21 @@ namespace OpenWifi {
 				  });
 
 		AnalyticsObjects::MCPClientUsageSummary resp;
-		resp.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
-		resp.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
+		resp.meta.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
+		resp.meta.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
 
-		resp.totalClients = items.size();
-		resp.truncated = resp.totalClients > 500;
+		resp.data.totalClients = items.size();
+		resp.data.truncated = resp.data.totalClients > 500;
 
 		if (items.size() > 500) {
 			items.resize(500);
 		}
-		resp.items = items;
+		resp.data.items = items;
 
 		// Calculate observedWindow strictly from samples contributing to truncated items
 		std::optional<uint64_t> earliestTime;
 		std::optional<uint64_t> latestTime;
-		for (const auto &item : resp.items) {
+		for (const auto &item : resp.data.items) {
 			auto it = clientSamples.find(item.mac);
 			if (it != clientSamples.end()) {
 				for (const auto &s : it->second) {
@@ -321,8 +345,8 @@ namespace OpenWifi {
 		}
 
 		if (earliestTime.has_value()) {
-			resp.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
-			resp.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
+			resp.meta.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
+			resp.meta.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
 		}
 
 		ReturnObject(resp);
@@ -391,21 +415,21 @@ namespace OpenWifi {
 					 const AnalyticsObjects::MCPClientRssiItem &b) { return a.mac < b.mac; });
 
 		AnalyticsObjects::MCPClientRssiSummary resp;
-		resp.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
-		resp.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
+		resp.meta.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
+		resp.meta.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
 
-		resp.totalClients = items.size();
-		resp.truncated = resp.totalClients > 500;
+		resp.data.totalClients = items.size();
+		resp.data.truncated = resp.data.totalClients > 500;
 
 		if (items.size() > 500) {
 			items.resize(500);
 		}
-		resp.items = items;
+		resp.data.items = items;
 
 		// Calculate observedWindow strictly from samples contributing to truncated items
 		std::optional<uint64_t> earliestTime;
 		std::optional<uint64_t> latestTime;
-		for (const auto &item : resp.items) {
+		for (const auto &item : resp.data.items) {
 			auto it = clientRssi.find(item.mac);
 			if (it != clientRssi.end()) {
 				for (const auto &s : it->second) {
@@ -420,8 +444,8 @@ namespace OpenWifi {
 		}
 
 		if (earliestTime.has_value()) {
-			resp.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
-			resp.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
+			resp.meta.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
+			resp.meta.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
 		}
 
 		ReturnObject(resp);
@@ -450,8 +474,8 @@ namespace OpenWifi {
 		}
 
 		resp.meta.offlineEventCount = offlineCount;
-		resp.data.gw_uuid = req.routerId;
 		resp.data.fetch_status = "success";
+		resp.data.gw_uuid = req.routerId;
 		resp.data.offline_count = offlineCount;
 
 		ReturnObject(resp);
