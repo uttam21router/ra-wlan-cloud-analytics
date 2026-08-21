@@ -161,32 +161,5 @@ target_link_libraries(owanalytics PUBLIC
                         ${ZLIB_LIBRARIES}
                         fmt::fmt
                         resolv
-                        CppKafka::cppkafka
-)
-
-add_executable(test_mcp_apis
-        src/test_mcp_apis.cpp
-        src/RESTAPI/RESTAPI_mcp_helpers.cpp
-        src/test_stubs.cpp
-        src/framework/SubSystemServer.cpp
-        src/framework/utils.cpp
-        src/framework/OpenAPIRequests.cpp
-        src/StorageService.cpp
-        src/storage/storage_boards.cpp
-        src/storage/storage_timepoints.cpp
-        src/storage/storage_wificlients.cpp
-        src/storage/storage_availability.cpp
-        src/RESTObjects/RESTAPI_AnalyticsObjects.cpp
-        src/RESTObjects/RESTAPI_SecurityObjects.cpp
-        src/RESTObjects/RESTAPI_ProvObjects.cpp
-        src/RouterIdResolver.cpp
-        src/sdks/SDK_prov.cpp
-)
-
-target_link_libraries(test_mcp_apis PUBLIC
-                        ${Poco_LIBRARIES}
-                        ${MySQL_LIBRARIES}
-                        ${ZLIB_LIBRARIES}
-                        fmt::fmt
-                        resolv
+                         CppKafka::cppkafka
 )
