@@ -201,8 +201,6 @@ namespace OpenWifi {
 		};
 
 		std::map<std::string, std::vector<ClientSample>> clientSamples;
-		std::optional<uint64_t> earliestTime;
-		std::optional<uint64_t> latestTime;
 
 		for (const auto &rec : recs) {
 			for (const auto &ssid : rec.ssid_data) {
@@ -212,12 +210,6 @@ namespace OpenWifi {
 					std::string mac = NormalizeMac(assoc.station);
 					clientSamples[mac].push_back(
 						ClientSample{rec.timestamp, assoc.rx_bytes, assoc.tx_bytes});
-					if (!earliestTime.has_value() || rec.timestamp < earliestTime.value()) {
-						earliestTime = rec.timestamp;
-					}
-					if (!latestTime.has_value() || rec.timestamp > latestTime.value()) {
-						latestTime = rec.timestamp;
-					}
 				}
 			}
 		}
@@ -303,11 +295,6 @@ namespace OpenWifi {
 		resp.requestedWindow.startTime = MCP::FormatRFC3339UTC(req.startTimeEpoch);
 		resp.requestedWindow.endTime = MCP::FormatRFC3339UTC(req.endTimeEpoch);
 
-		if (earliestTime.has_value()) {
-			resp.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
-			resp.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
-		}
-
 		resp.totalClients = items.size();
 		resp.truncated = resp.totalClients > 500;
 
@@ -315,6 +302,28 @@ namespace OpenWifi {
 			items.resize(500);
 		}
 		resp.items = items;
+
+		// Calculate observedWindow strictly from samples contributing to truncated items
+		std::optional<uint64_t> earliestTime;
+		std::optional<uint64_t> latestTime;
+		for (const auto &item : resp.items) {
+			auto it = clientSamples.find(item.mac);
+			if (it != clientSamples.end()) {
+				for (const auto &s : it->second) {
+					if (!earliestTime.has_value() || s.timestamp < earliestTime.value()) {
+						earliestTime = s.timestamp;
+					}
+					if (!latestTime.has_value() || s.timestamp > latestTime.value()) {
+						latestTime = s.timestamp;
+					}
+				}
+			}
+		}
+
+		if (earliestTime.has_value()) {
+			resp.observedWindow.startTime = MCP::FormatRFC3339UTC(earliestTime.value());
+			resp.observedWindow.endTime = MCP::FormatRFC3339UTC(latestTime.value());
+		}
 
 		ReturnObject(resp);
 	}

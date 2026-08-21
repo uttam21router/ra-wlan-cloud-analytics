@@ -81,12 +81,25 @@ namespace OpenWifi {
 		uint64_t nowSec = Utils::Now();
 		uint64_t currentVersion = 0;
 
+		std::string userScope = "__system__";
+		if (client != nullptr) {
+			if (!client->UserInfo_.userinfo.id.empty()) {
+				userScope = client->UserInfo_.userinfo.id;
+			} else if (!client->UserInfo_.webtoken.username_.empty()) {
+				userScope = client->UserInfo_.webtoken.username_;
+			} else if (!client->UserInfo_.webtoken.access_token_.empty()) {
+				userScope = client->UserInfo_.webtoken.access_token_;
+			}
+		}
+
+		std::string cacheKey = userScope + ":" + routerId;
+
 		{
 			std::lock_guard G(Mutex_);
 			currentVersion = OwnershipVersion_;
 			CleanExpiredCache(nowSec);
 
-			auto it = Cache_.find(routerId);
+			auto it = Cache_.find(cacheKey);
 			if (it != Cache_.end() && it->second.expiresAt > nowSec &&
 				it->second.result.ownershipVersion == currentVersion) {
 				it->second.accessTime = nowSec;
@@ -127,7 +140,7 @@ namespace OpenWifi {
 			res.ownershipVersion = currentVersion;
 
 			std::lock_guard G(Mutex_);
-			Cache_[routerId] = CacheEntry{res, nowSec + POSITIVE_TTL_SEC, nowSec};
+			Cache_[cacheKey] = CacheEntry{res, nowSec + POSITIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
 		} else if (matchingBoards.size() > 1) {
@@ -137,7 +150,7 @@ namespace OpenWifi {
 			res.ownershipVersion = currentVersion;
 
 			std::lock_guard G(Mutex_);
-			Cache_[routerId] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
+			Cache_[cacheKey] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
 		}
@@ -153,7 +166,7 @@ namespace OpenWifi {
 			res.ownershipVersion = currentVersion;
 
 			std::lock_guard G(Mutex_);
-			Cache_[routerId] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
+			Cache_[cacheKey] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
 		} else if (httpStatus != Poco::Net::HTTPResponse::HTTP_OK) {
@@ -169,7 +182,7 @@ namespace OpenWifi {
 			res.ownershipVersion = currentVersion;
 
 			std::lock_guard G(Mutex_);
-			Cache_[routerId] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
+			Cache_[cacheKey] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
 		}
@@ -196,7 +209,7 @@ namespace OpenWifi {
 			res.ownershipVersion = currentVersion;
 
 			std::lock_guard G(Mutex_);
-			Cache_[routerId] = CacheEntry{res, nowSec + POSITIVE_TTL_SEC, nowSec};
+			Cache_[cacheKey] = CacheEntry{res, nowSec + POSITIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
 		} else if (venueBoards.size() > 1) {
@@ -206,7 +219,7 @@ namespace OpenWifi {
 			res.ownershipVersion = currentVersion;
 
 			std::lock_guard G(Mutex_);
-			Cache_[routerId] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
+			Cache_[cacheKey] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
 		}
@@ -217,7 +230,7 @@ namespace OpenWifi {
 		res.ownershipVersion = currentVersion;
 
 		std::lock_guard G(Mutex_);
-		Cache_[routerId] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
+		Cache_[cacheKey] = CacheEntry{res, nowSec + NEGATIVE_TTL_SEC, nowSec};
 		EnforceMaxCacheSize();
 		return res;
 	}

@@ -4,6 +4,7 @@
 
 #include "AvailabilityProcessor.h"
 #include "RouterIdResolver.h"
+#include "VenueCoordinator.h"
 #include "StorageService.h"
 #include "fmt/format.h"
 #include "framework/KafkaManager.h"
@@ -91,13 +92,20 @@ namespace OpenWifi {
 					}
 
 					if (!eventType.empty() && !serialNumber.empty()) {
-						// Resolve board_id from current VenueCoordinator / RouterIdResolver mapping
-						auto res = RouterIdResolverService()->ResolveRouterIdContext(nullptr, serialNumber);
-						if (res.status != RouterIdResolutionStatus::Success || res.resolvedBoardId.empty()) {
+						// Primary internal resolution via VenueCoordinator
+						std::string boardId;
+						if (!VenueCoordinator()->FindBoardForDevice(serialNumber, boardId) || boardId.empty()) {
+							// Fallback to RouterIdResolver
+							auto res = RouterIdResolverService()->ResolveRouterIdContext(nullptr, serialNumber);
+							if (res.status == RouterIdResolutionStatus::Success && !res.resolvedBoardId.empty()) {
+								boardId = res.resolvedBoardId;
+							}
+						}
+
+						if (boardId.empty()) {
 							poco_warning(Logger(), fmt::format("Skipping availability processing for router {}: board resolution failed", serialNumber));
 							continue;
 						}
-						std::string boardId = res.resolvedBoardId;
 
 						// Load existing availability state
 						DeviceAvailabilityState currentState;
@@ -114,7 +122,10 @@ namespace OpenWifi {
 							newState.last_event_time = eventTime;
 							newState.updated_at = nowSec;
 
-							StorageService()->AvailabilityStateDB().UpdateState(newState);
+							if (!StorageService()->AvailabilityStateDB().UpdateState(newState)) {
+								poco_error(Logger(), fmt::format("Failed to persist initial availability state for router {}", serialNumber));
+								continue;
+							}
 						} else {
 							// Check event time ordering
 							if (eventTime > currentState.last_event_time) {
@@ -140,14 +151,20 @@ namespace OpenWifi {
 									nextState.last_event_time = eventTime;
 									nextState.updated_at = nowSec;
 
-									StorageService()->AvailabilityEventsDB().RecordTransitionAndState(eventRow, nextState);
+									if (!StorageService()->AvailabilityEventsDB().RecordTransitionAndState(eventRow, nextState)) {
+										poco_error(Logger(), fmt::format("Failed to record availability transition for router {}", serialNumber));
+										continue;
+									}
 								} else {
 									// Update last event time and board_id if state didn't change
 									currentState.board_id = boardId;
 									currentState.last_event_time = eventTime;
 									currentState.updated_at = nowSec;
 
-									StorageService()->AvailabilityStateDB().UpdateState(currentState);
+									if (!StorageService()->AvailabilityStateDB().UpdateState(currentState)) {
+										poco_error(Logger(), fmt::format("Failed to update availability state for router {}", serialNumber));
+										continue;
+									}
 								}
 							}
 							// If eventTime <= last_event_time, ignore stale/duplicate event

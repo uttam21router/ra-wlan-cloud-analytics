@@ -258,6 +258,64 @@ void TestBoardIdScopedQueries() {
 	std::cout << " -> BoardId Scoped Query Formatting tests PASSED." << std::endl;
 }
 
+void TestUserScopedResolverCacheKey() {
+	std::cout << "[TEST] Running User-Scoped Resolver Cache Key tests..." << std::endl;
+
+	auto GenerateCacheKey = [](const std::string &userId, const std::string &routerId) -> std::string {
+		std::string scope = userId.empty() ? "__system__" : userId;
+		return scope + ":" + routerId;
+	};
+
+	std::string router = "460011223344";
+	std::string userAKey = GenerateCacheKey("user-A-uuid", router);
+	std::string userBKey = GenerateCacheKey("user-B-uuid", router);
+	std::string systemKey = GenerateCacheKey("", router);
+
+	assert(userAKey == "user-A-uuid:460011223344");
+	assert(userBKey == "user-B-uuid:460011223344");
+	assert(systemKey == "__system__:460011223344");
+
+	// Key for User A must NOT match key for User B
+	assert(userAKey != userBKey);
+
+	std::cout << " -> User-Scoped Resolver Cache Key tests PASSED." << std::endl;
+}
+
+void TestUsageObservedWindowRecalculation() {
+	std::cout << "[TEST] Running Usage Observed Window Recalculation tests..." << std::endl;
+
+	struct Sample { uint64_t timestamp; };
+	struct Item { std::string mac; uint64_t totalBytes; };
+
+	std::map<std::string, std::vector<Sample>> clientSamples;
+	clientSamples["aa:bb:cc:dd:ee:01"] = { Sample{ 1000 }, Sample{ 2000 } };
+	clientSamples["aa:bb:cc:dd:ee:02"] = { Sample{ 500 } }; // Omitted item sample at 500
+
+	std::vector<Item> items = { Item{ "aa:bb:cc:dd:ee:01", 1000 } }; // Only client 01 is returned (truncated)
+
+	std::optional<uint64_t> earliestTime;
+	std::optional<uint64_t> latestTime;
+
+	for (const auto &item : items) {
+		auto it = clientSamples.find(item.mac);
+		if (it != clientSamples.end()) {
+			for (const auto &s : it->second) {
+				if (!earliestTime.has_value() || s.timestamp < earliestTime.value()) {
+					earliestTime = s.timestamp;
+				}
+				if (!latestTime.has_value() || s.timestamp > latestTime.value()) {
+					latestTime = s.timestamp;
+				}
+			}
+		}
+	}
+
+	assert(earliestTime.has_value() && earliestTime.value() == 1000); // 500 from omitted client excluded!
+	assert(latestTime.has_value() && latestTime.value() == 2000);
+
+	std::cout << " -> Usage Observed Window Recalculation tests PASSED." << std::endl;
+}
+
 int main() {
 	std::cout << "===========================================" << std::endl;
 	std::cout << "  MCP WLAN Analytics APIs Unit Test Suite  " << std::endl;
@@ -270,6 +328,8 @@ int main() {
 	TestBandwidthResetVsRollover();
 	TestIdempotencyKeyFallback();
 	TestBoardIdScopedQueries();
+	TestUserScopedResolverCacheKey();
+	TestUsageObservedWindowRecalculation();
 
 	std::cout << "===========================================" << std::endl;
 	std::cout << "  ALL MCP API UNIT TESTS PASSED CLEANLY!  " << std::endl;

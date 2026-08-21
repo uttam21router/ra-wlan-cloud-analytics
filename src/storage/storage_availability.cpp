@@ -188,6 +188,18 @@ namespace OpenWifi {
 			Poco::Data::Session Session = Pool_.get();
 			Poco::Data::Transaction Tx(Session);
 
+			// Check if idempotency key already exists (already processed)
+			std::string checkSt = "select id from device_availability_events where idempotency_key=? limit 1";
+			Poco::Data::Statement Check(Session);
+			std::string existingId;
+			auto keyCopy = event.idempotency_key;
+			Check << ConvertParams(checkSt), Poco::Data::Keywords::into(existingId), Poco::Data::Keywords::use(keyCopy);
+			if (Check.execute() == 1) {
+				// Already processed! Idempotent no-op success.
+				Tx.commit();
+				return true;
+			}
+
 			// 1. Insert transition event into device_availability_events table
 			Poco::Data::Statement Insert(Session);
 			DeviceAvailabilityEventRecordType RT;

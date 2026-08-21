@@ -296,7 +296,26 @@ namespace OpenWifi::MCP {
 		outReq.resolvedVenueId = resolution.venueId;
 
 		// Phase 3 — Monitoring Duration, Retention & Cutover Validation
-		outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
+		AnalyticsObjects::BoardInfo boardInfo;
+		if (StorageService()->BoardsDB().GetRecord("id", outReq.resolvedBoardId, boardInfo)) {
+			outReq.monitoringEnabledAt = boardInfo.info.created;
+			uint64_t effectiveRetention = 0;
+			for (const auto &venue : boardInfo.venueList) {
+				if (venue.id == outReq.resolvedVenueId || outReq.resolvedVenueId.empty()) {
+					if (venue.retention > 0) {
+						effectiveRetention = venue.retention;
+						break;
+					}
+				}
+			}
+			if (effectiveRetention > 0) {
+				outReq.monitoringDuration = effectiveRetention;
+			} else {
+				outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
+			}
+		} else {
+			outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
+		}
 		uint64_t maxLookbackHours = outReq.monitoringDuration / 3600;
 		if (lookbackHours > maxLookbackHours) {
 			SendMCPError(handler, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
