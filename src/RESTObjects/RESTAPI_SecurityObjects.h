@@ -8,8 +8,12 @@
 
 #pragma once
 
+#if __has_include("Poco/Data/LOB.h")
 #include "Poco/Data/LOB.h"
 #include "Poco/Data/LOBStream.h"
+#else
+namespace Poco { namespace Data { using BLOB = std::string; } }
+#endif
 #include "Poco/JSON/Object.h"
 #include "framework/OpenWifiTypes.h"
 #include "framework/utils.h"

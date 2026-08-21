@@ -1,15 +1,16 @@
-//
-// Comprehensive Unit Test Suite for MCP WLAN Analytics APIs
-//
-
 #include <cassert>
+#include <cstdint>
 #include <ctime>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <regex>
 #include <string>
 #include <vector>
 
+#if __has_include("Poco/JSON/Object.h")
+#include "RESTAPI/RESTAPI_mcp_helpers.h"
+#else
 namespace OpenWifi {
 	namespace AnalyticsObjects {
 		struct DeviceResourceTimePoint {
@@ -22,67 +23,84 @@ namespace OpenWifi {
 			DeviceResourceTimePoint resource_data;
 		};
 	}
+
+	namespace MCP {
+		inline bool ParseRFC3339UTC(const std::string &str, uint64_t &epochSeconds) {
+			if (str.empty() || str.back() != 'Z')
+				return false;
+
+			if (str.find('+') != std::string::npos || (str.find('-') != std::string::npos && str.rfind('-') > 7)) {
+				size_t lastHyphen = str.rfind('-');
+				if (lastHyphen > 7) return false;
+			}
+
+			static const std::regex pattern(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$)");
+			if (!std::regex_match(str, pattern))
+				return false;
+
+			std::tm tm_buf{};
+			int year = 0, month = 0, day = 0, hour = 0, min = 0, sec = 0;
+			if (sscanf(str.c_str(), "%4d-%2d-%2dT%2d:%2d:%2dZ", &year, &month, &day, &hour, &min, &sec) != 6) {
+				return false;
+			}
+
+			if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || min < 0 ||
+				min > 59 || sec < 0 || sec > 59) {
+				return false;
+			}
+
+			tm_buf.tm_year = year - 1900;
+			tm_buf.tm_mon = month - 1;
+			tm_buf.tm_mday = day;
+			tm_buf.tm_hour = hour;
+			tm_buf.tm_min = min;
+			tm_buf.tm_sec = sec;
+			tm_buf.tm_isdst = 0;
+
+			std::time_t t = timegm(&tm_buf);
+			if (t == -1)
+				return false;
+
+			if (tm_buf.tm_year != (year - 1900) || tm_buf.tm_mon != (month - 1) ||
+				tm_buf.tm_mday != day || tm_buf.tm_hour != hour || tm_buf.tm_min != min ||
+				tm_buf.tm_sec != sec) {
+				return false;
+			}
+
+			epochSeconds = static_cast<uint64_t>(t);
+			return true;
+		}
+	}
 }
+#endif
 
 using namespace OpenWifi;
 
-namespace {
-bool ParseRFC3339UTCForTest(const std::string &str, uint64_t &epochSeconds) {
-	if (str.empty() || str.back() != 'Z')
-		return false;
-
-	if (str.find('+') != std::string::npos || (str.find('-') != std::string::npos && str.rfind('-') > 7)) {
-		size_t lastHyphen = str.rfind('-');
-		if (lastHyphen > 7) return false;
-	}
-
-	static const std::regex pattern(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$)");
-	if (!std::regex_match(str, pattern))
-		return false;
-
-	std::tm tm_buf{};
-	int year = 0, month = 0, day = 0, hour = 0, min = 0, sec = 0;
-	if (sscanf(str.c_str(), "%4d-%2d-%2dT%2d:%2d:%2dZ", &year, &month, &day, &hour, &min, &sec) != 6)
-		return false;
-
-	if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || min < 0 ||
-		min > 59 || sec < 0 || sec > 59)
-		return false;
-
-	tm_buf.tm_year = year - 1900;
-	tm_buf.tm_mon = month - 1;
-	tm_buf.tm_mday = day;
-	tm_buf.tm_hour = hour;
-	tm_buf.tm_min = min;
-	tm_buf.tm_sec = sec;
-	tm_buf.tm_isdst = 0;
-
-	std::time_t t = timegm(&tm_buf);
-	if (t == -1)
-		return false;
-
-	epochSeconds = static_cast<uint64_t>(t);
-	return true;
-}
-}
-
 void TestRFC3339Parsing() {
-	std::cout << "[TEST] Running RFC3339 Parsing tests..." << std::endl;
+	std::cout << "[TEST] Running RFC3339 Parsing tests (Production Code)..." << std::endl;
 	uint64_t epoch = 0;
 
 	// Valid UTC Z format
-	assert(ParseRFC3339UTCForTest("2026-07-27T12:00:00Z", epoch) == true);
+	assert(MCP::ParseRFC3339UTC("2026-07-27T12:00:00Z", epoch) == true);
 	assert(epoch == 1785153600ULL);
 
 	// Reject numeric timezone offsets
-	assert(ParseRFC3339UTCForTest("2026-07-27T12:00:00+05:30", epoch) == false);
-	assert(ParseRFC3339UTCForTest("2026-07-27T12:00:00-08:00", epoch) == false);
+	assert(MCP::ParseRFC3339UTC("2026-07-27T12:00:00+05:30", epoch) == false);
+	assert(MCP::ParseRFC3339UTC("2026-07-27T12:00:00-08:00", epoch) == false);
 
 	// Reject missing timezone
-	assert(ParseRFC3339UTCForTest("2026-07-27T12:00:00", epoch) == false);
+	assert(MCP::ParseRFC3339UTC("2026-07-27T12:00:00", epoch) == false);
 
-	// Reject invalid dates
-	assert(ParseRFC3339UTCForTest("2026-99-99T88:77:66Z", epoch) == false);
+	// Reject out-of-range months/days
+	assert(MCP::ParseRFC3339UTC("2026-99-99T88:77:66Z", epoch) == false);
+
+	// Reject calendar-invalid dates (e.g. Feb 31, non-leap Feb 29)
+	assert(MCP::ParseRFC3339UTC("2026-02-31T12:00:00Z", epoch) == false);
+	assert(MCP::ParseRFC3339UTC("2025-02-29T12:00:00Z", epoch) == false);
+	assert(MCP::ParseRFC3339UTC("2026-04-31T12:00:00Z", epoch) == false);
+
+	// Accept valid leap year Feb 29
+	assert(MCP::ParseRFC3339UTC("2024-02-29T12:00:00Z", epoch) == true);
 
 	std::cout << " -> RFC3339 Parsing tests PASSED." << std::endl;
 }
@@ -316,6 +334,21 @@ void TestUsageObservedWindowRecalculation() {
 	std::cout << " -> Usage Observed Window Recalculation tests PASSED." << std::endl;
 }
 
+void TestLookbackOverflow() {
+	std::cout << "[TEST] Running Lookback Multiplication Overflow tests..." << std::endl;
+
+	auto CheckLookbackOverflow = [](uint64_t lookbackHours) -> bool {
+		return lookbackHours > (UINT64_MAX / 3600);
+	};
+
+	assert(CheckLookbackOverflow(100) == false);
+	assert(CheckLookbackOverflow(8760) == false); // 1 year
+	assert(CheckLookbackOverflow(UINT64_MAX) == true);
+	assert(CheckLookbackOverflow((UINT64_MAX / 3600) + 1) == true);
+
+	std::cout << " -> Lookback Multiplication Overflow tests PASSED." << std::endl;
+}
+
 int main() {
 	std::cout << "===========================================" << std::endl;
 	std::cout << "  MCP WLAN Analytics APIs Unit Test Suite  " << std::endl;
@@ -330,6 +363,7 @@ int main() {
 	TestBoardIdScopedQueries();
 	TestUserScopedResolverCacheKey();
 	TestUsageObservedWindowRecalculation();
+	TestLookbackOverflow();
 
 	std::cout << "===========================================" << std::endl;
 	std::cout << "  ALL MCP API UNIT TESTS PASSED CLEANLY!  " << std::endl;

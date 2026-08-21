@@ -78,6 +78,13 @@ namespace OpenWifi::MCP {
 		if (t == -1)
 			return false;
 
+		// Calendar round-trip validation to reject invalid dates normalized by timegm (e.g. 2026-02-31 or 2025-02-29)
+		if (tm_buf.tm_year != (year - 1900) || tm_buf.tm_mon != (month - 1) ||
+			tm_buf.tm_mday != day || tm_buf.tm_hour != hour || tm_buf.tm_min != min ||
+			tm_buf.tm_sec != sec) {
+			return false;
+		}
+
 		epochSeconds = static_cast<uint64_t>(t);
 		return true;
 	}
@@ -252,6 +259,12 @@ namespace OpenWifi::MCP {
 		outReq.lookbackHours = lookbackHours;
 
 		// Checked epoch calculation
+		if (lookbackHours > UINT64_MAX / 3600) {
+			SendMCPError(handler, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
+						 "invalid_lookback_hours",
+						 "lookbackHours value causes integer overflow");
+			return false;
+		}
 		uint64_t secondsToLookback = lookbackHours * 3600;
 		if (endTimeEpoch < secondsToLookback) {
 			SendMCPError(handler, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST, "invalid_timestamp",
@@ -298,7 +311,7 @@ namespace OpenWifi::MCP {
 		// Phase 3 — Monitoring Duration, Retention & Cutover Validation
 		AnalyticsObjects::BoardInfo boardInfo;
 		if (StorageService()->BoardsDB().GetRecord("id", outReq.resolvedBoardId, boardInfo)) {
-			outReq.monitoringEnabledAt = boardInfo.info.created;
+			outReq.monitoringEnabledAt = (boardInfo.info.created > 0) ? boardInfo.info.created : boardInfo.info.modified;
 			uint64_t effectiveRetention = 0;
 			for (const auto &venue : boardInfo.venueList) {
 				if (venue.id == outReq.resolvedVenueId || outReq.resolvedVenueId.empty()) {

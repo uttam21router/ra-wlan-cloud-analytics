@@ -207,16 +207,23 @@ namespace OpenWifi {
 		}
 	}
 
-	bool VenueCoordinator::FindBoardForDevice(const std::string &serialNumber, std::string &boardId) {
+	DeviceBoardLookupStatus VenueCoordinator::FindBoardForDevice(const std::string &serialNumber, std::string &boardId) {
 		std::lock_guard G(Mutex_);
 		uint64_t routerInt = Utils::SerialNumberToInt(serialNumber);
+		std::vector<std::string> matches;
 		for (const auto &[bId, devices] : ExistingBoards_) {
 			if (std::binary_search(devices.begin(), devices.end(), routerInt) ||
 				std::find(devices.begin(), devices.end(), routerInt) != devices.end()) {
-				boardId = bId;
-				return true;
+				matches.push_back(bId);
 			}
 		}
-		return false;
+
+		if (matches.size() == 1) {
+			boardId = matches[0];
+			return DeviceBoardLookupStatus::Success;
+		} else if (matches.size() > 1) {
+			return DeviceBoardLookupStatus::MultipleBoards;
+		}
+		return DeviceBoardLookupStatus::NotFound;
 	}
 } // namespace OpenWifi

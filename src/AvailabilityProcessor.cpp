@@ -92,18 +92,15 @@ namespace OpenWifi {
 					}
 
 					if (!eventType.empty() && !serialNumber.empty()) {
-						// Primary internal resolution via VenueCoordinator
+						// Service-authenticated internal resolution via VenueCoordinator
 						std::string boardId;
-						if (!VenueCoordinator()->FindBoardForDevice(serialNumber, boardId) || boardId.empty()) {
-							// Fallback to RouterIdResolver
-							auto res = RouterIdResolverService()->ResolveRouterIdContext(nullptr, serialNumber);
-							if (res.status == RouterIdResolutionStatus::Success && !res.resolvedBoardId.empty()) {
-								boardId = res.resolvedBoardId;
-							}
-						}
+						auto status = VenueCoordinator()->FindBoardForDevice(serialNumber, boardId);
 
-						if (boardId.empty()) {
-							poco_warning(Logger(), fmt::format("Skipping availability processing for router {}: board resolution failed", serialNumber));
+						if (status == DeviceBoardLookupStatus::MultipleBoards) {
+							poco_warning(Logger(), fmt::format("Skipping availability processing for router {}: ambiguous board mapping (multiple boards)", serialNumber));
+							continue;
+						} else if (status != DeviceBoardLookupStatus::Success || boardId.empty()) {
+							poco_warning(Logger(), fmt::format("Skipping availability processing for router {}: board resolution failed in VenueCoordinator mapping", serialNumber));
 							continue;
 						}
 
