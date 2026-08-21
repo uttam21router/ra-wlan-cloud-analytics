@@ -1446,7 +1446,9 @@ components:
     ClientRssiQuality:
       type: object
       description: >
-        Per-client RSSI quality percentages calculated from valid RSSI samples (-127 <= RSSI < 0).
+        Per-client RSSI quality percentages calculated from valid RSSI samples only (-127 <= RSSI < 0). RSSI
+        categories use dBm thresholds: excellent is RSSI >= -55, good is -67 <= RSSI < -55,
+        fair is -75 <= RSSI < -67, and poor is RSSI < -75.
       required:
         - mac
         - rssi_excellent_pct
@@ -1460,17 +1462,32 @@ components:
         rssi_excellent_pct:
           type: number
           format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where RSSI >= -55 dBm.
         rssi_good_pct:
           type: number
           format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where -67 dBm <= RSSI < -55 dBm.
         rssi_fair_pct:
           type: number
           format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where -75 dBm <= RSSI < -67 dBm.
         rssi_poor_pct:
           type: number
           format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where -127 dBm <= RSSI < -75 dBm.
         rssi_total_samples:
           type: integer
+          format: int64
+          minimum: 1
+          description: Number of valid RSSI samples used as denominator for percentages.
 
     ClientRssiQualityResponse:
       type: object

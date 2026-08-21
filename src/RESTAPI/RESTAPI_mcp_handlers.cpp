@@ -391,11 +391,11 @@ namespace OpenWifi {
 				continue;
 			uint64_t excellent = 0, good = 0, fair = 0, poor = 0;
 			for (const auto &s : samples) {
-				if (s.rssi >= -60)
+				if (s.rssi >= -55)
 					excellent++;
-				else if (s.rssi >= -70)
+				else if (s.rssi >= -67)
 					good++;
-				else if (s.rssi >= -80)
+				else if (s.rssi >= -75)
 					fair++;
 				else
 					poor++;

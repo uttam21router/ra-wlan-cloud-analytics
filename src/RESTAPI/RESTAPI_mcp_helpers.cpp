@@ -318,9 +318,6 @@ namespace OpenWifi::MCP {
 					break;
 				}
 			}
-			if (matchedVenue == nullptr && !boardInfo.venueList.empty()) {
-				matchedVenue = &boardInfo.venueList[0];
-			}
 
 			if (matchedVenue != nullptr && matchedVenue->retention > 0) {
 				outReq.monitoringDuration = matchedVenue->retention;
@@ -329,7 +326,6 @@ namespace OpenWifi::MCP {
 			}
 
 			// Effective monitoring start is the board creation timestamp (or 0 if unpopulated).
-			// Do NOT use boardInfo.info.modified as routine board edits would move monitoringEnabledAt forward.
 			outReq.monitoringEnabledAt = boardInfo.info.created;
 			outReq.monitoringConfigurationExpiry = UINT64_MAX;
 		} else {
