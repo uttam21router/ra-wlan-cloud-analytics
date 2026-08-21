@@ -155,6 +155,17 @@ namespace OpenWifi {
 		: DB(T, "device_availability_events", AvailabilityEvents_Fields, AvailabilityEvents_Indexes,
 			 P, L, "dae") {}
 
+	bool DeviceAvailabilityEventsDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
+		std::vector<std::string> Statements{};
+		Statements.push_back("DROP INDEX IF EXISTS avail_idempotency_idx;");
+		Statements.push_back("CREATE UNIQUE INDEX IF NOT EXISTS avail_idempotency_idx ON device_availability_events (idempotency_key);");
+		if (RunScript(Statements)) {
+			to = 1;
+			return true;
+		}
+		return false;
+	}
+
 	uint64_t DeviceAvailabilityEventsDB::GetOfflineEvents(const std::string &boardId,
 														  const std::string &serialNumber,
 														  uint64_t startTime, uint64_t endTime,
@@ -167,7 +178,7 @@ namespace OpenWifi {
 			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
 
 		std::vector<DeviceAvailabilityEvent> recs;
-		GetRecords(0, 100000, recs, whereClause, " ORDER BY event_time ASC ");
+		GetRecords(0, 0, recs, whereClause, " ORDER BY event_time ASC ");
 
 		if (recs.empty()) {
 			return 0;

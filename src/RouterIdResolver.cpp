@@ -38,7 +38,16 @@ namespace OpenWifi {
 		if (routerId.empty()) {
 			Cache_.clear();
 		} else {
-			Cache_.erase(routerId);
+			std::string suffix = ":" + routerId;
+			for (auto it = Cache_.begin(); it != Cache_.end();) {
+				if (it->first == routerId ||
+					(it->first.size() >= suffix.size() &&
+					 it->first.compare(it->first.size() - suffix.size(), suffix.size(), suffix) == 0)) {
+					it = Cache_.erase(it);
+				} else {
+					++it;
+				}
+			}
 		}
 	}
 
@@ -108,7 +117,11 @@ namespace OpenWifi {
 		}
 
 		// Search local boards DB
-		std::vector<AnalyticsObjects::BoardInfo> matchingBoards;
+		struct BoardMatch {
+			AnalyticsObjects::BoardInfo board;
+			std::string matchedVenueId;
+		};
+		std::vector<BoardMatch> rawMatches;
 		uint64_t routerInt = Utils::SerialNumberToInt(routerId);
 
 		auto FindInBoard = [&](const AnalyticsObjects::BoardInfo &B) -> bool {
@@ -119,7 +132,7 @@ namespace OpenWifi {
 												 venueExists)) {
 					for (const auto &dev : VDL.devices) {
 						if (Utils::SerialNumberToInt(dev) == routerInt || dev == routerId) {
-							matchingBoards.push_back(B);
+							rawMatches.push_back({B, venue.id});
 							break;
 						}
 					}
@@ -130,12 +143,19 @@ namespace OpenWifi {
 
 		StorageService()->BoardsDB().Iterate(FindInBoard);
 
-		if (matchingBoards.size() == 1) {
-			res.status = RouterIdResolutionStatus::Success;
-			res.resolvedBoardId = matchingBoards[0].info.id;
-			if (!matchingBoards[0].venueList.empty()) {
-				res.venueId = matchingBoards[0].venueList[0].id;
+		// Deduplicate matches by board.info.id
+		std::map<std::string, BoardMatch> uniqueBoardMatches;
+		for (const auto &m : rawMatches) {
+			if (uniqueBoardMatches.find(m.board.info.id) == uniqueBoardMatches.end()) {
+				uniqueBoardMatches[m.board.info.id] = m;
 			}
+		}
+
+		if (uniqueBoardMatches.size() == 1) {
+			auto match = uniqueBoardMatches.begin()->second;
+			res.status = RouterIdResolutionStatus::Success;
+			res.resolvedBoardId = match.board.info.id;
+			res.venueId = match.matchedVenueId;
 			res.resolvedAt = nowSec;
 			res.ownershipVersion = currentVersion;
 
@@ -143,7 +163,7 @@ namespace OpenWifi {
 			Cache_[cacheKey] = CacheEntry{res, nowSec + POSITIVE_TTL_SEC, nowSec};
 			EnforceMaxCacheSize();
 			return res;
-		} else if (matchingBoards.size() > 1) {
+		} else if (uniqueBoardMatches.size() > 1) {
 			res.status = RouterIdResolutionStatus::MultipleBoards;
 			res.message = "Router is mapped to multiple current boards";
 			res.resolvedAt = nowSec;

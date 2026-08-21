@@ -311,24 +311,38 @@ namespace OpenWifi::MCP {
 		// Phase 3 — Monitoring Duration, Retention & Cutover Validation
 		AnalyticsObjects::BoardInfo boardInfo;
 		if (StorageService()->BoardsDB().GetRecord("id", outReq.resolvedBoardId, boardInfo)) {
-			outReq.monitoringEnabledAt = (boardInfo.info.created > 0) ? boardInfo.info.created : boardInfo.info.modified;
-			uint64_t effectiveRetention = 0;
+			const AnalyticsObjects::VenueInfo *matchedVenue = nullptr;
 			for (const auto &venue : boardInfo.venueList) {
-				if (venue.id == outReq.resolvedVenueId || outReq.resolvedVenueId.empty()) {
-					if (venue.retention > 0) {
-						effectiveRetention = venue.retention;
-						break;
-					}
+				if (venue.id == outReq.resolvedVenueId) {
+					matchedVenue = &venue;
+					break;
 				}
 			}
-			if (effectiveRetention > 0) {
-				outReq.monitoringDuration = effectiveRetention;
+			if (matchedVenue == nullptr && !boardInfo.venueList.empty()) {
+				matchedVenue = &boardInfo.venueList[0];
+			}
+
+			if (matchedVenue != nullptr && matchedVenue->retention > 0) {
+				uint64_t retSec = matchedVenue->retention;
+				if (retSec <= 3650) {
+					retSec *= (24 * 3600);
+				}
+				outReq.monitoringDuration = retSec;
 			} else {
 				outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
 			}
+
+			if (boardInfo.info.modified > 0) {
+				outReq.monitoringEnabledAt = boardInfo.info.modified;
+			} else if (boardInfo.info.created > 0) {
+				outReq.monitoringEnabledAt = boardInfo.info.created;
+			}
+			outReq.monitoringConfigurationExpiry = UINT64_MAX;
 		} else {
 			outReq.monitoringDuration = MicroServiceConfigGetInt("monitoring.duration", 365 * 24 * 3600);
+			outReq.monitoringConfigurationExpiry = UINT64_MAX;
 		}
+
 		uint64_t maxLookbackHours = outReq.monitoringDuration / 3600;
 		if (lookbackHours > maxLookbackHours) {
 			SendMCPError(handler, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
@@ -338,16 +352,12 @@ namespace OpenWifi::MCP {
 		}
 
 		uint64_t retentionDataEnd = std::min(currentServerTime, outReq.monitoringConfigurationExpiry);
-		uint64_t retentionStart = 0;
-		if (outReq.monitoringEnabledAt > 0) {
-			retentionStart = std::max(outReq.monitoringEnabledAt,
-									  retentionDataEnd > outReq.monitoringDuration
-										  ? retentionDataEnd - outReq.monitoringDuration
-										  : 0);
-		} else {
-			retentionStart = retentionDataEnd > outReq.monitoringDuration
-								 ? retentionDataEnd - outReq.monitoringDuration
-								 : 0;
+		uint64_t retentionStart = retentionDataEnd > outReq.monitoringDuration
+									  ? retentionDataEnd - outReq.monitoringDuration
+									  : 0;
+
+		if (outReq.monitoringEnabledAt > 0 && outReq.monitoringEnabledAt > retentionStart) {
+			retentionStart = outReq.monitoringEnabledAt;
 		}
 
 		uint64_t requestEndLimit = std::min(currentServerTime + outReq.allowedClockSkewSeconds,

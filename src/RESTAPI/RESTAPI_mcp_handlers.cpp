@@ -50,7 +50,7 @@ namespace OpenWifi {
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
 		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
-															   req.endTimeEpoch, 100000, recs);
+															   req.endTimeEpoch, 0, recs);
 
 		std::vector<uint64_t> memoryFreeSamples;
 		std::optional<uint64_t> earliestTime;
@@ -106,7 +106,7 @@ namespace OpenWifi {
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
 		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
-															   req.endTimeEpoch, 100000, recs);
+															   req.endTimeEpoch, 0, recs);
 
 		std::vector<double> temps24G;
 		std::vector<double> temps5G;
@@ -192,7 +192,7 @@ namespace OpenWifi {
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
 		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
-															   req.endTimeEpoch, 100000, recs);
+															   req.endTimeEpoch, 0, recs);
 
 		struct ClientSample {
 			uint64_t timestamp;
@@ -337,7 +337,7 @@ namespace OpenWifi {
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> recs;
 		StorageService()->TimePointsDB().SelectRecordsBySerial(req.resolvedBoardId, req.routerId, req.startTimeEpoch,
-															   req.endTimeEpoch, 100000, recs);
+															   req.endTimeEpoch, 0, recs);
 
 		struct RSSISample {
 			uint64_t timestamp;

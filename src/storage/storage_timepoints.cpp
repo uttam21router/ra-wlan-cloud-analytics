@@ -199,7 +199,8 @@ namespace OpenWifi {
 		} else if (LastDate) {
 			WhereClause += fmt::format(" and (timestamp < {}) ", LastDate);
 		}
-		GetRecords(0, MaxRecords, Recs, WhereClause, " order by timestamp ASC ");
+		uint64_t limit = (MaxRecords == 0) ? 0 : MaxRecords;
+		GetRecords(0, limit, Recs, WhereClause, " order by timestamp ASC ");
 		return true;
 	}
 

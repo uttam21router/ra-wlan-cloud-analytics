@@ -36,7 +36,7 @@ namespace OpenWifi {
 		: public ORM::DB<DeviceAvailabilityEventRecordType, DeviceAvailabilityEvent> {
 	  public:
 		DeviceAvailabilityEventsDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L);
-
+		bool Upgrade(uint32_t from, uint32_t &to) override;
 		uint64_t GetOfflineEvents(const std::string &boardId, const std::string &serialNumber, uint64_t startTime,
 								 uint64_t endTime, std::optional<uint64_t> &earliestTime,
 								 std::optional<uint64_t> &latestTime);
