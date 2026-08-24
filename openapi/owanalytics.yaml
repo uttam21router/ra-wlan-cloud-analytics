@@ -60,7 +60,7 @@ components:
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
-                message: Requested range is outside the configured monitoring retention window
+                message: Requested range is outside the configured retention window
     AnalyticsUnauthorized:
       description: Bearer token is missing, invalid, or expired.
       content:
@@ -72,6 +72,17 @@ components:
               value:
                 error: unauthorized
                 message: Missing, invalid, or expired bearer token
+    AnalyticsForbidden:
+      description: Authenticated caller lacks analytics.gateway_metrics.read for the resolved router scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsForbiddenError'
+          examples:
+            forbidden:
+              value:
+                error: forbidden
+                message: Caller lacks analytics.gateway_metrics.read for this router scope
     AnalyticsNotFound:
       description: Router was not found, caller cannot access it, or no usable venue/board mapping exists. Public 404 responses for inventory missing, empty venue, board not configured, and access denied are intentionally collapsed to not_found.
       content:
@@ -130,7 +141,7 @@ components:
       name: lookbackHours
       description: >
         Number of hours to look back from timestampTill. Must be greater than 0 and less than or equal to
-        maxLookbackHours, where maxLookbackHours is derived from the configured monitoringDuration; the
+        maxLookbackHours, where maxLookbackHours is derived from the configured retention duration; the
         resulting half-open range must fit inside the configured retention window. Handlers must parse the
         raw HTTP query parameter collection to ensure lookbackHours appears exactly once and reject repeated,
         empty, fractional, partially numeric, overflowing, zero, and negative values.
@@ -920,6 +931,19 @@ components:
         message:
           type: string
 
+    AnalyticsForbiddenError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - forbidden
+        message:
+          type: string
+
     AnalyticsNotFoundError:
       type: object
       required:
@@ -1423,6 +1447,8 @@ paths:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
           $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
         404:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:

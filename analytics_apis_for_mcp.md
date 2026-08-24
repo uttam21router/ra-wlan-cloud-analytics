@@ -82,7 +82,7 @@ All REST handlers must enforce request validation in four distinct sequential ph
    - Return HTTP `404 not_found` if the router serial does not exist in OWPROV.
    - Return HTTP `404 not_found` if the router serial exists in OWPROV but is outside the authenticated caller's accessible entity, venue, or board scope.
    - Do not return HTTP `403 Forbidden` for the "existing router outside caller scope" case because it would disclose that the router serial exists.
-   - Load router scope monitoring configuration (`monitoringDuration`) to derive `maxLookbackHours = floor(monitoringDuration / 3600)`.
+   - Load router scope retention configuration (`VenueInfo.retention`) to derive `maxLookbackHours = floor(retention / 3600)`.
 
 3. **Phase 3: Duration, Retention & Endpoint Cutover Validation**
    - Validate duration against scope maximum (all endpoints): `lookbackHours > maxLookbackHours` -> HTTP `400 invalid_lookback_hours`.
@@ -183,7 +183,7 @@ endTime must be less than or equal to currentServerTime + allowedClockSkewSecond
 lookbackHours must be present exactly once.
 lookbackHours must parse as a strict whole decimal integer with no trailing characters.
 lookbackHours must be greater than 0.
-maxLookbackHours = floor(configured monitoringDuration / 3600).
+maxLookbackHours = floor(configured retention duration / 3600).
 lookbackHours must be less than or equal to maxLookbackHours.
 startTime must be less than endTime.
 ```
@@ -193,9 +193,9 @@ If `timestampTill` is beyond `currentServerTime + allowedClockSkewSeconds`, retu
 server time. The returned aggregate must represent the requested half-open
 window exactly, not a silently shortened window.
 
-All APIs in this document derive `maxLookbackHours` from the configured `monitoringDuration` for the resolved router ownership scope. All APIs share this limit unless an endpoint section explicitly names a stricter limit. No endpoint currently defines a separate limit.
+All APIs in this document derive `maxLookbackHours` from the configured retention duration for the resolved router ownership scope. All APIs share this limit unless an endpoint section explicitly names a stricter limit. No endpoint currently defines a separate limit.
 
-For a one-year monitoring configuration, `maxLookbackHours` is `365 * 24` only when the configured monitoring duration is exactly 365 days. Do not assume every calendar year is 8760 hours; use the configured duration and effective retention timestamps when validating the request.
+For a one-year retention configuration, `maxLookbackHours` is `365 * 24` only when the configured retention duration is exactly 365 days. Do not assume every calendar year is 8760 hours; use the configured retention duration when validating the request.
 
 Return validation errors with field-specific error codes:
 
@@ -215,24 +215,24 @@ lookback_outside_retention:
 
 A valid timestamp with an invalid `lookbackHours` value must not return `invalid_timestamp`. Internally, query `timepoints.timestamp` and `wificlienthistory.timestamp` using epoch seconds.
 
-### Monitoring Configuration
+### Retention Configuration
 
-Handlers must load the monitoring configuration for the resolved router ownership scope before querying metric storage.
+Handlers must load the configured retention duration for the resolved router
+ownership scope before querying metric storage. In the current Analytics board
+model, the authoritative value available to this service is
+`AnalyticsObjects::VenueInfo.retention`.
 
 ```text
-monitoringDuration = configured monitoring retention duration
-requestEndLimit = min(currentServerTime + allowedClockSkewSeconds, monitoringConfigurationExpiry)
-retentionDataEnd = min(currentServerTime, monitoringConfigurationExpiry)
-retentionStart = retentionDataEnd - monitoringDuration
-
-If monitoring has been enabled for less time than monitoringDuration:
-  retentionStart = max(monitoringEnabledAt, retentionDataEnd - monitoringDuration)
+retentionDuration = configured VenueInfo.retention duration
+requestEndLimit = currentServerTime + allowedClockSkewSeconds
+retentionStart = currentServerTime - retentionDuration
 ```
 
-Use the configured duration and effective retention timestamps instead of calendar assumptions so leap years, partial-year retention, recently enabled monitoring, and changed retention policies behave consistently.
-Do not derive `retentionStart` from `currentServerTime + allowedClockSkewSeconds`;
-the skew allowance is a request upper-bound tolerance, not an extension that
-slides the retained historical window forward.
+Use the configured duration instead of calendar assumptions so leap years and
+partial-year retention behave consistently. Do not derive `retentionStart` from
+`currentServerTime + allowedClockSkewSeconds`; the skew allowance is a request
+upper-bound tolerance, not an extension that slides the retained historical
+window forward.
 
 The requested half-open range must satisfy:
 
@@ -241,34 +241,16 @@ startTime >= retentionStart
 endTime <= requestEndLimit
 ```
 
-If `endTime > retentionDataEnd` but `endTime <= requestEndLimit`, accept the
+If `endTime > currentServerTime` but `endTime <= requestEndLimit`, accept the
 request as within clock skew tolerance. Query and report the exact requested
-`[startTime, endTime)` window; do not clamp `endTime` to `retentionDataEnd` and
-do not reject solely because the request extends slightly beyond
-`currentServerTime`.
+`[startTime, endTime)` window; do not clamp `endTime` to current server time and
+do not reject solely because the request extends slightly beyond it.
 
 If the requested range violates `startTime >= retentionStart` or
 `endTime <= requestEndLimit`, return `400 Bad Request` with
 `error: "lookback_outside_retention"`.
 
-When monitoring is disabled:
-
-```text
-stop ingesting new metric and availability records
-retain existing records until their existing expiry timestamp
-return 409 Conflict for all summary requests
-```
-
-Error response:
-
-```json
-{
-  "error": "monitoring_disabled",
-  "message": "Monitoring is disabled for this router scope"
-}
-```
-
-When monitoring is not configured for the resolved router scope, return:
+When retention is not configured for the resolved router scope, return:
 
 ```http
 404 Not Found
@@ -276,8 +258,8 @@ When monitoring is not configured for the resolved router scope, return:
 
 ```json
 {
-  "error": "monitoring_not_configured",
-  "message": "Monitoring is not configured for this router scope"
+  "error": "not_found",
+  "message": "Router was not found"
 }
 ```
 

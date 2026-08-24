@@ -863,32 +863,34 @@ Valid identity but insufficient analytics permission -> 403 forbidden
 
 ---
 
-## TC-COMMON-020: Monitoring is disabled
+## TC-COMMON-020: Monitoring disabled lifecycle state is out of scope
 
-### Preconditions
+### Scope
 
-* Router ownership resolves successfully.
-* Monitoring is disabled for the resolved router scope.
+The current Analytics API contract validates requested ranges against the
+configured retention duration available in `VenueInfo.retention`. It does not
+define a runtime disabled-monitoring response because this service does not
+currently receive an authoritative monitoring enabled/disabled lifecycle state
+for the resolved router scope.
 
 ### Expected result
 
-* HTTP `409 Conflict`.
-* Error is `monitoring_disabled`.
-* Metric aggregation is not executed.
+* No test case should require an HTTP 409 disabled-monitoring response for the current memory-summary implementation.
+* If a future PR wires an authoritative monitoring lifecycle state into Analytics, add new tests for disabled monitoring before reintroducing that response contract.
 
 ---
 
-## TC-COMMON-021: Monitoring is not configured
+## TC-COMMON-021: Retention is not configured
 
 ### Preconditions
 
 * Router ownership resolves successfully.
-* No monitoring configuration exists for the resolved router scope.
+* No retention configuration exists for the resolved router scope.
 
 ### Expected result
 
 * HTTP `404 Not Found`.
-* Error is `monitoring_not_configured`.
+* Error is `not_found`.
 * Metric aggregation is not executed.
 
 ---
@@ -897,7 +899,7 @@ Valid identity but insufficient analytics permission -> 403 forbidden
 
 ### Request
 
-Use a valid router ID and a lookback window whose calculated `[startTime, endTime)` falls outside the configured monitoring retention window.
+Use a valid router ID and a lookback window whose calculated `[startTime, endTime)` falls outside the configured retention window.
 
 ### Expected result
 

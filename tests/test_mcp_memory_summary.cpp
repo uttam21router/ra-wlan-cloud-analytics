@@ -201,6 +201,29 @@ namespace {
 			std::nullopt, [](const std::string &) { return true; }, E));
 	}
 
+	void TestGatewayMetricsAuthorization() {
+		MCP::Error E;
+		SecurityObjects::UserInfoAndPolicy User;
+		User.userinfo.userRole = SecurityObjects::SUBSCRIBER;
+		User.permissions.push_back(MCP::GatewayMetricsReadPermission);
+		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
+
+		User.permissions.clear();
+		assert(!MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_FORBIDDEN);
+		assert(E.error == "forbidden");
+
+		User.permissions.push_back(MCP::GatewayMetricsReadAnyPermission);
+		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
+		User.permissions.clear();
+
+		User.userinfo.userRole = SecurityObjects::ADMIN;
+		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
+
+		User.userinfo.userRole = SecurityObjects::ROOT;
+		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
+	}
+
 	void TestRouterResolutionHelpers() {
 		RouterIdResolver::Result R;
 		RouterIdResolver::Error E;
@@ -323,6 +346,7 @@ int main() {
 	TestLatestMemorySelection();
 	TestRouterValidation();
 	TestBearerHeaderValidation();
+	TestGatewayMetricsAuthorization();
 	TestRouterResolutionHelpers();
 	TestTimestampValidation();
 	TestQueryValidation();

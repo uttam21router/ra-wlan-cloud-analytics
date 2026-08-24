@@ -27,6 +27,10 @@ namespace OpenWifi {
 			"alphanumeric characters, hyphens, or underscores)";
 		constexpr const char *UnauthorizedMessage =
 			"Missing, invalid, or expired bearer token";
+		constexpr const char *GatewayMetricsReadPermission =
+			"analytics.gateway_metrics.read";
+		constexpr const char *GatewayMetricsReadAnyPermission =
+			"analytics.gateway_metrics.read_any";
 
 		struct Error {
 			Poco::Net::HTTPResponse::HTTPStatus status =
@@ -95,6 +99,32 @@ namespace OpenWifi {
 				return false;
 			}
 			return true;
+		}
+
+		inline bool HasGatewayMetricsReadPermission(
+			const SecurityObjects::UserInfoAndPolicy &UserInfo,
+			[[maybe_unused]] const std::string &ResolvedBoardId,
+			[[maybe_unused]] const std::string &ResolvedVenueId) {
+			if (UserInfo.userinfo.userRole == SecurityObjects::ROOT ||
+				UserInfo.userinfo.userRole == SecurityObjects::ADMIN)
+				return true;
+
+			return std::find(UserInfo.permissions.begin(), UserInfo.permissions.end(),
+							 GatewayMetricsReadPermission) != UserInfo.permissions.end() ||
+				   std::find(UserInfo.permissions.begin(), UserInfo.permissions.end(),
+							 GatewayMetricsReadAnyPermission) != UserInfo.permissions.end();
+		}
+
+		inline bool AuthorizeGatewayMetricsRead(
+			const SecurityObjects::UserInfoAndPolicy &UserInfo,
+			const std::string &ResolvedBoardId, const std::string &ResolvedVenueId, Error &E) {
+			if (HasGatewayMetricsReadPermission(UserInfo, ResolvedBoardId, ResolvedVenueId))
+				return true;
+
+			SetError(E, Poco::Net::HTTPResponse::HTTP_FORBIDDEN, "forbidden",
+					 std::string("Caller lacks ") + GatewayMetricsReadPermission +
+						 " for this router scope");
+			return false;
 		}
 
 		inline bool ParseDecimalUint64(const std::string &Value, uint64_t &Parsed) {
@@ -283,7 +313,7 @@ namespace OpenWifi {
 			if (Requested.startTime < RetentionStart || Requested.endTime > RequestEndLimit) {
 				SetError(E, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
 						 "lookback_outside_retention",
-						 "Requested range is outside the configured monitoring retention window");
+						 "Requested range is outside the configured retention window");
 				return false;
 			}
 			return true;
