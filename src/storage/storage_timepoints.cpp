@@ -96,18 +96,17 @@ namespace OpenWifi {
 
 	bool TimePointDB::SelectRecordsBySerial(const std::string &boardId,
 											const std::string &serialNumber, uint64_t startTime,
-											uint64_t endTime, uint64_t MaxRecords,
+											uint64_t endTime,
 											std::vector<AnalyticsObjects::DeviceTimePoint> &Recs) {
 		Recs.clear();
-		if (MaxRecords == 0 || endTime <= startTime)
+		if (endTime <= startTime)
 			return true;
 
 		auto WhereClause = fmt::format(
 			" boardId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
 			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
-		const auto Sql = fmt::format("select {} from {} where {} order by timestamp, id ASC{}",
-									 SelectFields(), TableName_, WhereClause,
-									 ComputeRange(0, MaxRecords));
+		const auto Sql = fmt::format("select {} from {} where {} order by timestamp, id ASC",
+									 SelectFields(), TableName_, WhereClause);
 		std::vector<TimePointDBRecordType> RawRecords;
 		if (!Join(Sql, RawRecords))
 			return false;

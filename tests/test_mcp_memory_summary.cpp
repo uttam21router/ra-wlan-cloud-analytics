@@ -208,23 +208,34 @@ namespace {
 			E));
 		assert(E.error == "invalid_timestamp");
 
+		MCP::MonitoringConfig Config;
+		Config.durationSeconds = 7200;
 		MCP::Window Retained;
 		Retained.startTime = 9000;
 		Retained.endTime = 12600;
 		Retained.lookbackHours = 1;
-		assert(MCP::ValidateRetention(Retained, 7200, 8000, 10000, E));
+		assert(MCP::ValidateRetention(Retained, Config, 10000, 3000, E));
 		MCP::Window TooLong;
 		TooLong.startTime = 0;
 		TooLong.endTime = 10800;
 		TooLong.lookbackHours = 3;
-		assert(!MCP::ValidateRetention(TooLong, 7200, 0, 10000, E));
+		assert(!MCP::ValidateRetention(TooLong, Config, 10000, 300, E));
 		assert(E.error == "invalid_lookback_hours");
+		Config.enabledAt = 8000;
 		MCP::Window BeforeStart;
 		BeforeStart.startTime = 7000;
 		BeforeStart.endTime = 10600;
 		BeforeStart.lookbackHours = 1;
-		assert(!MCP::ValidateRetention(BeforeStart, 7200, 8000, 10000, E));
+		assert(!MCP::ValidateRetention(BeforeStart, Config, 10000, 300, E));
 		assert(E.error == "lookback_outside_retention");
+		Config.enabledAt.reset();
+		Config.expiresAt = 10500;
+		assert(!MCP::ValidateRetention(BeforeStart, Config, 10000, 300, E));
+		assert(E.error == "lookback_outside_retention");
+		Config.expiresAt.reset();
+		Config.enabled = false;
+		assert(!MCP::ValidateRetention(Retained, Config, 10000, 300, E));
+		assert(E.error == "monitoring_disabled");
 	}
 
 	void TestHalfOpenWindowBoundaries() {

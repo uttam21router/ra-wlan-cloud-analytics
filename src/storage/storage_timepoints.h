@@ -20,8 +20,7 @@ namespace OpenWifi {
 		bool SelectRecords(const std::string &boardId, uint64_t FromDate, uint64_t LastDate,
 						   uint64_t MaxRecords, bool LatestPerDevice, DB::RecordVec &Recs);
 		bool SelectRecordsBySerial(const std::string &boardId, const std::string &serialNumber,
-								   uint64_t startTime, uint64_t endTime, uint64_t MaxRecords,
-								   DB::RecordVec &Recs);
+								   uint64_t startTime, uint64_t endTime, DB::RecordVec &Recs);
 		bool DeleteBoard(const std::string &boardId);
 		bool DeleteTimeLine(const std::string &boardId, uint64_t fromDate, uint64_t endDate);
 		bool GetRecordsPerDevice(const std::string &boardId, uint64_t FromDate, uint64_t LastDate,

@@ -197,6 +197,8 @@ namespace OpenWifi {
 		struct DeviceResourceTimePoint {
 			std::optional<uint64_t> memory_free;
 			std::optional<uint64_t> memory_total;
+			std::optional<uint64_t> memory_cached;
+			std::optional<uint64_t> memory_buffered;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 			bool from_json(const Poco::JSON::Object::Ptr &Obj);

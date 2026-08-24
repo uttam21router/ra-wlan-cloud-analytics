@@ -145,6 +145,8 @@ namespace OpenWifi {
 					GetJSON("total", memory, total_mem, (uint64_t)0);
 					DTP.resource_data.memory_free = GetOptionalUInt64JSON("free", memory);
 					DTP.resource_data.memory_total = GetOptionalUInt64JSON("total", memory);
+					DTP.resource_data.memory_cached = GetOptionalUInt64JSON("cached", memory);
+					DTP.resource_data.memory_buffered = GetOptionalUInt64JSON("buffered", memory);
 					if (total_mem) {
 						DI_.memory = ((double)(total_mem - free_mem) / (double)total_mem) * 100.0;
 					} else {

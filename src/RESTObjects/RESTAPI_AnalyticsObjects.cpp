@@ -453,12 +453,18 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 			field_to_json(Obj, "memory_free", *memory_free);
 		if (memory_total)
 			field_to_json(Obj, "memory_total", *memory_total);
+		if (memory_cached)
+			field_to_json(Obj, "memory_cached", *memory_cached);
+		if (memory_buffered)
+			field_to_json(Obj, "memory_buffered", *memory_buffered);
 	}
 
 	bool DeviceResourceTimePoint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		try {
 			memory_free = OptionalUint64FromJson(Obj, "memory_free");
 			memory_total = OptionalUint64FromJson(Obj, "memory_total");
+			memory_cached = OptionalUint64FromJson(Obj, "memory_cached");
+			memory_buffered = OptionalUint64FromJson(Obj, "memory_buffered");
 			return true;
 		} catch (...) {
 		}
