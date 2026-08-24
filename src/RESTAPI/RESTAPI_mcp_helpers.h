@@ -41,13 +41,6 @@ namespace OpenWifi {
 			uint64_t lookbackHours = 0;
 		};
 
-		struct MonitoringConfig {
-			uint64_t durationSeconds = 0;
-			std::optional<uint64_t> enabledAt;
-			std::optional<uint64_t> expiresAt;
-			bool enabled = true;
-		};
-
 		inline void SetError(Error &E, Poco::Net::HTTPResponse::HTTPStatus Status,
 							 std::string ErrorCode, std::string Message) {
 			E.status = Status;
@@ -271,15 +264,9 @@ namespace OpenWifi {
 			return true;
 		}
 
-		inline bool ValidateRetention(const Window &Requested, const MonitoringConfig &Config,
+		inline bool ValidateRetention(const Window &Requested, uint64_t RetentionSeconds,
 									  uint64_t Now, uint64_t ClockSkewSeconds, Error &E) {
-			if (!Config.enabled) {
-				SetError(E, Poco::Net::HTTPResponse::HTTP_CONFLICT, "monitoring_disabled",
-						 "Monitoring is disabled for this router scope");
-				return false;
-			}
-
-			auto MaxLookbackHours = Config.durationSeconds / static_cast<uint64_t>(3600);
+			auto MaxLookbackHours = RetentionSeconds / static_cast<uint64_t>(3600);
 			if (MaxLookbackHours == 0 || Requested.lookbackHours > MaxLookbackHours) {
 				SetError(E, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST, "invalid_lookback_hours",
 						 "lookbackHours exceeds configured maximum lookback");
@@ -291,17 +278,8 @@ namespace OpenWifi {
 				RequestEndLimit += ClockSkewSeconds;
 			else
 				RequestEndLimit = std::numeric_limits<uint64_t>::max();
-			uint64_t RetentionDataEnd = Now;
-			if (Config.expiresAt) {
-				RequestEndLimit = std::min(RequestEndLimit, *Config.expiresAt);
-				RetentionDataEnd = std::min(RetentionDataEnd, *Config.expiresAt);
-			}
 
-			auto RetentionStart =
-				RetentionDataEnd > Config.durationSeconds ? RetentionDataEnd - Config.durationSeconds
-														   : 0;
-			if (Config.enabledAt)
-				RetentionStart = std::max(RetentionStart, *Config.enabledAt);
+			auto RetentionStart = Now > RetentionSeconds ? Now - RetentionSeconds : 0;
 			if (Requested.startTime < RetentionStart || Requested.endTime > RequestEndLimit) {
 				SetError(E, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
 						 "lookback_outside_retention",

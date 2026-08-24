@@ -295,7 +295,10 @@ timestamp < endTime
 `timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
 
 MCP analytics responses that include window metadata must use common temporal
-field names:
+field names. For `get_gateway_free_memory`, these fields live under
+`meta.requestedWindow` and `meta.observedWindow`; other existing summary
+responses may expose the same window objects at the response root unless their
+endpoint-specific contract says otherwise.
 
 ```text
 requestedWindow.startTime
@@ -679,17 +682,22 @@ None
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "data": {
+    "min_memfree": 211374,
+    "max_memfree": 215050,
+    "avg_memfree": 212074,
+    "latest_memfree": 212800
   },
-  "observedWindow": {
-    "startTime": "2026-07-26T12:03:00Z",
-    "endTime": "2026-07-27T11:57:00Z"
-  },
-  "min_memfree": 211374,
-  "max_memfree": 215050,
-  "avg_memfree": 212074.36
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": "2026-07-26T12:03:00Z",
+      "endTime": "2026-07-27T11:57:00Z"
+    }
+  }
 }
 ```
 
@@ -834,11 +842,14 @@ For each record:
   ignore invalid or missing memory_total, memory_cached, and memory_buffered without invalidating memory_free
 
 Return:
-  min_memfree = min(memory_free samples)
-  max_memfree = max(memory_free samples)
-  avg_memfree = sum(memory_free samples) / sample_count
-  observedWindow.startTime = earliest timestamp of a memory_free sample contributing to the aggregation
-  observedWindow.endTime = latest timestamp of a memory_free sample contributing to the aggregation
+  data.min_memfree = min(memory_free samples)
+  data.max_memfree = max(memory_free samples)
+  data.avg_memfree = rounded_integer(sum(memory_free samples) / sample_count)
+  data.latest_memfree = memory_free from the latest valid contributing sample
+  meta.requestedWindow.startTime = requested startTime
+  meta.requestedWindow.endTime = requested endTime
+  meta.observedWindow.startTime = earliest timestamp of a memory_free sample contributing to the aggregation
+  meta.observedWindow.endTime = latest timestamp of a memory_free sample contributing to the aggregation
 ```
 
 Memory values are bytes and must satisfy `0 <= memory_value <= UINT64_MAX`.
@@ -850,8 +861,13 @@ not cause a valid `memory_free` sample to be dropped. For successful responses
 with samples, the invariant is:
 
 ```text
-min_memfree <= avg_memfree <= max_memfree
+data.min_memfree <= data.avg_memfree <= data.max_memfree
 ```
+
+`data.latest_memfree` is selected from the valid contributing sample with the
+greatest timestamp. If multiple valid contributing records have the same
+timestamp, use the documented deterministic stored-record ordering tie-break
+behavior so repeated calls return the same value.
 
 Do not query `device_timepoints.memory_free` unless a separate normalized table and migration are introduced.
 
@@ -880,24 +896,29 @@ Query timepoints and read resource_data.memory_free samples
     ↓
 Calculate min, max and average
     ↓
-Return MCP response shape
+Return MCP data/meta response shape
 ```
 
 ### Empty Result
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "data": {
+    "min_memfree": null,
+    "max_memfree": null,
+    "avg_memfree": null,
+    "latest_memfree": null
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "min_memfree": null,
-  "max_memfree": null,
-  "avg_memfree": null
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
+  }
 }
 ```
 

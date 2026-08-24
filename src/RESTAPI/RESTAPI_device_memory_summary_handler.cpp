@@ -8,12 +8,12 @@
 namespace OpenWifi {
 
 	namespace {
-		bool FindMonitoringConfig(const AnalyticsObjects::BoardInfo &Board,
-								  const std::string &VenueId, MCP::MonitoringConfig &Config) {
+		bool FindVenueRetention(const AnalyticsObjects::BoardInfo &Board,
+								const std::string &VenueId, uint64_t &RetentionSeconds) {
 			for (const auto &Venue : Board.venueList) {
 				if (Venue.id == VenueId) {
-					Config.durationSeconds = Venue.retention;
-					return Config.durationSeconds > 0;
+					RetentionSeconds = Venue.retention;
+					return RetentionSeconds > 0;
 				}
 			}
 			return false;
@@ -52,17 +52,17 @@ namespace OpenWifi {
 			return MCP::SendError(*this, ConvertResolverError(ResolverError));
 		}
 
-		MCP::MonitoringConfig MonitoringConfig;
-		if (!FindMonitoringConfig(Resolved.board, Resolved.resolvedVenueId, MonitoringConfig)) {
+		uint64_t RetentionSeconds = 0;
+		if (!FindVenueRetention(Resolved.board, Resolved.resolvedVenueId, RetentionSeconds)) {
 			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_NOT_FOUND, "not_found",
 						  "Router was not found");
 			return MCP::SendError(*this, Error);
 		}
-		if (!MCP::ValidateRetention(Window, MonitoringConfig, Utils::Now(), ClockSkewSeconds, Error))
+		if (!MCP::ValidateRetention(Window, RetentionSeconds, Utils::Now(), ClockSkewSeconds, Error))
 			return MCP::SendError(*this, Error);
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> Records;
-		if (!StorageService()->TimePointsDB().SelectRecordsBySerial(
+		if (!StorageService()->TimePointsDB().SelectResourceRecordsBySerial(
 				Resolved.resolvedBoardId, routerId, Window.startTime, Window.endTime, Records)) {
 			poco_error(Logger(), "Failed to query timepoints for memory summary");
 			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY, "storage_unavailable",

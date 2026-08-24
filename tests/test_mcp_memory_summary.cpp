@@ -3,7 +3,9 @@
 
 #include <cassert>
 #include <iostream>
+#include <limits>
 #include <utility>
+#include <vector>
 
 using namespace OpenWifi;
 
@@ -71,6 +73,29 @@ namespace {
 		assert(!Empty.meta.observedWindow.endTime);
 	}
 
+	void TestResponseEnvelopeSerialization() {
+		auto Summary = MCP::CalculateMemorySummary({Point(250, 250)}, TestWindow());
+		Poco::JSON::Object Obj;
+		Summary.to_json(Obj);
+		assert(Obj.has("data"));
+		assert(Obj.has("meta"));
+		assert(!Obj.has("min_memfree"));
+		assert(!Obj.has("max_memfree"));
+		assert(!Obj.has("avg_memfree"));
+		assert(!Obj.has("latest_memfree"));
+		assert(!Obj.has("requestedWindow"));
+		assert(!Obj.has("observedWindow"));
+
+		auto Data = Obj.getObject("data");
+		auto Meta = Obj.getObject("meta");
+		assert(Data->has("min_memfree"));
+		assert(Data->has("max_memfree"));
+		assert(Data->has("avg_memfree"));
+		assert(Data->has("latest_memfree"));
+		assert(Meta->has("requestedWindow"));
+		assert(Meta->has("observedWindow"));
+	}
+
 	void TestInvalidSamplesAreIgnored() {
 		auto Summary = MCP::CalculateMemorySummary(
 			{Point(100, std::nullopt, 1000), Point(200, 500, 400), Point(300, 500),
@@ -84,15 +109,65 @@ namespace {
 		assert(Summary.meta.observedWindow.endTime == "1970-01-01T00:06:40Z");
 	}
 
-	void TestAverageRoundingAndLatestTie() {
-		auto Rounded = MCP::CalculateMemorySummary({Point(100, 100), Point(101, 101)},
-												   TestWindow());
-		assert(Rounded.data.avg_memfree == 101);
+	void TestAverageRounding() {
+		auto Whole = MCP::CalculateMemorySummary({Point(100, 100), Point(200, 200)},
+												 TestWindow());
+		assert(Whole.data.avg_memfree == 150);
+
+		auto Half = MCP::CalculateMemorySummary({Point(100, 100), Point(101, 101)}, TestWindow());
+		assert(Half.data.avg_memfree == 101);
+
+		auto FractionalDown =
+			MCP::CalculateMemorySummary({Point(100, 100), Point(101, 100)}, TestWindow());
+		assert(FractionalDown.data.avg_memfree == 100);
+
+		auto Single = MCP::CalculateMemorySummary({Point(100, 123)}, TestWindow());
+		assert(Single.data.avg_memfree == 123);
+
+		auto Max = std::numeric_limits<uint64_t>::max();
+		auto Large = MCP::CalculateMemorySummary(
+			{Point(100, Max, Max), Point(101, Max - 2, Max)}, TestWindow());
+		assert(Large.data.avg_memfree == Max - 1);
+	}
+
+	void TestLatestMemorySelection() {
+		auto One = MCP::CalculateMemorySummary({Point(100, 100)}, TestWindow());
+		assert(One.data.latest_memfree == 100);
+
+		auto Multiple = MCP::CalculateMemorySummary(
+			{Point(100, 100), Point(200, 200), Point(300, 300)}, TestWindow());
+		assert(Multiple.data.latest_memfree == 300);
+
+		auto OutOfOrder = MCP::CalculateMemorySummary(
+			{Point(300, 300), Point(100, 100), Point(200, 200)}, TestWindow());
+		assert(OutOfOrder.data.latest_memfree == 300);
+
+		auto LatestAtRangeEnd =
+			MCP::CalculateMemorySummary({Point(1000, 100), Point(1999, 999)}, TestWindow());
+		assert(LatestAtRangeEnd.data.latest_memfree == 999);
+
+		std::vector<AnalyticsObjects::DeviceTimePoint> BoundaryRecords{
+			Point(1000, 100), Point(1999, 999), Point(2000, 2000)};
+		std::vector<AnalyticsObjects::DeviceTimePoint> Filtered;
+		for (const auto &Record : BoundaryRecords) {
+			if (MCP::TimestampInHalfOpenWindow(Record.timestamp, TestWindow()))
+				Filtered.push_back(Record);
+		}
+		auto EndExcluded = MCP::CalculateMemorySummary(Filtered, TestWindow());
+		assert(EndExcluded.data.latest_memfree == 999);
+
+		auto InvalidLatest =
+			MCP::CalculateMemorySummary({Point(1900, 900, 800), Point(1800, 700, 1000)},
+										TestWindow());
+		assert(InvalidLatest.data.latest_memfree == 700);
 
 		auto Tied = MCP::CalculateMemorySummary(
 			{Point(500, 100, std::nullopt, "a"), Point(500, 200, std::nullopt, "b")},
 			TestWindow());
 		assert(Tied.data.latest_memfree == 200);
+
+		auto Empty = MCP::CalculateMemorySummary({Point(100, std::nullopt)}, TestWindow());
+		assert(!Empty.data.latest_memfree);
 	}
 
 	void TestRouterValidation() {
@@ -208,34 +283,23 @@ namespace {
 			E));
 		assert(E.error == "invalid_timestamp");
 
-		MCP::MonitoringConfig Config;
-		Config.durationSeconds = 7200;
 		MCP::Window Retained;
 		Retained.startTime = 9000;
 		Retained.endTime = 12600;
 		Retained.lookbackHours = 1;
-		assert(MCP::ValidateRetention(Retained, Config, 10000, 3000, E));
+		assert(MCP::ValidateRetention(Retained, 7200, 10000, 3000, E));
 		MCP::Window TooLong;
 		TooLong.startTime = 0;
 		TooLong.endTime = 10800;
 		TooLong.lookbackHours = 3;
-		assert(!MCP::ValidateRetention(TooLong, Config, 10000, 300, E));
+		assert(!MCP::ValidateRetention(TooLong, 7200, 10000, 300, E));
 		assert(E.error == "invalid_lookback_hours");
-		Config.enabledAt = 8000;
 		MCP::Window BeforeStart;
-		BeforeStart.startTime = 7000;
+		BeforeStart.startTime = 2000;
 		BeforeStart.endTime = 10600;
 		BeforeStart.lookbackHours = 1;
-		assert(!MCP::ValidateRetention(BeforeStart, Config, 10000, 300, E));
+		assert(!MCP::ValidateRetention(BeforeStart, 7200, 10000, 300, E));
 		assert(E.error == "lookback_outside_retention");
-		Config.enabledAt.reset();
-		Config.expiresAt = 10500;
-		assert(!MCP::ValidateRetention(BeforeStart, Config, 10000, 300, E));
-		assert(E.error == "lookback_outside_retention");
-		Config.expiresAt.reset();
-		Config.enabled = false;
-		assert(!MCP::ValidateRetention(Retained, Config, 10000, 300, E));
-		assert(E.error == "monitoring_disabled");
 	}
 
 	void TestHalfOpenWindowBoundaries() {
@@ -253,8 +317,10 @@ namespace {
 int main() {
 	TestMultipleValidSamples();
 	TestSingleAndNoSampleCases();
+	TestResponseEnvelopeSerialization();
 	TestInvalidSamplesAreIgnored();
-	TestAverageRoundingAndLatestTie();
+	TestAverageRounding();
+	TestLatestMemorySelection();
 	TestRouterValidation();
 	TestBearerHeaderValidation();
 	TestRouterResolutionHelpers();
