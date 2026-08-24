@@ -8,6 +8,7 @@
 #include "dict_ssid.h"
 #include "fmt/format.h"
 #include "framework/utils.h"
+#include <optional>
 
 namespace OpenWifi {
 
@@ -39,6 +40,23 @@ namespace OpenWifi {
 			}
 		}
 		v = def;
+	}
+
+	static std::optional<uint64_t> GetOptionalUInt64JSON(const char *field,
+														 const nlohmann::json &doc) {
+		try {
+			if (!doc.contains(field) || doc[field].is_null())
+				return std::nullopt;
+			if (doc[field].is_number_unsigned())
+				return doc[field].get<uint64_t>();
+			if (doc[field].is_number_integer()) {
+				auto Value = doc[field].get<int64_t>();
+				if (Value >= 0)
+					return static_cast<uint64_t>(Value);
+			}
+		} catch (...) {
+		}
+		return std::nullopt;
 	}
 
 	inline double safe_div(uint64_t a, uint64_t b) {
@@ -125,6 +143,8 @@ namespace OpenWifi {
 					uint64_t free_mem, total_mem;
 					GetJSON("free", memory, free_mem, (uint64_t)0);
 					GetJSON("total", memory, total_mem, (uint64_t)0);
+					DTP.resource_data.memory_free = GetOptionalUInt64JSON("free", memory);
+					DTP.resource_data.memory_total = GetOptionalUInt64JSON("total", memory);
 					if (total_mem) {
 						DI_.memory = ((double)(total_mem - free_mem) / (double)total_mem) * 100.0;
 					} else {

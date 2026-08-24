@@ -5,6 +5,9 @@
 #include "RESTAPI_AnalyticsObjects.h"
 #include "RESTAPI_ProvObjects.h"
 #include "framework/RESTAPI_utils.h"
+#include <cctype>
+#include <limits>
+#include <Poco/Dynamic/Var.h>
 #include <Poco/JSON/Parser.h>
 #include <Poco/JSON/Stringifier.h>
 #include <sstream>
@@ -13,6 +16,27 @@ using OpenWifi::RESTAPI_utils::field_from_json;
 using OpenWifi::RESTAPI_utils::field_to_json;
 
 namespace OpenWifi::AnalyticsObjects {
+
+	namespace {
+		std::optional<uint64_t> OptionalUint64FromJson(const Poco::JSON::Object::Ptr &Obj,
+													   const char *Field) {
+			if (!Obj->has(Field) || Obj->isNull(Field))
+				return std::nullopt;
+			auto Value = Obj->get(Field).toString();
+			if (Value.empty())
+				return std::nullopt;
+			uint64_t Parsed = 0;
+			for (auto c : Value) {
+				if (!std::isdigit(static_cast<unsigned char>(c)))
+					return std::nullopt;
+				auto Digit = static_cast<uint64_t>(c - '0');
+				if (Parsed > (std::numeric_limits<uint64_t>::max() - Digit) / 10)
+					return std::nullopt;
+				Parsed = Parsed * 10 + Digit;
+			}
+			return Parsed;
+		}
+	} // namespace
 
 	void Report::reset() {}
 
@@ -424,6 +448,23 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		return false;
 	}
 
+	void DeviceResourceTimePoint::to_json(Poco::JSON::Object &Obj) const {
+		if (memory_free)
+			field_to_json(Obj, "memory_free", *memory_free);
+		if (memory_total)
+			field_to_json(Obj, "memory_total", *memory_total);
+	}
+
+	bool DeviceResourceTimePoint::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			memory_free = OptionalUint64FromJson(Obj, "memory_free");
+			memory_total = OptionalUint64FromJson(Obj, "memory_total");
+			return true;
+		} catch (...) {
+		}
+		return false;
+	}
+
 	void DeviceTimePoint::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "id", id);
 		field_to_json(Obj, "boardId", boardId);
@@ -431,6 +472,7 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		field_to_json(Obj, "ap_data", ap_data);
 		field_to_json(Obj, "ssid_data", ssid_data);
 		field_to_json(Obj, "radio_data", radio_data);
+		field_to_json(Obj, "resource_data", resource_data);
 		field_to_json(Obj, "device_info", device_info);
 		field_to_json(Obj, "serialNumber", serialNumber);
 	}
@@ -443,6 +485,7 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 			field_from_json(Obj, "ap_data", ap_data);
 			field_from_json(Obj, "ssid_data", ssid_data);
 			field_from_json(Obj, "radio_data", radio_data);
+			field_from_json(Obj, "resource_data", resource_data);
 			field_from_json(Obj, "device_info", device_info);
 			field_from_json(Obj, "serialNumber", serialNumber);
 			return true;
@@ -522,6 +565,47 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		} catch (...) {
 		}
 		return false;
+	}
+
+	void MCPRequestedWindow::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "startTime", startTime);
+		field_to_json(Obj, "endTime", endTime);
+	}
+
+	void MCPObservedWindow::to_json(Poco::JSON::Object &Obj) const {
+		if (startTime)
+			field_to_json(Obj, "startTime", *startTime);
+		else
+			Obj.set("startTime", Poco::Dynamic::Var());
+		if (endTime)
+			field_to_json(Obj, "endTime", *endTime);
+		else
+			Obj.set("endTime", Poco::Dynamic::Var());
+	}
+
+	static void nullable_uint_to_json(Poco::JSON::Object &Obj, const char *Field,
+									  const std::optional<uint64_t> &Value) {
+		if (Value)
+			field_to_json(Obj, Field, *Value);
+		else
+			Obj.set(Field, Poco::Dynamic::Var());
+	}
+
+	void MCPMemorySummaryData::to_json(Poco::JSON::Object &Obj) const {
+		nullable_uint_to_json(Obj, "min_memfree", min_memfree);
+		nullable_uint_to_json(Obj, "max_memfree", max_memfree);
+		nullable_uint_to_json(Obj, "avg_memfree", avg_memfree);
+		nullable_uint_to_json(Obj, "latest_memfree", latest_memfree);
+	}
+
+	void MCPMemorySummaryMeta::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "requestedWindow", requestedWindow);
+		field_to_json(Obj, "observedWindow", observedWindow);
+	}
+
+	void MCPGatewayMemorySummary::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "data", data);
+		field_to_json(Obj, "meta", meta);
 	}
 
 	void WifiClientRate::to_json(Poco::JSON::Object &Obj) const {

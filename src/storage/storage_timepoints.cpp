@@ -7,6 +7,7 @@
 #include "framework/OpenWifiTypes.h"
 #include "framework/RESTAPI_utils.h"
 #include "VenueCoordinator.h"
+#include <utility>
 
 template <>
 void ORM::DB<OpenWifi::TimePointDBRecordType, OpenWifi::AnalyticsObjects::DeviceTimePoint>::Convert(
@@ -26,7 +27,8 @@ namespace OpenWifi {
 										  ORM::Field{"ssid_data", ORM::FieldType::FT_TEXT},
 										  ORM::Field{"radio_data", ORM::FieldType::FT_TEXT},
 										  ORM::Field{"device_info", ORM::FieldType::FT_TEXT},
-										  ORM::Field{"serialNumber", ORM::FieldType::FT_TEXT}};
+										  ORM::Field{"serialNumber", ORM::FieldType::FT_TEXT},
+										  ORM::Field{"resource_data", ORM::FieldType::FT_TEXT}};
 
 	static ORM::IndexVec TimePointDB_Indexes{
 		{std::string("timepoint_board_index"),
@@ -40,9 +42,9 @@ namespace OpenWifi {
 		: DB(T, "timepoints", TimePoint_Fields, TimePointDB_Indexes, P, L, "tpo") {}
 
 	bool TimePointDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{};
+		std::vector<std::string> Statements{"alter table timepoints add column resource_data TEXT"};
 		RunScript(Statements);
-		to = 2;
+		to = 3;
 		return true;
 	}
 
@@ -90,6 +92,32 @@ namespace OpenWifi {
 			GetRecords(0, MaxRecords, Recs, WhereClause, " order by timestamp, serialNumber ASC ");
 			return true;
 		}
+	}
+
+	bool TimePointDB::SelectRecordsBySerial(const std::string &boardId,
+											const std::string &serialNumber, uint64_t startTime,
+											uint64_t endTime, uint64_t MaxRecords,
+											std::vector<AnalyticsObjects::DeviceTimePoint> &Recs) {
+		Recs.clear();
+		if (MaxRecords == 0 || endTime <= startTime)
+			return true;
+
+		auto WhereClause = fmt::format(
+			" boardId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
+			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
+		const auto Sql = fmt::format("select {} from {} where {} order by timestamp, id ASC{}",
+									 SelectFields(), TableName_, WhereClause,
+									 ComputeRange(0, MaxRecords));
+		std::vector<TimePointDBRecordType> RawRecords;
+		if (!Join(Sql, RawRecords))
+			return false;
+		Recs.reserve(RawRecords.size());
+		for (const auto &Row : RawRecords) {
+			AnalyticsObjects::DeviceTimePoint Point;
+			Convert(Row, Point);
+			Recs.emplace_back(std::move(Point));
+		}
+		return true;
 	}
 
 	bool TimePointDB::DeleteBoard(const std::string &boardId) {
@@ -204,6 +232,9 @@ void ORM::DB<OpenWifi::TimePointDBRecordType, OpenWifi::AnalyticsObjects::Device
 	Out.device_info =
 		OpenWifi::RESTAPI_utils::to_object<OpenWifi::AnalyticsObjects::DeviceInfo>(In.get<6>());
 	Out.serialNumber = In.get<7>();
+	Out.resource_data =
+		OpenWifi::RESTAPI_utils::to_object<OpenWifi::AnalyticsObjects::DeviceResourceTimePoint>(
+			In.get<8>());
 }
 
 template <>
@@ -217,4 +248,5 @@ void ORM::DB<OpenWifi::TimePointDBRecordType, OpenWifi::AnalyticsObjects::Device
 	Out.set<5>(OpenWifi::RESTAPI_utils::to_string(In.radio_data));
 	Out.set<6>(OpenWifi::RESTAPI_utils::to_string(In.device_info));
 	Out.set<7>(In.serialNumber);
+	Out.set<8>(OpenWifi::RESTAPI_utils::to_string(In.resource_data));
 }
