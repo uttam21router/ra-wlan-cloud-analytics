@@ -36,6 +36,17 @@ namespace OpenWifi::AnalyticsObjects {
 			}
 			return Parsed;
 		}
+
+		std::optional<int64_t> OptionalInt64FromJson(const Poco::JSON::Object::Ptr &Obj,
+													 const char *Field) {
+			if (!Obj->has(Field) || Obj->isNull(Field))
+				return std::nullopt;
+			try {
+				return static_cast<int64_t>(Obj->get(Field));
+			} catch (...) {
+			}
+			return std::nullopt;
+		}
 	} // namespace
 
 	void Report::reset() {}
@@ -364,7 +375,10 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		field_to_json(Obj, "transmit_ms", transmit_ms);
 		field_to_json(Obj, "tx_power", tx_power);
 		field_to_json(Obj, "channel", channel);
-		field_to_json(Obj, "temperature", temperature);
+		if (temperature_present)
+			field_to_json(Obj, "temperature", temperature);
+		if (wifi_temp)
+			field_to_json(Obj, "wifi_temp", *wifi_temp);
 		field_to_json(Obj, "noise", noise);
 		field_to_json(Obj, "active_pct", active_pct);
 		field_to_json(Obj, "busy_pct", busy_pct);
@@ -382,7 +396,9 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 			field_from_json(Obj, "transmit_ms", transmit_ms);
 			field_from_json(Obj, "tx_power", tx_power);
 			field_from_json(Obj, "channel", channel);
+			temperature_present = Obj->has("temperature") && !Obj->isNull("temperature");
 			field_from_json(Obj, "temperature", temperature);
+			wifi_temp = OptionalInt64FromJson(Obj, "wifi_temp");
 			field_from_json(Obj, "noise", noise);
 			field_from_json(Obj, "active_pct", active_pct);
 			field_from_json(Obj, "busy_pct", busy_pct);
@@ -597,6 +613,14 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 			Obj.set(Field, Poco::Dynamic::Var());
 	}
 
+	static void nullable_double_to_json(Poco::JSON::Object &Obj, const char *Field,
+										const std::optional<double> &Value) {
+		if (Value)
+			field_to_json(Obj, Field, *Value);
+		else
+			Obj.set(Field, Poco::Dynamic::Var());
+	}
+
 	void MCPMemorySummaryData::to_json(Poco::JSON::Object &Obj) const {
 		nullable_uint_to_json(Obj, "min_memfree", min_memfree);
 		nullable_uint_to_json(Obj, "max_memfree", max_memfree);
@@ -610,6 +634,22 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 	}
 
 	void MCPGatewayMemorySummary::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "data", data);
+		field_to_json(Obj, "meta", meta);
+	}
+
+	void MCPRadioTemperatureData::to_json(Poco::JSON::Object &Obj) const {
+		nullable_double_to_json(Obj, "min_wifi_temp_2.4G", min_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "max_wifi_temp_2.4G", max_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "avg_wifi_temp_2.4G", avg_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "latest_wifi_temp_2.4G", latest_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "min_wifi_temp_5G", min_wifi_temp_5G);
+		nullable_double_to_json(Obj, "max_wifi_temp_5G", max_wifi_temp_5G);
+		nullable_double_to_json(Obj, "avg_wifi_temp_5G", avg_wifi_temp_5G);
+		nullable_double_to_json(Obj, "latest_wifi_temp_5G", latest_wifi_temp_5G);
+	}
+
+	void MCPGatewayRadioTemperatureSummary::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "data", data);
 		field_to_json(Obj, "meta", meta);
 	}

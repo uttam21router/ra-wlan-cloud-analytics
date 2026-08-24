@@ -4,6 +4,7 @@
 #include <Poco/Net/HTTPResponse.h>
 #include <Poco/URI.h>
 #include <algorithm>
+#include <cstddef>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -43,6 +44,13 @@ namespace OpenWifi {
 			uint64_t startTime = 0;
 			uint64_t endTime = 0;
 			uint64_t lookbackHours = 0;
+		};
+
+		struct RadioTemperatureSample {
+			uint64_t timestamp = 0;
+			std::string id;
+			std::size_t radioIndex = 0;
+			double value = 0.0;
 		};
 
 		inline void SetError(Error &E, Poco::Net::HTTPResponse::HTTPStatus Status,
@@ -124,6 +132,17 @@ namespace OpenWifi {
 			SetError(E, Poco::Net::HTTPResponse::HTTP_FORBIDDEN, "forbidden",
 					 std::string("Caller lacks ") + GatewayMetricsReadPermission +
 						 " for this router scope");
+			return false;
+		}
+
+		inline bool FindVenueRetention(const AnalyticsObjects::BoardInfo &Board,
+									   const std::string &VenueId, uint64_t &RetentionSeconds) {
+			for (const auto &Venue : Board.venueList) {
+				if (Venue.id == VenueId) {
+					RetentionSeconds = Venue.retention;
+					return RetentionSeconds > 0;
+				}
+			}
 			return false;
 		}
 
@@ -319,6 +338,63 @@ namespace OpenWifi {
 			return true;
 		}
 
+		inline bool ResolveTemperatureMigrationCutover(
+			const std::string &ConfiguredValue, const std::string &EnvironmentValue,
+			uint64_t &CutoverTime) {
+			constexpr const char *DefaultCutover = "2026-07-01T00:00:00Z";
+			auto Candidate = !EnvironmentValue.empty() ? EnvironmentValue : ConfiguredValue;
+			if (Candidate.empty())
+				Candidate = DefaultCutover;
+			if (ParseTimestampTill(Candidate, CutoverTime))
+				return true;
+			ParseTimestampTill(DefaultCutover, CutoverTime);
+			return false;
+		}
+
+		inline bool ValidateTemperatureCutover(const Window &Requested, uint64_t CutoverTime,
+											   Error &E) {
+			if (Requested.startTime >= CutoverTime)
+				return true;
+			SetError(E, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
+					 "temperature_range_before_cutover",
+					 "The requested summary interval starts before the temperature migration "
+					 "cutover timestamp.");
+			return false;
+		}
+
+		inline bool IsValidRadioTemperature(double Value) {
+			return Value >= -40.0 && Value <= 125.0 && Value != 255.0;
+		}
+
+		inline std::optional<double> SelectRadioTemperature(
+			const AnalyticsObjects::RadioTimePoint &Radio) {
+			if (Radio.wifi_temp) {
+				auto Value = static_cast<double>(*Radio.wifi_temp);
+				if (IsValidRadioTemperature(Value))
+					return Value;
+				return std::nullopt;
+			}
+			if (Radio.temperature_present) {
+				auto Value = static_cast<double>(Radio.temperature);
+				if (IsValidRadioTemperature(Value))
+					return Value;
+			}
+			return std::nullopt;
+		}
+
+		inline double RoundTemperatureAverage(double Value) {
+			return std::round(Value * 100.0) / 100.0;
+		}
+
+		inline bool IsNewerRadioTemperatureSample(const RadioTemperatureSample &Candidate,
+												  const RadioTemperatureSample &Current) {
+			if (Candidate.timestamp != Current.timestamp)
+				return Candidate.timestamp > Current.timestamp;
+			if (Candidate.id != Current.id)
+				return Candidate.id > Current.id;
+			return Candidate.radioIndex > Current.radioIndex;
+		}
+
 		inline AnalyticsObjects::MCPGatewayMemorySummary CalculateMemorySummary(
 			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
 			const Window &Requested) {
@@ -384,6 +460,75 @@ namespace OpenWifi {
 				else
 					Summary.data.avg_memfree = static_cast<uint64_t>(Average);
 			}
+			return Summary;
+		}
+
+		inline void ApplyRadioTemperatureSample(
+			AnalyticsObjects::MCPRadioTemperatureData &Data,
+			const RadioTemperatureSample &Sample, bool Is24GHz,
+			std::optional<RadioTemperatureSample> &Latest, uint64_t &Count, double &Sum) {
+			auto &Min = Is24GHz ? Data.min_wifi_temp_2_4G : Data.min_wifi_temp_5G;
+			auto &Max = Is24GHz ? Data.max_wifi_temp_2_4G : Data.max_wifi_temp_5G;
+			auto &Average = Is24GHz ? Data.avg_wifi_temp_2_4G : Data.avg_wifi_temp_5G;
+			auto &LatestValue =
+				Is24GHz ? Data.latest_wifi_temp_2_4G : Data.latest_wifi_temp_5G;
+
+			Min = Min ? std::min(*Min, Sample.value) : Sample.value;
+			Max = Max ? std::max(*Max, Sample.value) : Sample.value;
+			Sum += Sample.value;
+			++Count;
+			Average = RoundTemperatureAverage(Sum / static_cast<double>(Count));
+
+			if (!Latest || IsNewerRadioTemperatureSample(Sample, *Latest)) {
+				Latest = Sample;
+				LatestValue = Sample.value;
+			}
+		}
+
+		inline AnalyticsObjects::MCPGatewayRadioTemperatureSummary
+		CalculateRadioTemperatureSummary(
+			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
+			const Window &Requested) {
+			AnalyticsObjects::MCPGatewayRadioTemperatureSummary Summary;
+			Summary.meta.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.meta.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+
+			uint64_t Count24 = 0, Count5 = 0;
+			double Sum24 = 0.0, Sum5 = 0.0;
+			std::optional<RadioTemperatureSample> Latest24, Latest5;
+			std::optional<uint64_t> ObservedStart, ObservedEnd;
+
+			for (const auto &Record : Records) {
+				for (std::size_t Index = 0; Index < Record.radio_data.size(); ++Index) {
+					const auto &Radio = Record.radio_data[Index];
+					const auto Temperature = SelectRadioTemperature(Radio);
+					if (!Temperature || (Radio.band != 2 && Radio.band != 5))
+						continue;
+
+					RadioTemperatureSample Sample;
+					Sample.timestamp = Record.timestamp;
+					Sample.id = Record.id;
+					Sample.radioIndex = Index;
+					Sample.value = *Temperature;
+					if (Radio.band == 2) {
+						ApplyRadioTemperatureSample(Summary.data, Sample, true, Latest24, Count24,
+													Sum24);
+					} else {
+						ApplyRadioTemperatureSample(Summary.data, Sample, false, Latest5, Count5,
+													Sum5);
+					}
+
+					ObservedStart =
+						ObservedStart ? std::min(*ObservedStart, Record.timestamp) : Record.timestamp;
+					ObservedEnd =
+						ObservedEnd ? std::max(*ObservedEnd, Record.timestamp) : Record.timestamp;
+				}
+			}
+
+			if (ObservedStart)
+				Summary.meta.observedWindow.startTime = FormatTimestamp(*ObservedStart);
+			if (ObservedEnd)
+				Summary.meta.observedWindow.endTime = FormatTimestamp(*ObservedEnd);
 			return Summary;
 		}
 
