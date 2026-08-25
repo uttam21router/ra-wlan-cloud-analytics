@@ -26,12 +26,14 @@ namespace OpenWifi {
 
 		void run() final;
 		auto &BoardsDB() { return *BoardsDB_; };
+		auto &BoardVenuesDB() { return *BoardVenuesDB_; };
 		auto &TimePointsDB() { return *TimePointsDB_; };
 		auto &WifiClientHistoryDB() { return *WifiClientHistoryDB_; };
 		void onTimer(Poco::Timer &timer);
 
 	  private:
 		std::unique_ptr<OpenWifi::BoardsDB> BoardsDB_;
+		std::unique_ptr<OpenWifi::BoardVenueDB> BoardVenuesDB_;
 		std::unique_ptr<OpenWifi::TimePointDB> TimePointsDB_;
 		std::unique_ptr<OpenWifi::WifiClientHistoryDB> WifiClientHistoryDB_;
 		Poco::Thread Updater_;

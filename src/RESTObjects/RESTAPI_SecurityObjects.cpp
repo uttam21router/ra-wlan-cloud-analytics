@@ -417,15 +417,12 @@ namespace OpenWifi::SecurityObjects {
 		webtoken.to_json(TI);
 		Obj.set("tokenInfo", TI);
 		Obj.set("userInfo", UI);
-		field_to_json(Obj, "permissions", permissions);
 	}
 
 	bool UserInfoAndPolicy::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		try {
 			field_from_json(Obj, "tokenInfo", webtoken);
 			field_from_json(Obj, "userInfo", userinfo);
-			if (Obj->has("permissions"))
-				field_from_json(Obj, "permissions", permissions);
 			return true;
 		} catch (...) {
 			std::cout << "Cannot parse: UserInfoAndPolicy" << std::endl;

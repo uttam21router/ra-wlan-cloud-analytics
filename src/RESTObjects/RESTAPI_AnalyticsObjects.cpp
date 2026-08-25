@@ -573,47 +573,6 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		return false;
 	}
 
-	void MCPRequestedWindow::to_json(Poco::JSON::Object &Obj) const {
-		field_to_json(Obj, "startTime", startTime);
-		field_to_json(Obj, "endTime", endTime);
-	}
-
-	void MCPObservedWindow::to_json(Poco::JSON::Object &Obj) const {
-		if (startTime)
-			field_to_json(Obj, "startTime", *startTime);
-		else
-			Obj.set("startTime", Poco::Dynamic::Var());
-		if (endTime)
-			field_to_json(Obj, "endTime", *endTime);
-		else
-			Obj.set("endTime", Poco::Dynamic::Var());
-	}
-
-	static void nullable_uint_to_json(Poco::JSON::Object &Obj, const char *Field,
-									  const std::optional<uint64_t> &Value) {
-		if (Value)
-			field_to_json(Obj, Field, *Value);
-		else
-			Obj.set(Field, Poco::Dynamic::Var());
-	}
-
-	void MCPMemorySummaryData::to_json(Poco::JSON::Object &Obj) const {
-		nullable_uint_to_json(Obj, "min_memfree", min_memfree);
-		nullable_uint_to_json(Obj, "max_memfree", max_memfree);
-		nullable_uint_to_json(Obj, "avg_memfree", avg_memfree);
-		nullable_uint_to_json(Obj, "latest_memfree", latest_memfree);
-	}
-
-	void MCPMemorySummaryMeta::to_json(Poco::JSON::Object &Obj) const {
-		field_to_json(Obj, "requestedWindow", requestedWindow);
-		field_to_json(Obj, "observedWindow", observedWindow);
-	}
-
-	void MCPGatewayMemorySummary::to_json(Poco::JSON::Object &Obj) const {
-		field_to_json(Obj, "data", data);
-		field_to_json(Obj, "meta", meta);
-	}
-
 	void WifiClientRate::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "bitrate", bitrate);
 		field_to_json(Obj, "chwidth", chwidth);

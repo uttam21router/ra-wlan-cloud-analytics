@@ -21,12 +21,16 @@ namespace OpenWifi {
 		StorageClass::Start();
 
 		BoardsDB_ = std::make_unique<OpenWifi::BoardsDB>(dbType_, *Pool_, Logger());
+		BoardVenuesDB_ = std::make_unique<OpenWifi::BoardVenueDB>(dbType_, *Pool_, Logger());
 		TimePointsDB_ = std::make_unique<OpenWifi::TimePointDB>(dbType_, *Pool_, Logger());
 		WifiClientHistoryDB_ =
 			std::make_unique<OpenWifi::WifiClientHistoryDB>(dbType_, *Pool_, Logger());
 
 		TimePointsDB_->Create();
 		BoardsDB_->Create();
+		BoardVenuesDB_->Create();
+		if (!BoardVenuesDB_->RebuildFromBoards(*BoardsDB_))
+			poco_error(Logger(), "Failed to rebuild board venue mappings from Analytics boards");
 		WifiClientHistoryDB_->Create();
 
 		PeriodicCleanup_ = MicroServiceConfigGetInt("storage.cleanup.interval", 6 * 60 * 60);

@@ -42,22 +42,30 @@ namespace OpenWifi {
 			return false;
 		}
 
-		std::vector<AnalyticsObjects::BoardInfo> Boards;
-		auto Visitor = [&](const AnalyticsObjects::BoardInfo &Board) {
-			Boards.emplace_back(Board);
-			return true;
-		};
-		if (!StorageService()->BoardsDB().Iterate(Visitor)) {
+		std::string BoardId;
+		auto LookupResult = StorageService()->BoardVenuesDB().GetBoardIdByVenue(Device.venue, BoardId);
+		if (LookupResult == BoardVenueLookupResult::StorageError) {
 			poco_error(Client.Logger(),
-					   "Failed to read Analytics boards while resolving routerId=" + routerId);
+					   "Failed to read Analytics board venue mapping while resolving routerId=" +
+						   routerId);
+			AnalyticsBoardStorageFailure(E);
+			return false;
+		}
+		if (LookupResult == BoardVenueLookupResult::NotFound) {
+			NotFound(E);
+			return false;
+		}
+
+		if (!StorageService()->BoardsDB().GetRecord("id", BoardId, Resolved.board)) {
+			poco_error(Client.Logger(), "Resolved board venue mapping references missing boardId=" +
+											BoardId + " for routerId=" + routerId);
 			AnalyticsBoardStorageFailure(E);
 			return false;
 		}
 
-		if (!ResolveBoardForVenue(Device.venue, Boards, Resolved, E))
-			return false;
-
 		Resolved.routerId = routerId;
+		Resolved.resolvedBoardId = BoardId;
+		Resolved.resolvedVenueId = Device.venue;
 		return true;
 	}
 

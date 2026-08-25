@@ -33,6 +33,8 @@ namespace OpenWifi {
 			return NotFound();
 		}
 		VenueCoordinator()->StopBoard(id);
+		if (!StorageService()->BoardVenuesDB().DeleteBoard(id))
+			return InternalError(RESTAPI::Errors::CouldNotBeDeleted);
 		StorageService()->BoardsDB().DeleteRecord("id", id);
 		StorageService()->TimePointsDB().DeleteBoard(id);
 		return OK();
@@ -52,7 +54,17 @@ namespace OpenWifi {
 
 		ProvObjects::CreateObjectInfo(RawObject, UserInfo_.userinfo, NewObject.info);
 
+		bool VenueConflict = false;
+		if (!StorageService()->BoardVenuesDB().CanAssignBoardVenues(NewObject, VenueConflict))
+			return InternalError(RESTAPI::Errors::RecordNotCreated);
+		if (VenueConflict)
+			return InternalError(RESTAPI::Errors::RecordNotCreated);
+
 		if (StorageService()->BoardsDB().CreateRecord(NewObject)) {
+			if (!StorageService()->BoardVenuesDB().ReplaceBoardVenues(NewObject)) {
+				StorageService()->BoardsDB().DeleteRecord("id", NewObject.info.id);
+				return InternalError(RESTAPI::Errors::RecordNotCreated);
+			}
 			VenueCoordinator()->AddBoard(NewObject.info.id);
 			AnalyticsObjects::BoardInfo NewBoard;
 			StorageService()->BoardsDB().GetRecord("id", NewObject.info.id, NewBoard);
@@ -89,7 +101,15 @@ namespace OpenWifi {
 			Existing.venueList = NewObject.venueList;
 		}
 
+		bool VenueConflict = false;
+		if (!StorageService()->BoardVenuesDB().CanAssignBoardVenues(Existing, VenueConflict))
+			return InternalError(RESTAPI::Errors::RecordNotUpdated);
+		if (VenueConflict)
+			return InternalError(RESTAPI::Errors::RecordNotUpdated);
+
 		if (StorageService()->BoardsDB().UpdateRecord("id", Existing.info.id, Existing)) {
+			if (!StorageService()->BoardVenuesDB().ReplaceBoardVenues(Existing))
+				return InternalError(RESTAPI::Errors::RecordNotUpdated);
 			VenueCoordinator()->UpdateBoard(Existing.info.id);
 			AnalyticsObjects::BoardInfo NewBoard;
 			StorageService()->BoardsDB().GetRecord("id", Existing.info.id, NewBoard);

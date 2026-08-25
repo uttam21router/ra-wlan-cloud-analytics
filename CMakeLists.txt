@@ -125,6 +125,7 @@ add_executable(owanalytics
         src/RESTObjects/RESTAPI_OWLSobjects.cpp src/RESTObjects/RESTAPI_OWLSobjects.h
         src/RESTObjects/RESTAPI_ProvObjects.cpp src/RESTObjects/RESTAPI_ProvObjects.h
         src/RESTObjects/RESTAPI_AnalyticsObjects.cpp src/RESTObjects/RESTAPI_AnalyticsObjects.h
+        src/RESTObjects/RESTAPI_MCPAnalyticsObjects.cpp
         src/RESTAPI/RESTAPI_mcp_helpers.cpp src/RESTAPI/RESTAPI_mcp_helpers.h
         src/RESTAPI/RESTAPI_device_memory_summary_handler.cpp src/RESTAPI/RESTAPI_device_memory_summary_handler.h
         src/RouterIdResolver.cpp src/RouterIdResolver.h
@@ -165,7 +166,8 @@ target_link_libraries(owanalytics PUBLIC
 
 if(BUILD_TESTING)
     add_executable(test_mcp_memory_summary
-            tests/test_mcp_memory_summary.cpp)
+            tests/test_mcp_memory_summary.cpp
+            src/RESTObjects/RESTAPI_MCPAnalyticsObjects.cpp)
     target_include_directories(test_mcp_memory_summary PRIVATE src)
     target_link_libraries(test_mcp_memory_summary PUBLIC
             ${Poco_LIBRARIES}
