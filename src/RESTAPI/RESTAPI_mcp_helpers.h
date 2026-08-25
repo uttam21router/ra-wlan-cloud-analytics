@@ -5,6 +5,7 @@
 #include <Poco/URI.h>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <functional>
@@ -322,13 +323,15 @@ namespace OpenWifi {
 			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
 			const Window &Requested) {
 			AnalyticsObjects::MCPGatewayMemorySummary Summary;
-			Summary.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
-			Summary.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+			Summary.meta.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.meta.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
 
 			uint64_t Count = 0;
 			long double Sum = 0;
+			uint64_t LatestTimestamp = 0;
 			uint64_t ObservedStartTimestamp = 0;
 			uint64_t ObservedEndTimestamp = 0;
+			std::string LatestId;
 
 			for (const auto &Record : Records) {
 				const auto &Resource = Record.resource_data;
@@ -339,22 +342,34 @@ namespace OpenWifi {
 
 				auto Free = *Resource.memory_free;
 				if (Count == 0) {
-					Summary.min_memfree = Free;
-					Summary.max_memfree = Free;
-					Summary.observedWindow.startTime = FormatTimestamp(Record.timestamp);
-					Summary.observedWindow.endTime = FormatTimestamp(Record.timestamp);
+					Summary.data.min_memfree = Free;
+					Summary.data.max_memfree = Free;
+					Summary.data.latest_memfree = Free;
+					Summary.meta.observedWindow.startTime = FormatTimestamp(Record.timestamp);
+					Summary.meta.observedWindow.endTime = FormatTimestamp(Record.timestamp);
+					LatestTimestamp = Record.timestamp;
 					ObservedStartTimestamp = Record.timestamp;
 					ObservedEndTimestamp = Record.timestamp;
+					LatestId = Record.id;
 				} else {
-					Summary.min_memfree = std::min(*Summary.min_memfree, Free);
-					Summary.max_memfree = std::max(*Summary.max_memfree, Free);
+					Summary.data.min_memfree = std::min(*Summary.data.min_memfree, Free);
+					Summary.data.max_memfree = std::max(*Summary.data.max_memfree, Free);
 					if (Record.timestamp < ObservedStartTimestamp) {
-						Summary.observedWindow.startTime = FormatTimestamp(Record.timestamp);
+						Summary.meta.observedWindow.startTime = FormatTimestamp(Record.timestamp);
 						ObservedStartTimestamp = Record.timestamp;
 					}
 					if (Record.timestamp > ObservedEndTimestamp) {
-						Summary.observedWindow.endTime = FormatTimestamp(Record.timestamp);
+						Summary.meta.observedWindow.endTime = FormatTimestamp(Record.timestamp);
 						ObservedEndTimestamp = Record.timestamp;
+					}
+					if (Record.timestamp > LatestTimestamp ||
+						(Record.timestamp == LatestTimestamp &&
+						 (Record.id > LatestId ||
+						  (Record.id.empty() && LatestId.empty() &&
+						   Free > *Summary.data.latest_memfree)))) {
+						Summary.data.latest_memfree = Free;
+						LatestTimestamp = Record.timestamp;
+						LatestId = Record.id;
 					}
 				}
 
@@ -363,7 +378,11 @@ namespace OpenWifi {
 			}
 
 			if (Count > 0) {
-				Summary.avg_memfree = static_cast<double>(Sum / static_cast<long double>(Count));
+				auto Average = std::floor(Sum / static_cast<long double>(Count) + 0.5L);
+				if (Average > static_cast<long double>(std::numeric_limits<uint64_t>::max()))
+					Summary.data.avg_memfree = std::numeric_limits<uint64_t>::max();
+				else
+					Summary.data.avg_memfree = static_cast<uint64_t>(Average);
 			}
 			return Summary;
 		}

@@ -2,7 +2,6 @@
 #include "RouterIdResolver.h"
 
 #include <cassert>
-#include <cmath>
 #include <iostream>
 #include <limits>
 #include <utility>
@@ -46,90 +45,109 @@ namespace {
 		return B;
 	}
 
-	void AssertAvg(const std::optional<double> &Value, double Expected) {
-		assert(Value);
-		assert(std::fabs(*Value - Expected) < 0.000001);
-	}
-
 	void TestMultipleValidSamples() {
 		auto Summary = MCP::CalculateMemorySummary(
 			{Point(100, 100, 1000), Point(300, 300, 1000), Point(200, 200, 1000)},
 			TestWindow());
-		assert(Summary.min_memfree == 100);
-		assert(Summary.max_memfree == 300);
-		AssertAvg(Summary.avg_memfree, 200.0);
-		assert(Summary.observedWindow.startTime == "1970-01-01T00:01:40Z");
-		assert(Summary.observedWindow.endTime == "1970-01-01T00:05:00Z");
+		assert(Summary.data.min_memfree == 100);
+		assert(Summary.data.max_memfree == 300);
+		assert(Summary.data.avg_memfree == 200);
+		assert(Summary.data.latest_memfree == 300);
+		assert(Summary.meta.observedWindow.startTime == "1970-01-01T00:01:40Z");
+		assert(Summary.meta.observedWindow.endTime == "1970-01-01T00:05:00Z");
 	}
 
 	void TestSingleAndNoSampleCases() {
 		auto Single = MCP::CalculateMemorySummary({Point(250, 250)}, TestWindow());
-		assert(Single.min_memfree == 250);
-		assert(Single.max_memfree == 250);
-		AssertAvg(Single.avg_memfree, 250.0);
+		assert(Single.data.min_memfree == 250);
+		assert(Single.data.max_memfree == 250);
+		assert(Single.data.avg_memfree == 250);
+		assert(Single.data.latest_memfree == 250);
 
 		auto Empty = MCP::CalculateMemorySummary({}, TestWindow());
-		assert(!Empty.min_memfree);
-		assert(!Empty.max_memfree);
-		assert(!Empty.avg_memfree);
-		assert(!Empty.observedWindow.startTime);
-		assert(!Empty.observedWindow.endTime);
+		assert(!Empty.data.min_memfree);
+		assert(!Empty.data.max_memfree);
+		assert(!Empty.data.avg_memfree);
+		assert(!Empty.data.latest_memfree);
+		assert(!Empty.meta.observedWindow.startTime);
+		assert(!Empty.meta.observedWindow.endTime);
 	}
 
 	void TestContractSerialization() {
 		auto Summary = MCP::CalculateMemorySummary({Point(250, 250)}, TestWindow());
 		Poco::JSON::Object Obj;
 		Summary.to_json(Obj);
-		assert(!Obj.has("data"));
-		assert(!Obj.has("meta"));
-		assert(Obj.has("min_memfree"));
-		assert(Obj.has("max_memfree"));
-		assert(Obj.has("avg_memfree"));
+		assert(Obj.size() == 2);
+		assert(Obj.has("data"));
+		assert(Obj.has("meta"));
+		assert(!Obj.has("min_memfree"));
+		assert(!Obj.has("max_memfree"));
+		assert(!Obj.has("avg_memfree"));
 		assert(!Obj.has("latest_memfree"));
-		assert(Obj.has("requestedWindow"));
-		assert(Obj.has("observedWindow"));
+		assert(!Obj.has("requestedWindow"));
+		assert(!Obj.has("observedWindow"));
+
+		auto Data = Obj.getObject("data");
+		auto Meta = Obj.getObject("meta");
+		assert(Data->has("min_memfree"));
+		assert(Data->has("max_memfree"));
+		assert(Data->has("avg_memfree"));
+		assert(Data->has("latest_memfree"));
+		assert(Meta->has("requestedWindow"));
+		assert(Meta->has("observedWindow"));
 	}
 
 	void TestInvalidSamplesAreIgnored() {
 		auto Summary = MCP::CalculateMemorySummary(
-			{Point(100, std::nullopt, 1000), Point(200, 500, 400), Point(300, 500),
-			 Point(400, 600, 1000)},
-			TestWindow());
-		assert(Summary.min_memfree == 500);
-		assert(Summary.max_memfree == 600);
-		AssertAvg(Summary.avg_memfree, 550.0);
-		assert(Summary.observedWindow.startTime == "1970-01-01T00:05:00Z");
-		assert(Summary.observedWindow.endTime == "1970-01-01T00:06:40Z");
+				{Point(100, std::nullopt, 1000), Point(200, 500, 400), Point(300, 500),
+				 Point(400, 600, 1000)},
+				TestWindow());
+		assert(Summary.data.min_memfree == 500);
+		assert(Summary.data.max_memfree == 600);
+		assert(Summary.data.avg_memfree == 550);
+		assert(Summary.data.latest_memfree == 600);
+		assert(Summary.meta.observedWindow.startTime == "1970-01-01T00:05:00Z");
+		assert(Summary.meta.observedWindow.endTime == "1970-01-01T00:06:40Z");
 	}
 
-	void TestAverageCalculation() {
+	void TestAverageRounding() {
 		auto Whole = MCP::CalculateMemorySummary({Point(100, 100), Point(200, 200)},
 												 TestWindow());
-		AssertAvg(Whole.avg_memfree, 150.0);
+		assert(Whole.data.avg_memfree == 150);
 
 		auto Half = MCP::CalculateMemorySummary({Point(100, 100), Point(101, 101)}, TestWindow());
-		AssertAvg(Half.avg_memfree, 100.5);
+		assert(Half.data.avg_memfree == 101);
 
-		auto Thirds = MCP::CalculateMemorySummary({Point(100, 100), Point(101, 100),
-												   Point(102, 101)},
-												  TestWindow());
-		AssertAvg(Thirds.avg_memfree, 100.33333333333333);
+		auto FractionalDown =
+			MCP::CalculateMemorySummary({Point(100, 100), Point(101, 100)}, TestWindow());
+		assert(FractionalDown.data.avg_memfree == 100);
 
 		auto Single = MCP::CalculateMemorySummary({Point(100, 123)}, TestWindow());
-		AssertAvg(Single.avg_memfree, 123.0);
+		assert(Single.data.avg_memfree == 123);
 
 		auto Max = std::numeric_limits<uint64_t>::max();
 		auto Large = MCP::CalculateMemorySummary(
 			{Point(100, Max, Max), Point(101, Max - 2, Max)}, TestWindow());
-		assert(Large.avg_memfree);
-		assert(*Large.avg_memfree > 0);
+		assert(Large.data.avg_memfree == Max - 1);
 	}
 
-	void TestObservedWindowSelection() {
+	void TestLatestMemorySelection() {
+		auto One = MCP::CalculateMemorySummary({Point(100, 100)}, TestWindow());
+		assert(One.data.latest_memfree == 100);
+
+		auto Multiple = MCP::CalculateMemorySummary(
+			{Point(100, 100), Point(200, 200), Point(300, 300)}, TestWindow());
+		assert(Multiple.data.latest_memfree == 300);
+
 		auto OutOfOrder = MCP::CalculateMemorySummary(
 			{Point(300, 300), Point(100, 100), Point(200, 200)}, TestWindow());
-		assert(OutOfOrder.observedWindow.startTime == "1970-01-01T00:01:40Z");
-		assert(OutOfOrder.observedWindow.endTime == "1970-01-01T00:05:00Z");
+		assert(OutOfOrder.data.latest_memfree == 300);
+		assert(OutOfOrder.meta.observedWindow.startTime == "1970-01-01T00:01:40Z");
+		assert(OutOfOrder.meta.observedWindow.endTime == "1970-01-01T00:05:00Z");
+
+		auto LatestAtRangeEnd =
+			MCP::CalculateMemorySummary({Point(1000, 100), Point(1999, 999)}, TestWindow());
+		assert(LatestAtRangeEnd.data.latest_memfree == 999);
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> BoundaryRecords{
 			Point(1000, 100), Point(1999, 999), Point(2000, 2000)};
@@ -139,18 +157,24 @@ namespace {
 				Filtered.push_back(Record);
 		}
 		auto EndExcluded = MCP::CalculateMemorySummary(Filtered, TestWindow());
-		assert(EndExcluded.min_memfree == 100);
-		assert(EndExcluded.max_memfree == 999);
+		assert(EndExcluded.data.latest_memfree == 999);
 
 		auto InvalidLatest =
 			MCP::CalculateMemorySummary({Point(1900, 900, 800), Point(1800, 700, 1000)},
 										TestWindow());
-		assert(InvalidLatest.min_memfree == 700);
-		assert(InvalidLatest.max_memfree == 700);
+		assert(InvalidLatest.data.latest_memfree == 700);
+		assert(InvalidLatest.meta.observedWindow.startTime == "1970-01-01T00:30:00Z");
+		assert(InvalidLatest.meta.observedWindow.endTime == "1970-01-01T00:30:00Z");
+
+		auto Tied = MCP::CalculateMemorySummary(
+			{Point(500, 100, std::nullopt, "a"), Point(500, 200, std::nullopt, "b")},
+			TestWindow());
+		assert(Tied.data.latest_memfree == 200);
 
 		auto Empty = MCP::CalculateMemorySummary({Point(100, std::nullopt)}, TestWindow());
-		assert(!Empty.observedWindow.startTime);
-		assert(!Empty.observedWindow.endTime);
+		assert(!Empty.data.latest_memfree);
+		assert(!Empty.meta.observedWindow.startTime);
+		assert(!Empty.meta.observedWindow.endTime);
 	}
 
 	void TestRouterValidation() {
@@ -325,8 +349,8 @@ int main() {
 	TestSingleAndNoSampleCases();
 	TestContractSerialization();
 	TestInvalidSamplesAreIgnored();
-	TestAverageCalculation();
-	TestObservedWindowSelection();
+	TestAverageRounding();
+	TestLatestMemorySelection();
 	TestRouterValidation();
 	TestBearerHeaderValidation();
 	TestGatewayMetricsAuthorization();
