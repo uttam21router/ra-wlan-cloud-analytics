@@ -27,8 +27,13 @@ namespace OpenWifi {
 		ProvObjects::InventoryTag Device;
 		Poco::Net::HTTPResponse::HTTPStatus ProvisioningStatus =
 			Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR;
-		if (!SDK::Prov::Device::GetWithStatus(&Client, routerId, Device, ProvisioningStatus)) {
-			ClassifyProvisioningFailure(ProvisioningStatus, E);
+		auto FetchResult =
+			SDK::Prov::Device::GetWithStatus(&Client, routerId, Device, ProvisioningStatus);
+		if (!ClassifyDeviceFetchResult(FetchResult, ProvisioningStatus, E)) {
+			if (FetchResult == SDK::Prov::Device::FetchResult::InvalidResponse) {
+				poco_warning(Client.Logger(),
+							 "Failed to parse OWPROV inventory response for routerId=" + routerId);
+			}
 			return false;
 		}
 

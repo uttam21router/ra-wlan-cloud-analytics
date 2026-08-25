@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RESTObjects/RESTAPI_AnalyticsObjects.h"
+#include "sdks/SDK_prov.h"
 #include <Poco/Net/HTTPResponse.h>
 #include <string>
 #include <vector>
@@ -27,8 +28,12 @@ namespace OpenWifi {
 
 		bool Resolve(RESTAPIHandler &Client, const std::string &routerId, Result &Resolved,
 					 Error &E);
+		static bool ClassifyDeviceFetchResult(SDK::Prov::Device::FetchResult Result,
+											  Poco::Net::HTTPResponse::HTTPStatus Status,
+											  Error &E);
 		static bool ClassifyProvisioningFailure(Poco::Net::HTTPResponse::HTTPStatus Status,
 												Error &E);
+		static bool InvalidProvisioningResponse(Error &E);
 		static bool ResolveBoardForVenue(const std::string &venueId,
 										 const std::vector<AnalyticsObjects::BoardInfo> &Boards,
 										 Result &Resolved, Error &E);
@@ -48,6 +53,23 @@ namespace OpenWifi {
 		E.error = "owprov_unavailable";
 		E.message = "Upstream provisioning service is unavailable";
 		return false;
+	}
+
+	inline bool RouterIdResolver::InvalidProvisioningResponse(Error &E) {
+		E.status = Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY;
+		E.error = "owprov_invalid_response";
+		E.message = "Upstream provisioning service returned an invalid response";
+		return false;
+	}
+
+	inline bool RouterIdResolver::ClassifyDeviceFetchResult(
+		SDK::Prov::Device::FetchResult Result,
+		Poco::Net::HTTPResponse::HTTPStatus Status, Error &E) {
+		if (Result == SDK::Prov::Device::FetchResult::Success)
+			return true;
+		if (Result == SDK::Prov::Device::FetchResult::InvalidResponse)
+			return InvalidProvisioningResponse(E);
+		return ClassifyProvisioningFailure(Status, E);
 	}
 
 	inline bool RouterIdResolver::ResolveBoardForVenue(

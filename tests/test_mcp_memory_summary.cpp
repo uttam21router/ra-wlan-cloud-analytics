@@ -253,10 +253,70 @@ namespace {
 			Poco::Net::HTTPResponse::HTTP_FORBIDDEN, E));
 		assert(E.status == Poco::Net::HTTPResponse::HTTP_NOT_FOUND);
 		assert(E.error == "not_found");
+		assert(E.message == "Router was not found");
+		assert(!RouterIdResolver::ClassifyProvisioningFailure(
+			Poco::Net::HTTPResponse::HTTP_UNAUTHORIZED, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_NOT_FOUND);
+		assert(E.error == "not_found");
+		assert(!RouterIdResolver::ClassifyProvisioningFailure(
+			Poco::Net::HTTPResponse::HTTP_NOT_FOUND, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_NOT_FOUND);
+		assert(E.error == "not_found");
 		assert(!RouterIdResolver::ClassifyProvisioningFailure(
 			Poco::Net::HTTPResponse::HTTP_GATEWAY_TIMEOUT, E));
 		assert(E.status == Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY);
 		assert(E.error == "owprov_unavailable");
+		assert(E.message == "Upstream provisioning service is unavailable");
+		assert(!RouterIdResolver::ClassifyProvisioningFailure(
+			Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY);
+		assert(E.error == "owprov_unavailable");
+	}
+
+	void TestDeviceFetchResultClassification() {
+		RouterIdResolver::Error E;
+		assert(RouterIdResolver::ClassifyDeviceFetchResult(
+			SDK::Prov::Device::FetchResult::Success, Poco::Net::HTTPResponse::HTTP_OK, E));
+
+		assert(!RouterIdResolver::ClassifyDeviceFetchResult(
+			SDK::Prov::Device::FetchResult::HttpFailure,
+			Poco::Net::HTTPResponse::HTTP_FORBIDDEN, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_NOT_FOUND);
+		assert(E.error == "not_found");
+
+		assert(!RouterIdResolver::ClassifyDeviceFetchResult(
+			SDK::Prov::Device::FetchResult::HttpFailure,
+			Poco::Net::HTTPResponse::HTTP_GATEWAY_TIMEOUT, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY);
+		assert(E.error == "owprov_unavailable");
+
+		assert(!RouterIdResolver::ClassifyDeviceFetchResult(
+			SDK::Prov::Device::FetchResult::InvalidResponse,
+			Poco::Net::HTTPResponse::HTTP_OK, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY);
+		assert(E.error == "owprov_invalid_response");
+		assert(E.message == "Upstream provisioning service returned an invalid response");
+	}
+
+	void TestDeviceFetchOutcomeClassification() {
+		assert(SDK::Prov::Device::ClassifyFetchOutcome(
+				   Poco::Net::HTTPResponse::HTTP_OK, true) ==
+			   SDK::Prov::Device::FetchResult::Success);
+		assert(SDK::Prov::Device::ClassifyFetchOutcome(
+				   Poco::Net::HTTPResponse::HTTP_OK, false) ==
+			   SDK::Prov::Device::FetchResult::InvalidResponse);
+		assert(SDK::Prov::Device::ClassifyFetchOutcome(
+				   Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, false) ==
+			   SDK::Prov::Device::FetchResult::HttpFailure);
+
+		RouterIdResolver::Error E;
+		auto Invalid200 = SDK::Prov::Device::ClassifyFetchOutcome(
+			Poco::Net::HTTPResponse::HTTP_OK, false);
+		assert(!RouterIdResolver::ClassifyDeviceFetchResult(
+			Invalid200, Poco::Net::HTTPResponse::HTTP_OK, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY);
+		assert(E.error == "owprov_invalid_response");
+		assert(E.message == "Upstream provisioning service returned an invalid response");
 	}
 
 	void TestTimestampValidation() {
@@ -355,6 +415,8 @@ int main() {
 	TestBearerHeaderValidation();
 	TestGatewayMetricsAuthorization();
 	TestRouterResolutionHelpers();
+	TestDeviceFetchResultClassification();
+	TestDeviceFetchOutcomeClassification();
 	TestTimestampValidation();
 	TestQueryValidation();
 	TestFutureAndRetentionValidation();
