@@ -82,7 +82,7 @@ All REST handlers must enforce request validation in four distinct sequential ph
    - Return HTTP `404 not_found` if the router serial does not exist in OWPROV.
    - Return HTTP `404 not_found` if the router serial exists in OWPROV but is outside the authenticated caller's accessible entity, venue, or board scope.
    - Do not return HTTP `403 Forbidden` for the "existing router outside caller scope" case because it would disclose that the router serial exists.
-   - Load router scope retention configuration (`VenueInfo.retention`) to derive `maxLookbackHours = floor(retention / 3600)`.
+   - Load router scope monitoring configuration (`monitoringDuration`) to derive `maxLookbackHours = floor(monitoringDuration / 3600)`.
 
 3. **Phase 3: Duration, Retention & Endpoint Cutover Validation**
    - Validate duration against scope maximum (all endpoints): `lookbackHours > maxLookbackHours` -> HTTP `400 invalid_lookback_hours`.
@@ -183,7 +183,7 @@ endTime must be less than or equal to currentServerTime + allowedClockSkewSecond
 lookbackHours must be present exactly once.
 lookbackHours must parse as a strict whole decimal integer with no trailing characters.
 lookbackHours must be greater than 0.
-maxLookbackHours = floor(configured retention duration / 3600).
+maxLookbackHours = floor(configured monitoringDuration / 3600).
 lookbackHours must be less than or equal to maxLookbackHours.
 startTime must be less than endTime.
 ```
@@ -193,9 +193,9 @@ If `timestampTill` is beyond `currentServerTime + allowedClockSkewSeconds`, retu
 server time. The returned aggregate must represent the requested half-open
 window exactly, not a silently shortened window.
 
-All APIs in this document derive `maxLookbackHours` from the configured retention duration for the resolved router ownership scope. All APIs share this limit unless an endpoint section explicitly names a stricter limit. No endpoint currently defines a separate limit.
+All APIs in this document derive `maxLookbackHours` from the configured `monitoringDuration` for the resolved router ownership scope. All APIs share this limit unless an endpoint section explicitly names a stricter limit. No endpoint currently defines a separate limit.
 
-For a one-year retention configuration, `maxLookbackHours` is `365 * 24` only when the configured retention duration is exactly 365 days. Do not assume every calendar year is 8760 hours; use the configured retention duration when validating the request.
+For a one-year monitoring configuration, `maxLookbackHours` is `365 * 24` only when the configured monitoring duration is exactly 365 days. Do not assume every calendar year is 8760 hours; use the configured duration and effective retention timestamps when validating the request.
 
 Return validation errors with field-specific error codes:
 
@@ -215,24 +215,24 @@ lookback_outside_retention:
 
 A valid timestamp with an invalid `lookbackHours` value must not return `invalid_timestamp`. Internally, query `timepoints.timestamp` and `wificlienthistory.timestamp` using epoch seconds.
 
-### Retention Configuration
+### Monitoring Configuration
 
-Handlers must load the configured retention duration for the resolved router
-ownership scope before querying metric storage. In the current Analytics board
-model, the authoritative value available to this service is
-`AnalyticsObjects::VenueInfo.retention`.
+Handlers must load the monitoring configuration for the resolved router ownership scope before querying metric storage.
 
 ```text
-retentionDuration = configured VenueInfo.retention duration
-requestEndLimit = currentServerTime + allowedClockSkewSeconds
-retentionStart = currentServerTime - retentionDuration
+monitoringDuration = configured monitoring retention duration
+requestEndLimit = min(currentServerTime + allowedClockSkewSeconds, monitoringConfigurationExpiry)
+retentionDataEnd = min(currentServerTime, monitoringConfigurationExpiry)
+retentionStart = retentionDataEnd - monitoringDuration
+
+If monitoring has been enabled for less time than monitoringDuration:
+  retentionStart = max(monitoringEnabledAt, retentionDataEnd - monitoringDuration)
 ```
 
-Use the configured duration instead of calendar assumptions so leap years and
-partial-year retention behave consistently. Do not derive `retentionStart` from
-`currentServerTime + allowedClockSkewSeconds`; the skew allowance is a request
-upper-bound tolerance, not an extension that slides the retained historical
-window forward.
+Use the configured duration and effective retention timestamps instead of calendar assumptions so leap years, partial-year retention, recently enabled monitoring, and changed retention policies behave consistently.
+Do not derive `retentionStart` from `currentServerTime + allowedClockSkewSeconds`;
+the skew allowance is a request upper-bound tolerance, not an extension that
+slides the retained historical window forward.
 
 The requested half-open range must satisfy:
 
@@ -241,16 +241,34 @@ startTime >= retentionStart
 endTime <= requestEndLimit
 ```
 
-If `endTime > currentServerTime` but `endTime <= requestEndLimit`, accept the
+If `endTime > retentionDataEnd` but `endTime <= requestEndLimit`, accept the
 request as within clock skew tolerance. Query and report the exact requested
-`[startTime, endTime)` window; do not clamp `endTime` to current server time and
-do not reject solely because the request extends slightly beyond it.
+`[startTime, endTime)` window; do not clamp `endTime` to `retentionDataEnd` and
+do not reject solely because the request extends slightly beyond
+`currentServerTime`.
 
 If the requested range violates `startTime >= retentionStart` or
 `endTime <= requestEndLimit`, return `400 Bad Request` with
 `error: "lookback_outside_retention"`.
 
-When retention is not configured for the resolved router scope, return:
+When monitoring is disabled:
+
+```text
+stop ingesting new metric and availability records
+retain existing records until their existing expiry timestamp
+return 409 Conflict for all summary requests
+```
+
+Error response:
+
+```json
+{
+  "error": "monitoring_disabled",
+  "message": "Monitoring is disabled for this router scope"
+}
+```
+
+When monitoring is not configured for the resolved router scope, return:
 
 ```http
 404 Not Found
@@ -258,8 +276,8 @@ When retention is not configured for the resolved router scope, return:
 
 ```json
 {
-  "error": "not_found",
-  "message": "Router was not found"
+  "error": "monitoring_not_configured",
+  "message": "Monitoring is not configured for this router scope"
 }
 ```
 
@@ -277,10 +295,7 @@ timestamp < endTime
 `timestampTill` is the exclusive upper bound. This prevents adjacent requests from double-counting samples or events at the shared boundary.
 
 MCP analytics responses that include window metadata must use common temporal
-field names. For `get_gateway_free_memory`, these fields live under
-`meta.requestedWindow` and `meta.observedWindow`; other existing summary
-responses may expose the same window objects at the response root unless their
-endpoint-specific contract says otherwise.
+field names:
 
 ```text
 requestedWindow.startTime
@@ -664,22 +679,17 @@ None
 
 ```json
 {
-  "data": {
-    "min_memfree": 211374,
-    "max_memfree": 215050,
-    "avg_memfree": 212074,
-    "latest_memfree": 212800
+  "requestedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-26T12:00:00Z",
-      "endTime": "2026-07-27T12:00:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-26T12:03:00Z",
-      "endTime": "2026-07-27T11:57:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-26T12:03:00Z",
+    "endTime": "2026-07-27T11:57:00Z"
+  },
+  "min_memfree": 211374,
+  "max_memfree": 215050,
+  "avg_memfree": 212074.36
 }
 ```
 
@@ -824,14 +834,11 @@ For each record:
   ignore invalid or missing memory_total, memory_cached, and memory_buffered without invalidating memory_free
 
 Return:
-  data.min_memfree = min(memory_free samples)
-  data.max_memfree = max(memory_free samples)
-  data.avg_memfree = rounded_integer(sum(memory_free samples) / sample_count)
-  data.latest_memfree = memory_free from the latest valid contributing sample
-  meta.requestedWindow.startTime = requested startTime
-  meta.requestedWindow.endTime = requested endTime
-  meta.observedWindow.startTime = earliest timestamp of a memory_free sample contributing to the aggregation
-  meta.observedWindow.endTime = latest timestamp of a memory_free sample contributing to the aggregation
+  min_memfree = min(memory_free samples)
+  max_memfree = max(memory_free samples)
+  avg_memfree = sum(memory_free samples) / sample_count
+  observedWindow.startTime = earliest timestamp of a memory_free sample contributing to the aggregation
+  observedWindow.endTime = latest timestamp of a memory_free sample contributing to the aggregation
 ```
 
 Memory values are bytes and must satisfy `0 <= memory_value <= UINT64_MAX`.
@@ -843,13 +850,8 @@ not cause a valid `memory_free` sample to be dropped. For successful responses
 with samples, the invariant is:
 
 ```text
-data.min_memfree <= data.avg_memfree <= data.max_memfree
+min_memfree <= avg_memfree <= max_memfree
 ```
-
-`data.latest_memfree` is selected from the valid contributing sample with the
-greatest timestamp. If multiple valid contributing records have the same
-timestamp, use the documented deterministic stored-record ordering tie-break
-behavior so repeated calls return the same value.
 
 Do not query `device_timepoints.memory_free` unless a separate normalized table and migration are introduced.
 
@@ -878,29 +880,24 @@ Query timepoints and read resource_data.memory_free samples
     ↓
 Calculate min, max and average
     ↓
-Return MCP data/meta response shape
+Return MCP response shape
 ```
 
 ### Empty Result
 
 ```json
 {
-  "data": {
-    "min_memfree": null,
-    "max_memfree": null,
-    "avg_memfree": null,
-    "latest_memfree": null
+  "requestedWindow": {
+    "startTime": "2026-07-26T12:00:00Z",
+    "endTime": "2026-07-27T12:00:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-26T12:00:00Z",
-      "endTime": "2026-07-27T12:00:00Z"
-    },
-    "observedWindow": {
-      "startTime": null,
-      "endTime": null
-    }
-  }
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
+  },
+  "min_memfree": null,
+  "max_memfree": null,
+  "avg_memfree": null
 }
 ```
 

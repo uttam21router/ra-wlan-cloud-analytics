@@ -863,34 +863,32 @@ Valid identity but insufficient analytics permission -> 403 forbidden
 
 ---
 
-## TC-COMMON-020: Monitoring disabled lifecycle state is out of scope
-
-### Scope
-
-The current Analytics API contract validates requested ranges against the
-configured retention duration available in `VenueInfo.retention`. It does not
-define a runtime disabled-monitoring response because this service does not
-currently receive an authoritative monitoring enabled/disabled lifecycle state
-for the resolved router scope.
-
-### Expected result
-
-* No test case should require an HTTP 409 disabled-monitoring response for the current memory-summary implementation.
-* If a future PR wires an authoritative monitoring lifecycle state into Analytics, add new tests for disabled monitoring before reintroducing that response contract.
-
----
-
-## TC-COMMON-021: Retention is not configured
+## TC-COMMON-020: Monitoring is disabled
 
 ### Preconditions
 
 * Router ownership resolves successfully.
-* No retention configuration exists for the resolved router scope.
+* Monitoring is disabled for the resolved router scope.
+
+### Expected result
+
+* HTTP `409 Conflict`.
+* Error is `monitoring_disabled`.
+* Metric aggregation is not executed.
+
+---
+
+## TC-COMMON-021: Monitoring is not configured
+
+### Preconditions
+
+* Router ownership resolves successfully.
+* No monitoring configuration exists for the resolved router scope.
 
 ### Expected result
 
 * HTTP `404 Not Found`.
-* Error is `not_found`.
+* Error is `monitoring_not_configured`.
 * Metric aggregation is not executed.
 
 ---
@@ -899,7 +897,7 @@ for the resolved router scope.
 
 ### Request
 
-Use a valid router ID and a lookback window whose calculated `[startTime, endTime)` falls outside the configured retention window.
+Use a valid router ID and a lookback window whose calculated `[startTime, endTime)` falls outside the configured monitoring retention window.
 
 ### Expected result
 
@@ -934,7 +932,7 @@ Call an endpoint with `timestampTill = 2026-07-29T12:01:00Z` (`capturedNow + 60s
 
 * HTTP `200 OK`.
 * Request is accepted because `timestampTill <= capturedNow + allowedClockSkewSeconds`.
-* The exact requested window is preserved without clamping. For memory-summary responses, `response.meta.requestedWindow.endTime = 2026-07-29T12:01:00Z`.
+* The exact requested window is preserved without clamping (`requestedWindow.endTime = 2026-07-29T12:01:00Z`).
 
 ---
 
@@ -964,7 +962,7 @@ Call an endpoint with `timestampTill` set to a future timestamp within `allowedC
 
 * HTTP `200 OK`.
 * The API does NOT silently clamp `timestampTill` to `capturedNow`.
-* For memory-summary responses, `response.meta.requestedWindow.endTime` matches the exact requested future timestamp (`capturedNow + 30s`).
+* `requestedWindow.endTime` in the response envelope matches the exact requested future timestamp (`capturedNow + 30s`).
 
 ---
 
@@ -2589,22 +2587,17 @@ Expected response:
 
 ```json
 {
-  "data": {
-    "min_memfree": 211374,
-    "max_memfree": 215050,
-    "avg_memfree": 212074,
-    "latest_memfree": 212800
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T11:00:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:55:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:55:00Z"
+  },
+  "min_memfree": 211374,
+  "max_memfree": 215050,
+  "avg_memfree": 212074.36
 }
 ```
 
@@ -2625,22 +2618,17 @@ Timestamp    memory_free    memory_total
 
 ```json
 {
-  "data": {
-    "min_memfree": 200000,
-    "max_memfree": 300000,
-    "avg_memfree": 250000,
-    "latest_memfree": 300000
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:30:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:20:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:20:00Z"
+  },
+  "min_memfree": 200000,
+  "max_memfree": 300000,
+  "avg_memfree": 250000.0
 }
 ```
 
@@ -2659,22 +2647,17 @@ memory_total = 512000
 
 ```json
 {
-  "data": {
-    "min_memfree": 212074,
-    "max_memfree": 212074,
-    "avg_memfree": 212074,
-    "latest_memfree": 212074
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T11:00:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:00:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:00:00Z"
+  },
+  "min_memfree": 212074,
+  "max_memfree": 212074,
+  "avg_memfree": 212074.0
 }
 ```
 
@@ -2701,22 +2684,17 @@ Requested range:
 
 ```json
 {
-  "data": {
-    "min_memfree": 200000,
-    "max_memfree": 200000,
-    "avg_memfree": 200000,
-    "latest_memfree": 200000
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T11:00:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:00:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:00:00Z"
+  },
+  "min_memfree": 200000,
+  "max_memfree": 200000,
+  "avg_memfree": 200000.0
 }
 ```
 
@@ -2747,22 +2725,17 @@ endTime sample = 300000
 
 ```json
 {
-  "data": {
-    "min_memfree": null,
-    "max_memfree": null,
-    "avg_memfree": null,
-    "latest_memfree": null
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T11:00:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T11:00:00Z"
-    },
-    "observedWindow": {
-      "startTime": null,
-      "endTime": null
-    }
-  }
+  "observedWindow": {
+    "startTime": null,
+    "endTime": null
+  },
+  "min_memfree": null,
+  "max_memfree": null,
+  "avg_memfree": null
 }
 ```
 
@@ -2818,7 +2791,7 @@ memory_total is absent
 
 * Sample is ignored.
 * Missing optional fields are not represented as zero.
-* It does not make `response.data.min_memfree` equal to zero.
+* It does not make `min_memfree` equal to zero.
 
 ---
 
@@ -2836,7 +2809,7 @@ memory_total > 0
 ### Expected result
 
 * The zero value is treated as a valid measured sample.
-* It may become `response.data.min_memfree`.
+* It may become `min_memfree`.
 
 ---
 
@@ -2853,7 +2826,7 @@ Use memory values greater than the 32-bit integer range.
 
 ---
 
-## TC-MEM-011: Average rounds to nearest integer
+## TC-MEM-011: Average contains decimal value
 
 ### Test data
 
@@ -2866,18 +2839,10 @@ memory_free samples:
 ### Expected result
 
 ```text
-response.data.avg_memfree = 101
+avg_memfree = 100.5
 ```
 
-The exact average is `100.5`; the result is rounded to the nearest whole byte
-and is not truncated to `100`.
-
-Additional average cases:
-
-* Exact whole-number average returns that integer.
-* Non-.5 fractional averages are rounded to the nearest whole byte.
-* One sample returns that sample value.
-* Very large unsigned values are averaged without arithmetic overflow.
+The result is not truncated to `100`.
 
 ---
 
@@ -2885,33 +2850,12 @@ Additional average cases:
 
 ### Expected result
 
-* `response.data.min_memfree`, `response.data.max_memfree`, `response.data.avg_memfree`, and `response.data.latest_memfree` are never negative when they are not `null`.
+* `min_memfree`, `max_memfree`, and `avg_memfree` are never negative when they are not `null`.
 * When samples exist, the response satisfies:
 
 ```text
-response.data.min_memfree <= response.data.avg_memfree <= response.data.max_memfree
+min_memfree <= avg_memfree <= max_memfree
 ```
-
----
-
-## TC-MEM-012L: Latest free memory selection
-
-### Objective
-
-Verify that `response.data.latest_memfree` is selected from the valid
-contributing sample with the greatest timestamp, using deterministic stored-row
-ordering when timestamps tie.
-
-### Required cases
-
-* One valid sample: `latest_memfree` equals that sample's `memory_free`.
-* Multiple samples in chronological order: `latest_memfree` equals the final valid sample.
-* Samples provided out of chronological order: `latest_memfree` is still based on timestamp, not input order.
-* Latest valid sample immediately before `endTime`: that sample contributes.
-* Sample exactly at `endTime`: excluded by the half-open `[startTime, endTime)` window and cannot become `latest_memfree`.
-* Invalid latest timestamp sample followed by an earlier valid sample: the invalid sample is excluded and the earlier valid sample becomes `latest_memfree`.
-* Equal timestamps: deterministic stored-record ordering/tie-break behavior selects the same `latest_memfree` on repeated calls.
-* No valid samples: `response.data.latest_memfree = null`.
 
 ---
 
@@ -2933,26 +2877,21 @@ Verify that a negative or non-numeric `memory_free` value is excluded from free-
 
 ```json
 {
-  "data": {
-    "min_memfree": 200000,
-    "max_memfree": 300000,
-    "avg_memfree": 250000,
-    "latest_memfree": 300000
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:30:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:10:00Z",
-      "endTime": "2026-07-27T10:20:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:10:00Z",
+    "endTime": "2026-07-27T10:20:00Z"
+  },
+  "min_memfree": 200000,
+  "max_memfree": 300000,
+  "avg_memfree": 250000.0
 }
 ```
 
-* Field-level preservation policy: Memory fields are parsed independently. When `memory_free` itself is negative (`< 0`), non-numeric, or malformed, that invalid `memory_free` value is excluded from `response.data.min_memfree`, `response.data.max_memfree`, `response.data.avg_memfree`, and `response.data.latest_memfree` summary calculations.
+* Field-level preservation policy: Memory fields are parsed independently. When `memory_free` itself is negative (`< 0`), non-numeric, or malformed, that invalid `memory_free` value is excluded from `min_memfree`, `max_memfree`, and `avg_memfree` summary calculations.
 * The 10:00 sample containing invalid `memory_free = -1` does not contribute to `memory_free` summary statistics.
 * Valid `memory_free` values at 10:10 (`200000`) and 10:20 (`300000`) are aggregated normally.
 
@@ -2975,29 +2914,24 @@ Verify that an invalid non-free memory field (such as negative `memory_total`, `
 
 ```json
 {
-  "data": {
-    "min_memfree": 200000,
-    "max_memfree": 300000,
-    "avg_memfree": 250000,
-    "latest_memfree": 300000
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:30:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:10:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:10:00Z"
+  },
+  "min_memfree": 200000,
+  "max_memfree": 300000,
+  "avg_memfree": 250000.0
 }
 ```
 
 * Sample 10:00 has valid `memory_free = 200000` but negative `memory_total = -1`.
 * Malformed non-free fields are omitted individually. The invalid `memory_total` is omitted so `memory_free = 200000` is NOT discarded and remains available to contribute to free-memory aggregation.
 * `memory_cached` and `memory_buffered` field validity does not affect free-memory sample inclusion.
-* Free-memory summary aggregation includes both 10:00 (`200000`) and 10:10 (`300000`), yielding `response.data.min_memfree = 200000`, `response.data.max_memfree = 300000`, `response.data.avg_memfree = 250000`, and `response.data.latest_memfree = 300000`.
+* Free-memory summary aggregation includes both 10:00 (`200000`) and 10:10 (`300000`), yielding `min_memfree = 200000`, `max_memfree = 300000`, and `avg_memfree = 250000.0`.
 
 ---
 
@@ -3015,22 +2949,17 @@ Verify that an invalid non-free memory field (such as negative `memory_total`, `
 
 ```json
 {
-  "data": {
-    "min_memfree": 200000,
-    "max_memfree": 300000,
-    "avg_memfree": 250000,
-    "latest_memfree": 300000
+  "requestedWindow": {
+    "startTime": "2026-07-27T10:00:00Z",
+    "endTime": "2026-07-27T10:30:00Z"
   },
-  "meta": {
-    "requestedWindow": {
-      "startTime": "2026-07-27T10:00:00Z",
-      "endTime": "2026-07-27T10:30:00Z"
-    },
-    "observedWindow": {
-      "startTime": "2026-07-27T10:10:00Z",
-      "endTime": "2026-07-27T10:20:00Z"
-    }
-  }
+  "observedWindow": {
+    "startTime": "2026-07-27T10:10:00Z",
+    "endTime": "2026-07-27T10:20:00Z"
+  },
+  "min_memfree": 200000,
+  "max_memfree": 300000,
+  "avg_memfree": 250000.0
 }
 ```
 
@@ -4735,32 +4664,12 @@ Availability:    data.fetch_status = success, data.offline_count = 0, meta.offli
 Required fields (allowing compatible additive fields under OpenAPI 3.0):
 
 ```text
-data
-meta
-```
-
-Expected `data` fields:
-
-```text
+requestedWindow
+observedWindow
 min_memfree
 max_memfree
 avg_memfree
-latest_memfree
 ```
-
-Expected `meta` fields:
-
-```text
-requestedWindow
-observedWindow
-```
-
-Assertions for memory-summary responses must reference
-`response.data.min_memfree`, `response.data.max_memfree`,
-`response.data.avg_memfree`, `response.data.latest_memfree`,
-`response.meta.requestedWindow`, and `response.meta.observedWindow`. The old
-root-level memory fields are deprecated and must not be asserted as the
-authoritative contract.
 
 ---
 
@@ -4899,9 +4808,9 @@ total_bytes = rx_bytes + tx_bytes
 
 ### Expected result
 
-* Memory `data.min_memfree`, `data.max_memfree`, `data.avg_memfree`, and `data.latest_memfree` are non-negative integers or `null`.
-* Memory `meta.requestedWindow` and `meta.observedWindow` objects match the shared OpenAPI window schemas.
-* Temperature `requestedWindow` and `observedWindow` objects match the shared OpenAPI window schemas.
+* Memory min and max are numeric or `null`.
+* Memory average is numeric or `null`.
+* Memory and temperature `requestedWindow` and `observedWindow` objects match the shared OpenAPI window schemas.
 * Temperature fields are numeric or `null`.
 * Usage summary client objects use these exact data types:
 
@@ -4944,7 +4853,7 @@ The PR implementation is functionally accepted when:
 17. Invalid RSSI values are ignored.
 18. RSSI percentages are calculated per client.
 19. Usage and RSSI client-summary responses use the documented object envelope shape (`requestedWindow`, `observedWindow`, `items`, `totalClients`, `truncated`) matching TC-CONTRACT-006.
-20. Memory successful responses include top-level `data` and `meta`; `meta.requestedWindow` and `meta.observedWindow` match their OpenAPI schemas. Temperature successful responses include `requestedWindow` and `observedWindow` matching their OpenAPI schemas.
+20. Memory and temperature successful responses include `requestedWindow` and `observedWindow` matching their OpenAPI schemas.
 21. Gateway shutdown and network loss create one offline transition each.
 22. Repeated pings and disconnections do not create duplicate transitions.
 23. Availability events remain queryable after board reassignment.

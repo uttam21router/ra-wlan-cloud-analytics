@@ -46,7 +46,7 @@ namespace OpenWifi {
 		}
 		E.status = Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY;
 		E.error = "owprov_unavailable";
-		E.message = "OWPROV was unavailable or returned an invalid response";
+		E.message = "Upstream provisioning service is unavailable";
 		return false;
 	}
 
@@ -72,7 +72,7 @@ namespace OpenWifi {
 		if (MatchingBoards.size() > 1) {
 			E.status = Poco::Net::HTTPResponse::HTTP_CONFLICT;
 			E.error = "multiple_boards";
-			E.message = "Multiple Analytics boards match the requested router";
+			E.message = "Router is mapped to multiple current boards";
 			return false;
 		}
 

@@ -372,25 +372,12 @@ namespace OpenWifi {
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
 
-		struct MCPMemorySummaryData {
-			std::optional<uint64_t> min_memfree;
-			std::optional<uint64_t> max_memfree;
-			std::optional<uint64_t> avg_memfree;
-			std::optional<uint64_t> latest_memfree;
-
-			void to_json(Poco::JSON::Object &Obj) const;
-		};
-
-		struct MCPMemorySummaryMeta {
+		struct MCPGatewayMemorySummary {
 			MCPRequestedWindow requestedWindow;
 			MCPObservedWindow observedWindow;
-
-			void to_json(Poco::JSON::Object &Obj) const;
-		};
-
-		struct MCPGatewayMemorySummary {
-			MCPMemorySummaryData data;
-			MCPMemorySummaryMeta meta;
+			std::optional<uint64_t> min_memfree;
+			std::optional<uint64_t> max_memfree;
+			std::optional<double> avg_memfree;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};

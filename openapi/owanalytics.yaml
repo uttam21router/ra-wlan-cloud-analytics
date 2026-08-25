@@ -60,7 +60,69 @@ components:
             lookbackOutsideRetention:
               value:
                 error: lookback_outside_retention
-                message: Requested range is outside the configured retention window
+                message: Requested range is outside the configured monitoring retention window
+    TemperatureAnalyticsBadRequest:
+      description: Invalid request or temperature range before the supported migration cutover.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TemperatureBadRequestError'
+          examples:
+            invalidRouterId:
+              value:
+                error: invalid_router_id
+                message: routerId must be a valid path-safe OWPROV gateway serial number (1 to 64 alphanumeric characters, hyphens, or underscores)
+            invalidTimestamp:
+              value:
+                error: invalid_timestamp
+                message: timestampTill must be a valid UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format
+            invalidLookbackHours:
+              value:
+                error: invalid_lookback_hours
+                message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
+            invalidQueryParameter:
+              value:
+                error: invalid_query_parameter
+                message: "Unsupported query parameter: unexpectedParam"
+            lookbackOutsideRetention:
+              value:
+                error: lookback_outside_retention
+                message: Requested range is outside the configured monitoring retention window
+            temperatureBeforeCutover:
+              value:
+                error: temperature_range_before_cutover
+                message: The requested summary interval starts before the temperature migration cutover timestamp.
+    AvailabilityAnalyticsBadRequest:
+      description: Invalid request or availability range before the supported cutover.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AvailabilityBadRequestError'
+          examples:
+            invalidRouterId:
+              value:
+                error: invalid_router_id
+                message: routerId must be a valid path-safe OWPROV gateway serial number (1 to 64 alphanumeric characters, hyphens, or underscores)
+            invalidTimestamp:
+              value:
+                error: invalid_timestamp
+                message: timestampTill must be a valid UTC timestamp in YYYY-MM-DDTHH:mm:ssZ format
+            invalidLookbackHours:
+              value:
+                error: invalid_lookback_hours
+                message: lookbackHours must be greater than 0 and less than or equal to the configured maximum lookback
+            invalidQueryParameter:
+              value:
+                error: invalid_query_parameter
+                message: "Unsupported query parameter: unexpectedParam"
+            lookbackOutsideRetention:
+              value:
+                error: lookback_outside_retention
+                message: Requested range is outside the configured monitoring retention window
+            availabilityBeforeCutover:
+              value:
+                error: availability_range_before_cutover
+                message: Availability history is only available for ranges starting at or after availabilityValidFrom
     AnalyticsUnauthorized:
       description: Bearer token is missing, invalid, or expired.
       content:
@@ -73,7 +135,7 @@ components:
                 error: unauthorized
                 message: Missing, invalid, or expired bearer token
     AnalyticsForbidden:
-      description: Authenticated caller lacks analytics.gateway_metrics.read for the resolved router scope.
+      description: Caller has visibility of the resolved router ownership scope, but lacks analytics.gateway_metrics.read permission for the requested operation. Do not use this response for nonexistent routers or routers outside the caller's accessible ownership scope; those cases are normalized to 404 not_found to avoid disclosing router existence.
       content:
         application/json:
           schema:
@@ -82,9 +144,9 @@ components:
             forbidden:
               value:
                 error: forbidden
-                message: Caller lacks analytics.gateway_metrics.read for this router scope
+                message: Caller lacks analytics.gateway_metrics.read permission for this router scope
     AnalyticsNotFound:
-      description: Router was not found, caller cannot access it, or no usable venue/board mapping exists. Public 404 responses for inventory missing, empty venue, board not configured, and access denied are intentionally collapsed to not_found.
+      description: Router was not found, caller cannot access it, or monitoring is not configured for the resolved router scope. Public 404 responses for inventory missing, empty venue, board not configured, and access denied are intentionally collapsed to not_found unless monitoring is not configured.
       content:
         application/json:
           schema:
@@ -94,17 +156,100 @@ components:
               value:
                 error: not_found
                 message: Router was not found
+            monitoringNotConfigured:
+              value:
+                error: monitoring_not_configured
+                message: Monitoring is not configured for this router scope
     AnalyticsConflict:
-      description: Router ownership resolution found conflicting current board mappings.
+      description: Monitoring is disabled or router ownership resolution found conflicting current board mappings.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/AnalyticsConflictError'
           examples:
+            monitoringDisabled:
+              value:
+                error: monitoring_disabled
+                message: Monitoring is disabled for this router scope
             multipleBoards:
               value:
                 error: multiple_boards
                 message: Router is mapped to multiple current boards
+    MemorySummaryInternalError:
+      description: Memory summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemorySummaryInternalError'
+          examples:
+            memorySummaryFailed:
+              value:
+                error: memory_summary_query_failed
+                message: Unable to retrieve gateway memory history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    RadioTemperatureSummaryInternalError:
+      description: Radio temperature summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RadioTemperatureSummaryInternalError'
+          examples:
+            radioTemperatureSummaryFailed:
+              value:
+                error: radio_temperature_summary_query_failed
+                message: Unable to retrieve gateway radio temperature history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    WifiClientUsageInternalError:
+      description: Wi-Fi client usage summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WifiClientUsageInternalError'
+          examples:
+            wifiClientUsageFailed:
+              value:
+                error: wifi_client_usage_query_failed
+                message: Unable to retrieve Wi-Fi client usage history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    WifiClientRssiInternalError:
+      description: Wi-Fi client RSSI summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WifiClientRssiInternalError'
+          examples:
+            wifiClientRssiFailed:
+              value:
+                error: wifi_client_rssi_query_failed
+                message: Unable to retrieve Wi-Fi client RSSI history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
+    AvailabilityInternalError:
+      description: Availability summary retrieval failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AvailabilityInternalError'
+          examples:
+            availabilityQueryFailed:
+              value:
+                error: availability_query_failed
+                message: Unable to retrieve gateway availability history
+            internalError:
+              value:
+                error: internal_error
+                message: Internal error
     AnalyticsBadGateway:
       description: Upstream provisioning service is unavailable or returned an invalid response after cache fallback was exhausted.
       content:
@@ -116,10 +261,10 @@ components:
               value:
                 error: owprov_unavailable
                 message: Upstream provisioning service is unavailable
-            storageUnavailable:
+            owprovInvalidResponse:
               value:
-                error: storage_unavailable
-                message: Analytics storage was unavailable
+                error: owprov_invalid_response
+                message: Upstream provisioning service returned an invalid response
 
   parameters:
     RouterIdPath:
@@ -141,7 +286,7 @@ components:
       name: lookbackHours
       description: >
         Number of hours to look back from timestampTill. Must be greater than 0 and less than or equal to
-        maxLookbackHours, where maxLookbackHours is derived from the configured retention duration; the
+        maxLookbackHours, where maxLookbackHours is derived from the configured monitoringDuration; the
         resulting half-open range must fit inside the configured retention window. Handlers must parse the
         raw HTTP query parameter collection to ensure lookbackHours appears exactly once and reject repeated,
         empty, fractional, partially numeric, overflowing, zero, and negative values.
@@ -635,7 +780,12 @@ components:
         temperature:
           type: integer
           format: int64
-          description: Wi-Fi radio temperature telemetry in degrees Celsius.
+          description: Legacy Wi-Fi radio temperature telemetry in degrees Celsius. This field MUST NOT be used as the source for radio-temperature-summary; that endpoint aggregates wifi_temp according to the post-cutover telemetry contract.
+        wifi_temp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Wi-Fi radio temperature in degrees Celsius. A reported 0°C value is valid unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true; when no contract is available, the default is false.
         noise:
           type: integer
           format: int64
@@ -918,6 +1068,42 @@ components:
         message:
           type: string
 
+    TemperatureBadRequestError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_router_id
+            - invalid_timestamp
+            - invalid_lookback_hours
+            - invalid_query_parameter
+            - lookback_outside_retention
+            - temperature_range_before_cutover
+        message:
+          type: string
+
+    AvailabilityBadRequestError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_router_id
+            - invalid_timestamp
+            - invalid_lookback_hours
+            - invalid_query_parameter
+            - lookback_outside_retention
+            - availability_range_before_cutover
+        message:
+          type: string
+
     AnalyticsUnauthorizedError:
       type: object
       required:
@@ -954,6 +1140,7 @@ components:
           type: string
           enum:
             - not_found
+            - monitoring_not_configured
         message:
           type: string
 
@@ -966,6 +1153,7 @@ components:
         error:
           type: string
           enum:
+            - monitoring_disabled
             - multiple_boards
         message:
           type: string
@@ -980,7 +1168,77 @@ components:
           type: string
           enum:
             - owprov_unavailable
-            - storage_unavailable
+            - owprov_invalid_response
+        message:
+          type: string
+
+    MemorySummaryInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - memory_summary_query_failed
+            - internal_error
+        message:
+          type: string
+
+    RadioTemperatureSummaryInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - radio_temperature_summary_query_failed
+            - internal_error
+        message:
+          type: string
+
+    WifiClientUsageInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - wifi_client_usage_query_failed
+            - internal_error
+        message:
+          type: string
+
+    WifiClientRssiInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - wifi_client_rssi_query_failed
+            - internal_error
+        message:
+          type: string
+
+    AvailabilityInternalError:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - availability_query_failed
+            - internal_error
         message:
           type: string
 
@@ -989,56 +1247,332 @@ components:
       description: >
         Gateway free memory summary in bytes. Memory statistics are arithmetic aggregations of
         stored memory_free samples whose timestamps fall within the requested half-open window.
-        They are not time-weighted, and avg_memfree is rounded to the nearest integer. latest_memfree
-        is selected from the valid sample with the greatest timestamp; equal timestamps are resolved
-        deterministically by stored record id. When no valid memory samples exist, all memory fields
-        are null.
+        They are not time-weighted. When samples exist, all values are nonnegative and satisfy
+        min_memfree <= avg_memfree <= max_memfree. When no valid memory samples exist, all three
+        fields are null.
       required:
-        - data
-        - meta
+        - requestedWindow
+        - observedWindow
+        - min_memfree
+        - max_memfree
+        - avg_memfree
       properties:
-        data:
-          type: object
-          required:
-            - min_memfree
-            - max_memfree
-            - avg_memfree
-            - latest_memfree
-          properties:
-            min_memfree:
-              type: integer
-              minimum: 0
-              maximum: 18446744073709551615
-              nullable: true
-              description: Minimum reported free memory in bytes for the requested aggregation window.
-            max_memfree:
-              type: integer
-              minimum: 0
-              maximum: 18446744073709551615
-              nullable: true
-              description: Maximum reported free memory in bytes for the requested aggregation window.
-            avg_memfree:
-              type: integer
-              minimum: 0
-              maximum: 18446744073709551615
-              nullable: true
-              description: Rounded arithmetic average of reported free-memory samples in bytes.
-            latest_memfree:
-              type: integer
-              minimum: 0
-              maximum: 18446744073709551615
-              nullable: true
-              description: Free memory in bytes from the latest valid contributing sample.
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
+        min_memfree:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          nullable: true
+          description: Minimum reported free memory in bytes for the requested aggregation window.
+        max_memfree:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          nullable: true
+          description: Maximum reported free memory in bytes for the requested aggregation window.
+        avg_memfree:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 18446744073709551615
+          nullable: true
+          description: Arithmetic average of reported free-memory samples in bytes for the requested aggregation window.
+
+    GatewayWifiTemperatureSummary:
+      type: object
+      description: >
+        Wi-Fi radio temperature summary. The 2.4 GHz JSON property names intentionally use
+        the dotted `2.4G` suffix to match the MCP API wire contract; clients should treat
+        these as literal JSON keys, not property paths. Temperature statistics are arithmetic
+        aggregations of valid radio temperature samples whose timestamps fall within the
+        requested half-open window. They are not time-weighted. For gateways with multiple
+        radios in the same band, all valid samples for that band are combined directly rather
+        than averaging each radio first. Null applies independently per band: a band returns
+        null min, max, and average values when that band has no valid temperature samples,
+        even if another band has samples. A valid radio temperature sample is a present,
+        finite Celsius value where -40 <= temperature <= 125. A reported 0°C value is valid
+        unless the persisted/resolved telemetry contract has wifiTempZeroIsUnavailable = true;
+        when no contract is available, the default is false. Missing, null, non-numeric, NaN,
+        infinite, conditionally unavailable 0°C values, 255, and out-of-range values are
+        excluded from aggregation.
+      required:
+        - requestedWindow
+        - observedWindow
+        - min_wifi_temp_2.4G
+        - max_wifi_temp_2.4G
+        - avg_wifi_temp_2.4G
+        - min_wifi_temp_5G
+        - max_wifi_temp_5G
+        - avg_wifi_temp_5G
+      properties:
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
+        min_wifi_temp_2.4G:
+          type: number
+          format: double
+          minimum: -40
+          maximum: 125
+          nullable: true
+          description: Minimum reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
+        max_wifi_temp_2.4G:
+          type: number
+          format: double
+          minimum: -40
+          maximum: 125
+          nullable: true
+          description: Maximum reported 2.4 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
+        avg_wifi_temp_2.4G:
+          type: number
+          format: double
+          minimum: -40
+          maximum: 125
+          nullable: true
+          description: Arithmetic average of reported 2.4 GHz Wi-Fi radio temperature samples in degrees Celsius for the effective aggregation window. Literal MCP JSON key; dotted suffix is required for compatibility.
+        min_wifi_temp_5G:
+          type: number
+          format: double
+          minimum: -40
+          maximum: 125
+          nullable: true
+          description: Minimum reported 5 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window.
+        max_wifi_temp_5G:
+          type: number
+          format: double
+          minimum: -40
+          maximum: 125
+          nullable: true
+          description: Maximum reported 5 GHz Wi-Fi radio temperature in degrees Celsius for the effective aggregation window.
+        avg_wifi_temp_5G:
+          type: number
+          format: double
+          minimum: -40
+          maximum: 125
+          nullable: true
+          description: Arithmetic average of reported 5 GHz Wi-Fi radio temperature samples in degrees Celsius for the effective aggregation window.
+
+    ClientBandwidthConsumption:
+      type: object
+      description: >
+        Per-client usage totals. Raw byte counters are authoritative; total_bytes is always
+        rx_bytes + tx_bytes. Formatted string fields are display-only decimal megabytes using
+        bytes / 1,000,000, formatted with standard floating point two decimal places
+        and the literal " MB" suffix. Wi-Fi usage is a cumulative-counter
+        differential summary calculated from valid persisted samples available to Analytics. The
+        implementation may use internal streams, sessions, boundary samples, reset detection, and
+        segments to calculate safe deltas, but those mechanics are not part of the public response.
+      required:
+        - mac
+        - rx_bytes
+        - tx_bytes
+        - total_bytes
+        - data_consume_rx
+        - data_consume_tx
+        - total_data_usage
+      properties:
+        mac:
+          $ref: '#/components/schemas/MacAddress'
+        rx_bytes:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+        tx_bytes:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+        total_bytes:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+        data_consume_rx:
+          type: string
+          description: Display-only decimal megabytes derived from rx_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
+          example: 106.49 MB
+        data_consume_tx:
+          type: string
+          description: Display-only decimal megabytes derived from tx_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
+          example: 3.85 MB
+        total_data_usage:
+          type: string
+          description: Display-only decimal megabytes derived from total_bytes / 1,000,000. Format using standard floating point two decimal places and the literal " MB" suffix. Use raw byte fields for calculations.
+          example: 110.34 MB
+    ClientBandwidthConsumptionResponse:
+      type: object
+      description: >
+        Wrapped Wi-Fi usage differential summary calculated from persisted samples currently
+        available to Analytics. requestedWindow is the requested interval. observedWindow is the
+        earliest/latest persisted sample timestamp used by any returned client calculation, or
+        null/null when no valid sample contributes.
+      required:
+        - requestedWindow
+        - observedWindow
+        - items
+        - totalClients
+        - truncated
+      properties:
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
+        items:
+          type: array
+          maxItems: 500
+          description: >
+            Clients ordered by total_bytes descending. Clients with equal
+            total_bytes are ordered by normalized MAC address ascending.
+            Only the first 500 clients are returned.
+          items:
+            $ref: '#/components/schemas/ClientBandwidthConsumption'
+        totalClients:
+          type: integer
+          minimum: 0
+          description: Total number of distinct client MAC addresses having at least one in-window observation or proven session overlap during the requested interval [startTime, endTime), calculated before applying the 500-client limit. Outside-window samples may be used internally as boundary calculation aids for eligible clients.
+        truncated:
+          type: boolean
+          description: True when totalClients is greater than the number of returned items.
+
+    ClientRssiQuality:
+      type: object
+      description: >
+        Per-client RSSI quality percentages calculated from valid RSSI samples only. RSSI
+        categories use dBm thresholds: excellent is RSSI >= -55, good is -67 <= RSSI < -55,
+        fair is -75 <= RSSI < -67, and poor is RSSI < -75. RSSI values of 0, positive RSSI
+        values, values below -127, and missing RSSI values are excluded. Clients with no
+        valid RSSI samples are omitted. Percentages use valid samples as the denominator and
+        are independently rounded to two decimal places, so they may sum to slightly above
+        or below 100 because of rounding.
+      required:
+        - mac
+        - rssi_excellent_pct
+        - rssi_good_pct
+        - rssi_fair_pct
+        - rssi_poor_pct
+        - rssi_total_samples
+      properties:
+        mac:
+          $ref: '#/components/schemas/MacAddress'
+        rssi_excellent_pct:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where RSSI >= -55 dBm.
+        rssi_good_pct:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where -67 dBm <= RSSI < -55 dBm.
+        rssi_fair_pct:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where -75 dBm <= RSSI < -67 dBm.
+        rssi_poor_pct:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: Percentage of valid RSSI samples where -127 dBm <= RSSI < -75 dBm.
+        rssi_total_samples:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Number of valid RSSI samples used as the denominator for the percentage fields.
+
+    ClientRssiQualityResponse:
+      type: object
+      description: >
+        Wrapped RSSI quality summary. requestedWindow is the requested interval. observedWindow is
+        derived from the earliest/latest valid persisted RSSI samples contributing to returned
+        items after applying the 500-client response limit. When no clients are returned, items is
+        empty, totalClients is 0, truncated is false, and observedWindow is null/null.
+      required:
+        - requestedWindow
+        - observedWindow
+        - items
+        - totalClients
+        - truncated
+      properties:
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
+        items:
+          type: array
+          maxItems: 500
+          description: >
+            Clients ordered by normalized MAC address ascending.
+            Only the first 500 clients are returned.
+          items:
+            $ref: '#/components/schemas/ClientRssiQuality'
+        totalClients:
+          type: integer
+          minimum: 0
+          description: Total number of distinct client MAC addresses having at least one valid RSSI sample in the requested interval, calculated before applying the 500-client limit.
+        truncated:
+          type: boolean
+          description: True when totalClients is greater than the number of returned items.
+
+    GatewayAvailabilityMeta:
+      type: object
+      description: Metadata for observed persisted availability events used by the response.
+      required:
+        - requestedWindow
+        - observedWindow
+        - offlineEventCount
+      properties:
+        requestedWindow:
+          $ref: '#/components/schemas/RequestedWindow'
+        observedWindow:
+          $ref: '#/components/schemas/ObservedWindow'
+        offlineEventCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of persisted offline transition rows contributing to offline_count.
+
+    GatewayAvailabilityData:
+      type: object
+      description: Gateway offline transition count calculated from persisted availability events.
+      required:
+        - gw_uuid
+        - fetch_status
+        - offline_count
+      properties:
+        gw_uuid:
+          $ref: '#/components/schemas/RouterId'
+        fetch_status:
+          type: string
+          enum:
+            - success
+          description: Status string for availability data retrieval; always "success" in HTTP 200 responses.
+          example: success
+        offline_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of persisted offline transition rows currently available in Analytics storage for the requested half-open interval.
+
+    GatewayAvailabilitySummaryResponse:
+      type: object
+      description: >
+        Wrapped gateway availability summary response. The endpoint counts persisted offline
+        transition rows in device_availability_events for the requested interval and reports the
+        observed event-time window for those rows.
+      required:
+        - meta
+        - data
+      properties:
         meta:
-          type: object
-          required:
-            - requestedWindow
-            - observedWindow
-          properties:
-            requestedWindow:
-              $ref: '#/components/schemas/RequestedWindow'
-            observedWindow:
-              $ref: '#/components/schemas/ObservedWindow'
+          $ref: '#/components/schemas/GatewayAvailabilityMeta'
+        data:
+          $ref: '#/components/schemas/GatewayAvailabilityData'
 
     SystemCommandDetails:
       type: object
@@ -1399,7 +1933,7 @@ paths:
     get:
       tags:
         - Device Metrics
-      operationId: get_gateway_free_memory
+      operationId: getGatewayMemorySummary
       summary: Retrieve gateway free memory summary for a lookback window.
       security:
         - bearerAuth: []
@@ -1417,32 +1951,26 @@ paths:
               examples:
                 withSamples:
                   value:
-                    data:
-                      min_memfree: 211374
-                      max_memfree: 215050
-                      avg_memfree: 212074
-                      latest_memfree: 212800
-                    meta:
-                      requestedWindow:
-                        startTime: "2026-07-26T12:00:00Z"
-                        endTime: "2026-07-27T12:00:00Z"
-                      observedWindow:
-                        startTime: "2026-07-26T12:03:00Z"
-                        endTime: "2026-07-27T11:57:00Z"
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T12:03:00Z"
+                      endTime: "2026-07-27T11:57:00Z"
+                    min_memfree: 211374
+                    max_memfree: 215050
+                    avg_memfree: 212074.36
                 noSamples:
                   value:
-                    data:
-                      min_memfree: null
-                      max_memfree: null
-                      avg_memfree: null
-                      latest_memfree: null
-                    meta:
-                      requestedWindow:
-                        startTime: "2026-07-26T12:00:00Z"
-                        endTime: "2026-07-27T12:00:00Z"
-                      observedWindow:
-                        startTime: null
-                        endTime: null
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: null
+                      endTime: null
+                    min_memfree: null
+                    max_memfree: null
+                    avg_memfree: null
         400:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:
@@ -1453,6 +1981,238 @@ paths:
           $ref: '#/components/responses/AnalyticsNotFound'
         409:
           $ref: '#/components/responses/AnalyticsConflict'
+        500:
+          $ref: '#/components/responses/MemorySummaryInternalError'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/radio-temperature-summary:
+    get:
+      tags:
+        - Device Metrics
+      operationId: getGatewayRadioTemperatureSummary
+      summary: Retrieve gateway Wi-Fi radio temperature summary for a lookback window.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Return Wi-Fi radio temperature summary for the requested aggregation window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayWifiTemperatureSummary'
+              examples:
+                withSamples:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T12:04:00Z"
+                      endTime: "2026-07-27T11:55:00Z"
+                    min_wifi_temp_2.4G: 62
+                    max_wifi_temp_2.4G: 70
+                    avg_wifi_temp_2.4G: 66.64
+                    min_wifi_temp_5G: 56
+                    max_wifi_temp_5G: 65
+                    avg_wifi_temp_5G: 60.38
+        400:
+          $ref: '#/components/responses/TemperatureAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        500:
+          $ref: '#/components/responses/RadioTemperatureSummaryInternalError'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/wifi-clients/usage-summary:
+    get:
+      tags:
+        - Device Metrics
+      operationId: getWifiClientUsageSummary
+      summary: Retrieve per-client Wi-Fi usage summary for a gateway lookback window.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: >
+            Return reset-safe per-client Wi-Fi usage summaries calculated from available
+            persisted samples.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientBandwidthConsumptionResponse'
+              examples:
+                withClients:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T11:55:00Z"
+                      endTime: "2026-07-27T12:05:00Z"
+                    items:
+                      - mac: "e2:51:95:ed:0f:28"
+                        rx_bytes: 106487500
+                        tx_bytes: 3851250
+                        total_bytes: 110338750
+                        data_consume_rx: "106.49 MB"
+                        data_consume_tx: "3.85 MB"
+                        total_data_usage: "110.34 MB"
+                    totalClients: 1
+                    truncated: false
+        400:
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        500:
+          $ref: '#/components/responses/WifiClientUsageInternalError'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/wifi-clients/rssi-summary:
+    get:
+      tags:
+        - Device Metrics
+      operationId: getWifiClientRssiSummary
+      summary: Retrieve per-client RSSI quality summary for a gateway lookback window.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Return per-client RSSI quality percentages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRssiQualityResponse'
+              examples:
+                withClients:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: "2026-07-26T12:01:00Z"
+                      endTime: "2026-07-27T11:58:00Z"
+                    items:
+                      - mac: "e2:51:95:ed:0f:28"
+                        rssi_excellent_pct: 41.67
+                        rssi_good_pct: 50.0
+                        rssi_fair_pct: 1.67
+                        rssi_poor_pct: 6.67
+                        rssi_total_samples: 60
+                    totalClients: 1
+                    truncated: false
+                noResults:
+                  value:
+                    requestedWindow:
+                      startTime: "2026-07-26T12:00:00Z"
+                      endTime: "2026-07-27T12:00:00Z"
+                    observedWindow:
+                      startTime: null
+                      endTime: null
+                    items: []
+                    totalClients: 0
+                    truncated: false
+        400:
+          $ref: '#/components/responses/CommonAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        500:
+          $ref: '#/components/responses/WifiClientRssiInternalError'
+        502:
+          $ref: '#/components/responses/AnalyticsBadGateway'
+
+  /devices/{routerId}/availability-summary:
+    get:
+      tags:
+        - Device Metrics
+      operationId: getGatewayAvailabilitySummary
+      summary: Retrieve gateway offline transition count for a lookback window.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RouterIdPath'
+        - $ref: '#/components/parameters/TimestampTill'
+        - $ref: '#/components/parameters/LookbackHours'
+      responses:
+        200:
+          description: Return the gateway offline-transition count calculated from availability events currently persisted in Analytics storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayAvailabilitySummaryResponse'
+              examples:
+                withEvents:
+                  value:
+                    meta:
+                      requestedWindow:
+                        startTime: "2026-07-26T12:00:00Z"
+                        endTime: "2026-07-27T12:00:00Z"
+                      observedWindow:
+                        startTime: "2026-07-26T13:15:00Z"
+                        endTime: "2026-07-27T09:45:00Z"
+                      offlineEventCount: 6
+                    data:
+                      gw_uuid: "60cf84f22290"
+                      fetch_status: success
+                      offline_count: 6
+                zeroEvents:
+                  value:
+                    meta:
+                      requestedWindow:
+                        startTime: "2026-07-26T12:00:00Z"
+                        endTime: "2026-07-27T12:00:00Z"
+                      observedWindow:
+                        startTime: null
+                        endTime: null
+                      offlineEventCount: 0
+                    data:
+                      gw_uuid: "60cf84f22290"
+                      fetch_status: success
+                      offline_count: 0
+        400:
+          $ref: '#/components/responses/AvailabilityAnalyticsBadRequest'
+        401:
+          $ref: '#/components/responses/AnalyticsUnauthorized'
+        403:
+          $ref: '#/components/responses/AnalyticsForbidden'
+        404:
+          $ref: '#/components/responses/AnalyticsNotFound'
+        409:
+          $ref: '#/components/responses/AnalyticsConflict'
+        500:
+          $ref: '#/components/responses/AvailabilityInternalError'
         502:
           $ref: '#/components/responses/AnalyticsBadGateway'
 
