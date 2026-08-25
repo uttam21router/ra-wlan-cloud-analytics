@@ -48,9 +48,9 @@ namespace OpenWifi {
 			return true;
 		};
 		if (!StorageService()->BoardsDB().Iterate(Visitor)) {
-			E.status = Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY;
-			E.error = "owprov_unavailable";
-			E.message = "Unable to resolve Analytics board for router";
+			poco_error(Client.Logger(),
+					   "Failed to read Analytics boards while resolving routerId=" + routerId);
+			AnalyticsBoardStorageFailure(E);
 			return false;
 		}
 

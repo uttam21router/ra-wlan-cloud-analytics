@@ -33,6 +33,7 @@ namespace OpenWifi {
 											  Error &E);
 		static bool ClassifyProvisioningFailure(Poco::Net::HTTPResponse::HTTPStatus Status,
 												Error &E);
+		static bool AnalyticsBoardStorageFailure(Error &E);
 		static bool InvalidProvisioningResponse(Error &E);
 		static bool ResolveBoardForVenue(const std::string &venueId,
 										 const std::vector<AnalyticsObjects::BoardInfo> &Boards,
@@ -52,6 +53,13 @@ namespace OpenWifi {
 		E.status = Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY;
 		E.error = "owprov_unavailable";
 		E.message = "Upstream provisioning service is unavailable";
+		return false;
+	}
+
+	inline bool RouterIdResolver::AnalyticsBoardStorageFailure(Error &E) {
+		E.status = Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR;
+		E.error = "internal_error";
+		E.message = "Internal error";
 		return false;
 	}
 

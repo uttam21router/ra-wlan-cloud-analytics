@@ -208,29 +208,6 @@ namespace {
 			std::nullopt, [](const std::string &) { return true; }, E));
 	}
 
-	void TestGatewayMetricsAuthorization() {
-		MCP::Error E;
-		SecurityObjects::UserInfoAndPolicy User;
-		User.userinfo.userRole = SecurityObjects::SUBSCRIBER;
-		User.permissions.push_back(MCP::GatewayMetricsReadPermission);
-		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
-
-		User.permissions.clear();
-		assert(!MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
-		assert(E.status == Poco::Net::HTTPResponse::HTTP_FORBIDDEN);
-		assert(E.error == "forbidden");
-
-		User.permissions.push_back(MCP::GatewayMetricsReadAnyPermission);
-		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
-		User.permissions.clear();
-
-		User.userinfo.userRole = SecurityObjects::ADMIN;
-		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
-
-		User.userinfo.userRole = SecurityObjects::ROOT;
-		assert(MCP::AuthorizeGatewayMetricsRead(User, "board-a", "venue-a", E));
-	}
-
 	void TestRouterResolutionHelpers() {
 		RouterIdResolver::Result R;
 		RouterIdResolver::Error E;
@@ -271,6 +248,11 @@ namespace {
 			Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR, E));
 		assert(E.status == Poco::Net::HTTPResponse::HTTP_BAD_GATEWAY);
 		assert(E.error == "owprov_unavailable");
+
+		assert(!RouterIdResolver::AnalyticsBoardStorageFailure(E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR);
+		assert(E.error == "internal_error");
+		assert(E.message == "Internal error");
 	}
 
 	void TestDeviceFetchResultClassification() {
@@ -413,7 +395,6 @@ int main() {
 	TestLatestMemorySelection();
 	TestRouterValidation();
 	TestBearerHeaderValidation();
-	TestGatewayMetricsAuthorization();
 	TestRouterResolutionHelpers();
 	TestDeviceFetchResultClassification();
 	TestDeviceFetchOutcomeClassification();

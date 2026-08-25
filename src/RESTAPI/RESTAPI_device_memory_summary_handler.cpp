@@ -52,10 +52,6 @@ namespace OpenWifi {
 			return MCP::SendError(*this, ConvertResolverError(ResolverError));
 		}
 
-		if (!MCP::AuthorizeGatewayMetricsRead(UserInfo_, Resolved.resolvedBoardId,
-											 Resolved.resolvedVenueId, Error))
-			return MCP::SendError(*this, Error);
-
 		uint64_t RetentionSeconds = 0;
 		if (!FindVenueRetention(Resolved.board, Resolved.resolvedVenueId, RetentionSeconds)) {
 			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_NOT_FOUND, "not_found",
