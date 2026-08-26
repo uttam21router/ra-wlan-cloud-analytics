@@ -49,6 +49,8 @@ namespace OpenWifi {
 			: SubSystemServer("VenueCoordinator", "VENUE-COORD", "venue.coordinator") {}
 
 		bool StartBoard(const AnalyticsObjects::BoardInfo &B);
+		void StartBoardWatcher(const AnalyticsObjects::BoardInfo &B,
+							   const std::vector<uint64_t> &Devices);
 	};
 	inline auto VenueCoordinator() { return VenueCoordinator::instance(); }
 

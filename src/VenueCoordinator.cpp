@@ -128,11 +128,7 @@ namespace OpenWifi {
 		bool VenueExists = true;
 		std::vector<uint64_t> Devices;
 		if (GetDevicesForBoard(B, Devices, VenueExists)) {
-			std::lock_guard G(Mutex_);
-			ExistingBoards_[B.info.id] = Devices;
-			Watchers_[B.info.id] =
-				std::make_shared<VenueWatcher>(B.info.id, B.venue.id, Logger(), Devices);
-			Watchers_[B.info.id]->Start();
+			StartBoardWatcher(B, Devices);
 			poco_information(Logger(), fmt::format("Started board {} for venue {}", B.info.name,
 												   B.venue.id));
 			return true;
@@ -145,6 +141,15 @@ namespace OpenWifi {
 
 		poco_information(Logger(), fmt::format("Could not start board {}", B.info.name));
 		return false;
+	}
+
+	void VenueCoordinator::StartBoardWatcher(const AnalyticsObjects::BoardInfo &B,
+											 const std::vector<uint64_t> &Devices) {
+		auto Watcher = std::make_shared<VenueWatcher>(B.info.id, B.venue.id, Logger(), Devices);
+		std::lock_guard G(Mutex_);
+		ExistingBoards_[B.info.id] = Devices;
+		Watchers_[B.info.id] = Watcher;
+		Watcher->Start();
 	}
 
 	void VenueCoordinator::StopBoard(const std::string &id) {
@@ -163,19 +168,38 @@ namespace OpenWifi {
 			std::vector<uint64_t> Devices;
 			bool VenueExists = true;
 			if (GetDevicesForBoard(B, Devices, VenueExists)) {
-				std::lock_guard G(Mutex_);
-				auto it = ExistingBoards_.find(id);
-				if (it != ExistingBoards_.end()) {
-					if (it->second != Devices) {
-						auto it2 = Watchers_.find(id);
-						if (it2 != Watchers_.end()) {
-							it2->second->ModifySerialNumbers(Devices);
+				std::shared_ptr<VenueWatcher> WatcherToStop;
+				{
+					std::lock_guard G(Mutex_);
+					auto WatcherIt = Watchers_.find(id);
+					if (WatcherIt != Watchers_.end() && WatcherIt->second->Venue() != B.venue.id) {
+						WatcherToStop = WatcherIt->second;
+						Watchers_.erase(WatcherIt);
+						ExistingBoards_.erase(id);
+					}
+				}
+
+				if (WatcherToStop) {
+					WatcherToStop->Stop();
+					StartBoardWatcher(B, Devices);
+					poco_information(Logger(),
+									 fmt::format("Rebound board {} to venue {}", B.info.name,
+												 B.venue.id));
+				} else {
+					std::lock_guard G(Mutex_);
+					auto it = ExistingBoards_.find(id);
+					if (it != ExistingBoards_.end()) {
+						if (it->second != Devices) {
+							auto it2 = Watchers_.find(id);
+							if (it2 != Watchers_.end()) {
+								it2->second->ModifySerialNumbers(Devices);
+							}
+							ExistingBoards_[id] = Devices;
+							poco_information(Logger(), fmt::format("Modified board {}", B.info.name));
+						} else {
+							poco_information(Logger(),
+											 fmt::format("No device changes in board {}", B.info.name));
 						}
-						ExistingBoards_[id] = Devices;
-						poco_information(Logger(), fmt::format("Modified board {}", B.info.name));
-					} else {
-						poco_information(Logger(),
-										 fmt::format("No device changes in board {}", B.info.name));
 					}
 				}
 				return;
