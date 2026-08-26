@@ -21,8 +21,8 @@ namespace OpenWifi {
 				AnalyticsObjects::BoardInfo B;
 				
 				if (StorageService()->BoardsDB().GetRecord("id", boardId, B) &&
-						!B.venueList.empty()) {
-					venue = B.venueList[0].id;
+						!B.venue.id.empty()) {
+					venue = B.venue.id;
 				} else {
 					return BadRequest(RESTAPI::Errors::VenueMustExist);
 				}

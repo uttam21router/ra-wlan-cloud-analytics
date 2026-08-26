@@ -72,7 +72,8 @@ namespace OpenWifi {
 					bool VenueExists = true;
 					if (!Watching(board_to_start.info.id)) {
 						StartBoard(board_to_start);
-					} else if (SDK::Prov::Venue::Exists(nullptr, board_to_start.venueList[0].id,
+					} else if (!board_to_start.venue.id.empty() &&
+							   SDK::Prov::Venue::Exists(nullptr, board_to_start.venue.id,
 														VenueExists) &&
 							   !VenueExists) {
 						RetireBoard(board_to_start);
@@ -85,7 +86,7 @@ namespace OpenWifi {
 	void VenueCoordinator::RetireBoard(const AnalyticsObjects::BoardInfo &B) {
 		Logger().error(fmt::format(
 			"Venue board '{}' is no longer in the system. Retiring its associated board.",
-			B.venueList[0].name));
+			B.venue.name));
 		StopBoard(B.info.id);
 		StorageService()->BoardsDB().DeleteRecord("id", B.info.id);
 		StorageService()->TimePointsDB().DeleteRecords(fmt::format(" boardId='{}' ", B.info.id));
@@ -95,8 +96,14 @@ namespace OpenWifi {
 											  std::vector<uint64_t> &Devices, bool &VenueExists) {
 		ProvObjects::VenueDeviceList VDL;
 
-		if (SDK::Prov::Venue::GetDevices(nullptr, B.venueList[0].id,
-										 B.venueList[0].monitorSubVenues, VDL, VenueExists)) {
+		if (B.venue.id.empty()) {
+			Devices.clear();
+			VenueExists = true;
+			return true;
+		}
+
+		if (SDK::Prov::Venue::GetDevices(nullptr, B.venue.id,
+										 B.venue.monitorSubVenues, VDL, VenueExists)) {
 			Devices.clear();
 			for (const auto &device : VDL.devices) {
 				Devices.push_back(Utils::SerialNumberToInt(device));
@@ -115,7 +122,7 @@ namespace OpenWifi {
 	}
 
 	bool VenueCoordinator::StartBoard(const AnalyticsObjects::BoardInfo &B) {
-		if (B.venueList.empty())
+		if (B.venue.id.empty())
 			return true;
 
 		bool VenueExists = true;
@@ -124,10 +131,10 @@ namespace OpenWifi {
 			std::lock_guard G(Mutex_);
 			ExistingBoards_[B.info.id] = Devices;
 			Watchers_[B.info.id] =
-				std::make_shared<VenueWatcher>(B.info.id, B.venueList[0].id, Logger(), Devices);
+				std::make_shared<VenueWatcher>(B.info.id, B.venue.id, Logger(), Devices);
 			Watchers_[B.info.id]->Start();
 			poco_information(Logger(), fmt::format("Started board {} for venue {}", B.info.name,
-												   B.venueList[0].id));
+												   B.venue.id));
 			return true;
 		}
 

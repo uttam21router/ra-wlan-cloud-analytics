@@ -13,13 +13,8 @@ namespace OpenWifi {
 		if (!forVenue.empty()) {
 			std::vector<AnalyticsObjects::BoardInfo> Boards;
 			auto F = [&](const AnalyticsObjects::BoardInfo &B) -> bool {
-				if (!B.venueList.empty()) {
-					for (const auto &venue : B.venueList) {
-						if (venue.id == forVenue) {
-							Boards.emplace_back(B);
-							break;
-						}
-					}
+				if (B.venue.id == forVenue) {
+					Boards.emplace_back(B);
 				}
 				return true;
 			};

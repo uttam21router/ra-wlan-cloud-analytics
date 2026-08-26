@@ -52,6 +52,10 @@ namespace OpenWifi {
 
 		ProvObjects::CreateObjectInfo(RawObject, UserInfo_.userinfo, NewObject.info);
 
+		if (NewObject.venue.id.empty()) {
+			return BadRequest(RESTAPI::Errors::VenueMustExist);
+		}
+
 		if (StorageService()->BoardsDB().CreateRecord(NewObject)) {
 			VenueCoordinator()->AddBoard(NewObject.info.id);
 			AnalyticsObjects::BoardInfo NewBoard;
@@ -82,11 +86,11 @@ namespace OpenWifi {
 
 		ProvObjects::UpdateObjectInfo(RawObject, UserInfo_.userinfo, Existing.info);
 
-		if (RawObject->has("venueList")) {
-			if (NewObject.venueList.empty()) {
+		if (RawObject->has("venue")) {
+			if (NewObject.venue.id.empty()) {
 				return BadRequest(RESTAPI::Errors::VenueMustExist);
 			}
-			Existing.venueList = NewObject.venueList;
+			Existing.venue = NewObject.venue;
 		}
 
 		if (StorageService()->BoardsDB().UpdateRecord("id", Existing.info.id, Existing)) {
