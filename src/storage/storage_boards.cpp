@@ -15,27 +15,52 @@
 
 namespace OpenWifi {
 
-	static void RunMigrationStatements(Poco::Data::Session &Session) {
-		std::vector<std::string> Statements{
-			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venueid TEXT",
-			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuename TEXT",
-			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuedescription TEXT",
-			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS retention BIGINT",
-			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS interval BIGINT",
-			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS monitorsubvenues BOOLEAN"};
+	static bool ColumnExists(Poco::Data::SessionPool &Pool, const std::string &TableName, const std::string &ColumnName) {
+		try {
+			Poco::Data::Session CheckSession = Pool.get();
+			Poco::Data::Statement Stmt(CheckSession);
+			Stmt << fmt::format("SELECT {} FROM {} LIMIT 1", ColumnName, TableName), Poco::Data::Keywords::now;
+			return true;
+		} catch (...) {
+			return false;
+		}
+	}
 
-		for (const auto &Statement : Statements) {
-			try {
-				Session << Statement, Poco::Data::Keywords::now;
-			} catch (...) {
-				std::string FallbackStatement = Statement;
-				auto Pos = FallbackStatement.find(" IF NOT EXISTS");
-				if (Pos != std::string::npos) {
-					FallbackStatement.erase(Pos, 13);
-					try {
-						Session << FallbackStatement, Poco::Data::Keywords::now;
-					} catch (...) {
-					}
+	static void RunMigrationStatements(Poco::Data::Session &Session, Poco::Data::SessionPool &Pool, Poco::Logger &Logger) {
+		struct ColumnDef {
+			std::string Name;
+			std::string TypeDef;
+		};
+
+		std::vector<ColumnDef> Columns{
+			{"venueid", "TEXT"},
+			{"venuename", "TEXT"},
+			{"venuedescription", "TEXT"},
+			{"retention", "BIGINT"},
+			{"interval", "BIGINT"},
+			{"monitorsubvenues", "BOOLEAN"}
+		};
+
+		for (const auto &Col : Columns) {
+			if (!ColumnExists(Pool, "boards", Col.Name)) {
+				std::string Statement = fmt::format("ALTER TABLE boards ADD COLUMN {} {}", Col.Name, Col.TypeDef);
+				try {
+					Session << Statement, Poco::Data::Keywords::now;
+				} catch (const Poco::Exception &E) {
+					poco_error(
+						Logger,
+						fmt::format("Board migration DDL statement failed '{}': {}", Statement, E.displayText()));
+					throw;
+				} catch (const std::exception &E) {
+					poco_error(
+						Logger,
+						fmt::format("Board migration DDL statement failed '{}': {}", Statement, E.what()));
+					throw;
+				} catch (...) {
+					poco_error(
+						Logger,
+						fmt::format("Board migration DDL statement failed '{}': unknown error", Statement));
+					throw;
 				}
 			}
 		}
@@ -153,6 +178,19 @@ namespace OpenWifi {
 			UpdateStmt.execute();
 			MigratedCount++;
 		}
+
+		// Normalize NULL values across non-optional columns for all boards
+		std::vector<std::string> NormalizationStatements{
+			"UPDATE boards SET venuename='' WHERE venuename IS NULL",
+			"UPDATE boards SET venuedescription='' WHERE venuedescription IS NULL",
+			"UPDATE boards SET retention=0 WHERE retention IS NULL",
+			"UPDATE boards SET interval=0 WHERE interval IS NULL",
+			"UPDATE boards SET monitorsubvenues=false WHERE monitorsubvenues IS NULL"
+		};
+		for (const auto &StmtStr : NormalizationStatements) {
+			Poco::Data::Statement NormalizeStmt(Session);
+			NormalizeStmt << StmtStr, Poco::Data::Keywords::now;
+		}
 	}
 
 	static ORM::FieldVec Boards_Fields{// object info
@@ -177,30 +215,16 @@ namespace OpenWifi {
 		: DB(T, "boards", Boards_Fields, BoardsDB_Indexes, P, L, "bor") {}
 
 	bool BoardsDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
-		try {
-			Poco::Data::Session Session = Pool_.get();
+		Poco::Data::Session Session = Pool_.get();
 
-			bool HasVenueColumn = false;
-			bool HasVenueListColumn = false;
-			try {
-				Poco::Data::Session CheckSession = Pool_.get();
-				try {
-					CheckSession << "SELECT venue FROM boards LIMIT 1", Poco::Data::Keywords::now;
-					HasVenueColumn = true;
-				} catch (...) {
-				}
-				try {
-					CheckSession << "SELECT venueList FROM boards LIMIT 1", Poco::Data::Keywords::now;
-					HasVenueListColumn = true;
-				} catch (...) {
-				}
-			} catch (...) {
-			}
+		try {
+			bool HasVenueColumn = ColumnExists(Pool_, "boards", "venue");
+			bool HasVenueListColumn = ColumnExists(Pool_, "boards", "venueList");
 
 			Session.begin();
 
 			// Add columns using database-supported idempotent DDL.
-			RunMigrationStatements(Session);
+			RunMigrationStatements(Session, Pool_, Logger());
 
 			// Backfill all legacy records.
 			uint64_t MigratedCount = 0;
@@ -209,12 +233,17 @@ namespace OpenWifi {
 			BackfillVenueField(Session, Logger(), *this, HasVenueColumn, HasVenueListColumn,
 							   MigratedCount, SkippedCount, FailedCount);
 
-			// Verify that every board has been migrated.
+			// Verify that every board has been migrated and all fields are normalized.
 			uint64_t InvalidBoards = 0;
 			Session << R"(
 				SELECT COUNT(*)
 				FROM boards
 				WHERE venueid IS NULL OR venueid = ''
+				   OR venuename IS NULL
+				   OR venuedescription IS NULL
+				   OR retention IS NULL
+				   OR interval IS NULL
+				   OR monitorsubvenues IS NULL
 			)",
 				Poco::Data::Keywords::into(InvalidBoards),
 				Poco::Data::Keywords::now;
@@ -222,7 +251,7 @@ namespace OpenWifi {
 			if (InvalidBoards != 0) {
 				throw Poco::ApplicationException(
 					fmt::format(
-						"Board migration failed: {} records have no venue",
+						"Board migration failed: {} records have no venue or partial venue fields",
 						InvalidBoards));
 			}
 
@@ -236,14 +265,32 @@ namespace OpenWifi {
 			to = 2;
 			return true;
 		} catch (const Poco::Exception &E) {
+			if (Session.isTransaction()) {
+				try {
+					Session.rollback();
+				} catch (...) {
+				}
+			}
 			poco_error(
 				Logger(),
 				fmt::format("Board database migration failed: {}", E.displayText()));
 		} catch (const std::exception &E) {
+			if (Session.isTransaction()) {
+				try {
+					Session.rollback();
+				} catch (...) {
+				}
+			}
 			poco_error(
 				Logger(),
 				fmt::format("Board database migration failed: {}", E.what()));
 		} catch (...) {
+			if (Session.isTransaction()) {
+				try {
+					Session.rollback();
+				} catch (...) {
+				}
+			}
 			poco_error(Logger(), "Board database migration failed: unknown error");
 		}
 
