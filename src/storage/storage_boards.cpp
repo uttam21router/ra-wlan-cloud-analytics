@@ -7,62 +7,151 @@
 //
 
 #include "storage_boards.h"
+#include "fmt/format.h"
 #include "framework/OpenWifiTypes.h"
 #include "framework/RESTAPI_utils.h"
+#include "Poco/Exception.h"
+#include "Poco/Logger.h"
 
 namespace OpenWifi {
 
-	static AnalyticsObjects::VenueInfo VenueFromString(const std::string &In) {
-		AnalyticsObjects::VenueInfo Venue;
-		if (In.empty())
-			return Venue;
+	static void RunMigrationStatements(Poco::Data::Session &Session) {
+		std::vector<std::string> Statements{
+			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venueid TEXT",
+			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuename TEXT",
+			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuedescription TEXT",
+			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS retention BIGINT",
+			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS interval BIGINT",
+			"ALTER TABLE boards ADD COLUMN IF NOT EXISTS monitorsubvenues BOOLEAN"};
 
-		try {
-			Poco::JSON::Parser Parser;
-			auto Object = Parser.parse(In).extract<Poco::JSON::Object::Ptr>();
-			Venue.from_json(Object);
-		} catch (...) {
+		for (const auto &Statement : Statements) {
+			try {
+				Session << Statement, Poco::Data::Keywords::now;
+			} catch (...) {
+				std::string FallbackStatement = Statement;
+				auto Pos = FallbackStatement.find(" IF NOT EXISTS");
+				if (Pos != std::string::npos) {
+					FallbackStatement.erase(Pos, 13);
+					try {
+						Session << FallbackStatement, Poco::Data::Keywords::now;
+					} catch (...) {
+					}
+				}
+			}
 		}
-		return Venue;
 	}
 
-	static AnalyticsObjects::VenueInfo FirstVenueFromLegacyVenueList(const std::string &In) {
-		auto Venues = RESTAPI_utils::to_object_array<AnalyticsObjects::VenueInfo>(In);
-		if (Venues.empty())
-			return {};
-		return Venues[0];
-	}
-
-	static void BackfillVenueField(Poco::Data::Session &Session, const std::string &FieldName,
-								   bool FieldIsList) {
-		typedef Poco::Tuple<std::string, std::string, std::string> LegacyRecord;
+	static void BackfillVenueField(Poco::Data::Session &Session, Poco::Logger &Logger,
+								   BoardsDB &Db, bool HasVenueColumn, bool HasVenueListColumn,
+								   uint64_t &MigratedCount, uint64_t &SkippedCount,
+								   uint64_t &FailedCount) {
+		typedef Poco::Tuple<std::string, std::string, std::string, std::string> LegacyRecord;
 		std::vector<LegacyRecord> Records;
+
+		std::string SelectSql;
+		if (HasVenueColumn && HasVenueListColumn) {
+			SelectSql = "SELECT id, venueid, venue, venueList FROM boards";
+		} else if (HasVenueColumn) {
+			SelectSql = "SELECT id, venueid, venue, '' FROM boards";
+		} else if (HasVenueListColumn) {
+			SelectSql = "SELECT id, venueid, '', venueList FROM boards";
+		} else {
+			SelectSql = "SELECT id, venueid, '', '' FROM boards";
+		}
+
 		Poco::Data::Statement Select(Session);
-		Select << "SELECT id, venueid, " + FieldName + " FROM boards",
-			Poco::Data::Keywords::into(Records);
+		Select << SelectSql, Poco::Data::Keywords::into(Records);
 		Select.execute();
+
+		uint64_t TotalRecords = Records.size();
+		poco_information(Logger, fmt::format("Migrating {} board records", TotalRecords));
+
+		std::string vId, vName, vDesc, boardId;
+		uint64_t vRetention = 0, vInterval = 0;
+		bool vMonitorSubVenues = false;
+
+		std::string UpdateSql = Db.ConvertParams(R"(
+			UPDATE boards
+			SET venueid=?,
+				venuename=?,
+				venuedescription=?,
+				retention=?,
+				interval=?,
+				monitorsubvenues=?
+			WHERE id=?
+		)");
+
+		Poco::Data::Statement UpdateStmt(Session);
+		UpdateStmt << UpdateSql,
+			Poco::Data::Keywords::use(vId),
+			Poco::Data::Keywords::use(vName),
+			Poco::Data::Keywords::use(vDesc),
+			Poco::Data::Keywords::use(vRetention),
+			Poco::Data::Keywords::use(vInterval),
+			Poco::Data::Keywords::use(vMonitorSubVenues),
+			Poco::Data::Keywords::use(boardId);
 
 		for (const auto &Record : Records) {
 			auto Id = Record.get<0>();
 			auto ExistingVenueId = Record.get<1>();
 			auto LegacyVenue = Record.get<2>();
-			if (!ExistingVenueId.empty() || LegacyVenue.empty())
-				continue;
+			auto LegacyVenueList = Record.get<3>();
 
-			auto Venue = FieldIsList ? FirstVenueFromLegacyVenueList(LegacyVenue)
-									 : VenueFromString(LegacyVenue);
-			if (Venue.id.empty())
+			if (!ExistingVenueId.empty()) {
+				SkippedCount++;
 				continue;
+			}
 
-			Poco::Data::Statement Update(Session);
-			Update << "UPDATE boards SET venueid=?, venuename=?, venuedescription=?, "
-					  "retention=?, interval=?, monitorsubvenues=? WHERE id=?",
-				Poco::Data::Keywords::use(Venue.id), Poco::Data::Keywords::use(Venue.name),
-				Poco::Data::Keywords::use(Venue.description),
-				Poco::Data::Keywords::use(Venue.retention),
-				Poco::Data::Keywords::use(Venue.interval),
-				Poco::Data::Keywords::use(Venue.monitorSubVenues), Poco::Data::Keywords::use(Id);
-			Update.execute();
+			AnalyticsObjects::VenueInfo Venue;
+			bool Parsed = false;
+
+			// If venue contains a JSON object, migrate that object.
+			// Explicit precedence: prefer the newer venue field.
+			if (!LegacyVenue.empty()) {
+				try {
+					Poco::JSON::Parser Parser;
+					auto Object = Parser.parse(LegacyVenue).extract<Poco::JSON::Object::Ptr>();
+					if (Object) {
+						Venue.from_json(Object);
+						if (!Venue.id.empty()) {
+							Parsed = true;
+						}
+					}
+				} catch (...) {
+				}
+			}
+
+			// Otherwise, if venueList contains an array, migrate its first entry.
+			if (!Parsed && !LegacyVenueList.empty()) {
+				try {
+					auto Venues = RESTAPI_utils::to_object_array<AnalyticsObjects::VenueInfo>(LegacyVenueList);
+					if (!Venues.empty() && !Venues[0].id.empty()) {
+						Venue = Venues[0];
+						Parsed = true;
+					}
+				} catch (...) {
+				}
+			}
+
+			if (!Parsed || Venue.id.empty()) {
+				FailedCount++;
+				poco_error(
+					Logger,
+					fmt::format("Board migration failed for board ID '{}': JSON is malformed or contains no venue ID", Id));
+				throw Poco::ApplicationException(
+					fmt::format("Board migration failed for board ID '{}': JSON is malformed or contains no venue ID", Id));
+			}
+
+			vId = Venue.id;
+			vName = Venue.name;
+			vDesc = Venue.description;
+			vRetention = Venue.retention;
+			vInterval = Venue.interval;
+			vMonitorSubVenues = Venue.monitorSubVenues;
+			boardId = Id;
+
+			UpdateStmt.execute();
+			MigratedCount++;
 		}
 	}
 
@@ -88,35 +177,78 @@ namespace OpenWifi {
 		: DB(T, "boards", Boards_Fields, BoardsDB_Indexes, P, L, "bor") {}
 
 	bool BoardsDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{
-			"ALTER TABLE boards ADD COLUMN venueid TEXT",
-			"ALTER TABLE boards ADD COLUMN venuename TEXT",
-			"ALTER TABLE boards ADD COLUMN venuedescription TEXT",
-			"ALTER TABLE boards ADD COLUMN retention BIGINT",
-			"ALTER TABLE boards ADD COLUMN interval BIGINT",
-			"ALTER TABLE boards ADD COLUMN monitorsubvenues BOOLEAN",
-			"UPDATE boards SET venueid='' WHERE venueid IS NULL",
-			"UPDATE boards SET venuename='' WHERE venuename IS NULL",
-			"UPDATE boards SET venuedescription='' WHERE venuedescription IS NULL",
-			"UPDATE boards SET retention=0 WHERE retention IS NULL",
-			"UPDATE boards SET interval=0 WHERE interval IS NULL",
-			"UPDATE boards SET monitorsubvenues=false WHERE monitorsubvenues IS NULL"};
-		RunScript(Statements);
-
 		try {
 			Poco::Data::Session Session = Pool_.get();
-			BackfillVenueField(Session, "venue", false);
+
+			bool HasVenueColumn = false;
+			bool HasVenueListColumn = false;
+			try {
+				Poco::Data::Session CheckSession = Pool_.get();
+				try {
+					CheckSession << "SELECT venue FROM boards LIMIT 1", Poco::Data::Keywords::now;
+					HasVenueColumn = true;
+				} catch (...) {
+				}
+				try {
+					CheckSession << "SELECT venueList FROM boards LIMIT 1", Poco::Data::Keywords::now;
+					HasVenueListColumn = true;
+				} catch (...) {
+				}
+			} catch (...) {
+			}
+
+			Session.begin();
+
+			// Add columns using database-supported idempotent DDL.
+			RunMigrationStatements(Session);
+
+			// Backfill all legacy records.
+			uint64_t MigratedCount = 0;
+			uint64_t SkippedCount = 0;
+			uint64_t FailedCount = 0;
+			BackfillVenueField(Session, Logger(), *this, HasVenueColumn, HasVenueListColumn,
+							   MigratedCount, SkippedCount, FailedCount);
+
+			// Verify that every board has been migrated.
+			uint64_t InvalidBoards = 0;
+			Session << R"(
+				SELECT COUNT(*)
+				FROM boards
+				WHERE venueid IS NULL OR venueid = ''
+			)",
+				Poco::Data::Keywords::into(InvalidBoards),
+				Poco::Data::Keywords::now;
+
+			if (InvalidBoards != 0) {
+				throw Poco::ApplicationException(
+					fmt::format(
+						"Board migration failed: {} records have no venue",
+						InvalidBoards));
+			}
+
+			Session.commit();
+
+			poco_information(Logger(), fmt::format("Migrated: {}", MigratedCount));
+			poco_information(Logger(), fmt::format("Skipped as already migrated: {}", SkippedCount));
+			poco_information(Logger(), fmt::format("Failed: {}", FailedCount));
+			poco_information(Logger(), "Board migration completed successfully");
+
+			to = 2;
+			return true;
+		} catch (const Poco::Exception &E) {
+			poco_error(
+				Logger(),
+				fmt::format("Board database migration failed: {}", E.displayText()));
+		} catch (const std::exception &E) {
+			poco_error(
+				Logger(),
+				fmt::format("Board database migration failed: {}", E.what()));
 		} catch (...) {
-		}
-		try {
-			Poco::Data::Session Session = Pool_.get();
-			auto LegacyVenueListField = std::string("venue") + "List";
-			BackfillVenueField(Session, LegacyVenueListField, true);
-		} catch (...) {
+			poco_error(Logger(), "Board database migration failed: unknown error");
 		}
 
-		to = 2;
-		return true;
+		// Do not advance `to`.
+		return false;
 	}
 } // namespace OpenWifi
 

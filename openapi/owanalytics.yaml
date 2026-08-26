@@ -408,6 +408,8 @@ components:
       allOf:
         - $ref: '#/components/schemas/ObjectInfo'
         - type: object
+          required:
+            - venue
           properties:
             venue:
               $ref: '#/components/schemas/VenueInfo'
