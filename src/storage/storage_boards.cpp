@@ -15,10 +15,14 @@
 
 namespace OpenWifi {
 
-	static bool ColumnExists(Poco::Data::SessionPool &Pool, const std::string &TableName, const std::string &ColumnName) {
+	struct ColumnDef {
+		std::string Name;
+		std::string TypeDef;
+	};
+
+	static bool ColumnExists(Poco::Data::Session &Session, const std::string &TableName, const std::string &ColumnName) {
 		try {
-			Poco::Data::Session CheckSession = Pool.get();
-			Poco::Data::Statement Stmt(CheckSession);
+			Poco::Data::Statement Stmt(Session);
 			Stmt << fmt::format("SELECT {} FROM {} LIMIT 1", ColumnName, TableName), Poco::Data::Keywords::now;
 			return true;
 		} catch (...) {
@@ -26,42 +30,26 @@ namespace OpenWifi {
 		}
 	}
 
-	static void RunMigrationStatements(Poco::Data::Session &Session, Poco::Data::SessionPool &Pool, Poco::Logger &Logger) {
-		struct ColumnDef {
-			std::string Name;
-			std::string TypeDef;
-		};
-
-		std::vector<ColumnDef> Columns{
-			{"venueid", "TEXT"},
-			{"venuename", "TEXT"},
-			{"venuedescription", "TEXT"},
-			{"retention", "BIGINT"},
-			{"interval", "BIGINT"},
-			{"monitorsubvenues", "BOOLEAN"}
-		};
-
-		for (const auto &Col : Columns) {
-			if (!ColumnExists(Pool, "boards", Col.Name)) {
-				std::string Statement = fmt::format("ALTER TABLE boards ADD COLUMN {} {}", Col.Name, Col.TypeDef);
-				try {
-					Session << Statement, Poco::Data::Keywords::now;
-				} catch (const Poco::Exception &E) {
-					poco_error(
-						Logger,
-						fmt::format("Board migration DDL statement failed '{}': {}", Statement, E.displayText()));
-					throw;
-				} catch (const std::exception &E) {
-					poco_error(
-						Logger,
-						fmt::format("Board migration DDL statement failed '{}': {}", Statement, E.what()));
-					throw;
-				} catch (...) {
-					poco_error(
-						Logger,
-						fmt::format("Board migration DDL statement failed '{}': unknown error", Statement));
-					throw;
-				}
+	static void RunMigrationStatements(Poco::Data::Session &Session, const std::vector<ColumnDef> &MissingColumns, Poco::Logger &Logger) {
+		for (const auto &Col : MissingColumns) {
+			std::string Statement = fmt::format("ALTER TABLE boards ADD COLUMN {} {}", Col.Name, Col.TypeDef);
+			try {
+				Session << Statement, Poco::Data::Keywords::now;
+			} catch (const Poco::Exception &E) {
+				poco_error(
+					Logger,
+					fmt::format("Board migration DDL statement failed '{}': {}", Statement, E.displayText()));
+				throw;
+			} catch (const std::exception &E) {
+				poco_error(
+					Logger,
+					fmt::format("Board migration DDL statement failed '{}': {}", Statement, E.what()));
+				throw;
+			} catch (...) {
+				poco_error(
+					Logger,
+					fmt::format("Board migration DDL statement failed '{}': unknown error", Statement));
+				throw;
 			}
 		}
 	}
@@ -218,13 +206,29 @@ namespace OpenWifi {
 		Poco::Data::Session Session = Pool_.get();
 
 		try {
-			bool HasVenueColumn = ColumnExists(Pool_, "boards", "venue");
-			bool HasVenueListColumn = ColumnExists(Pool_, "boards", "venueList");
+			bool HasVenueColumn = ColumnExists(Session, "boards", "venue");
+			bool HasVenueListColumn = ColumnExists(Session, "boards", "venueList");
+
+			std::vector<ColumnDef> AllColumns{
+				{"venueid", "TEXT"},
+				{"venuename", "TEXT"},
+				{"venuedescription", "TEXT"},
+				{"retention", "BIGINT"},
+				{"interval", "BIGINT"},
+				{"monitorsubvenues", "BOOLEAN"}
+			};
+
+			std::vector<ColumnDef> MissingColumns;
+			for (const auto &Col : AllColumns) {
+				if (!ColumnExists(Session, "boards", Col.Name)) {
+					MissingColumns.push_back(Col);
+				}
+			}
 
 			Session.begin();
 
-			// Add columns using database-supported idempotent DDL.
-			RunMigrationStatements(Session, Pool_, Logger());
+			// Add columns using database-supported DDL for missing columns.
+			RunMigrationStatements(Session, MissingColumns, Logger());
 
 			// Backfill all legacy records.
 			uint64_t MigratedCount = 0;
