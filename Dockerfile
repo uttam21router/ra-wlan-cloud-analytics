@@ -58,6 +58,7 @@ FROM build-base AS owanalytics-build
 ADD CMakeLists.txt build /owanalytics/
 ADD cmake /owanalytics/cmake
 ADD src /owanalytics/src
+ADD test /owanalytics/test
 ADD .git /owanalytics/.git
 
 COPY --from=poco-build /usr/local/include /usr/local/include

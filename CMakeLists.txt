@@ -159,3 +159,61 @@ target_link_libraries(owanalytics PUBLIC
                         CppKafka::cppkafka
 )
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test/board_migration_test.cpp)
+add_executable(board_migration_test
+        test/board_migration_test.cpp
+        src/framework/UI_WebSocketClientServer.cpp
+        src/framework/UI_WebSocketClientNotifications.cpp
+        src/framework/utils.cpp
+        src/framework/SubSystemServer.cpp
+        src/framework/AuthClient.cpp
+        src/framework/OpenAPIRequests.cpp
+        src/framework/MicroServiceFuncs.cpp
+        src/framework/ALBserver.cpp
+        src/framework/KafkaManager.cpp
+        src/framework/RESTAPI_Handler.cpp
+        src/framework/RESTAPI_ExtServer.cpp
+        src/framework/RESTAPI_IntServer.cpp
+        src/framework/EventBusManager.cpp
+        src/framework/MicroService.cpp
+        src/framework/ConfigurationValidator.cpp
+        src/RESTObjects/RESTAPI_SecurityObjects.cpp
+        src/RESTObjects/RESTAPI_GWobjects.cpp
+        src/RESTObjects/RESTAPI_FMSObjects.cpp
+        src/RESTObjects/RESTAPI_CertObjects.cpp
+        src/RESTObjects/RESTAPI_OWLSobjects.cpp
+        src/RESTObjects/RESTAPI_ProvObjects.cpp
+        src/RESTObjects/RESTAPI_AnalyticsObjects.cpp
+        src/RESTObjects/RESTAPI_SubObjects.cpp
+        src/RESTAPI/RESTAPI_routers.cpp
+        src/Dashboard.cpp
+        src/StorageService.cpp
+        src/WifiClientCache.cpp
+        src/StateReceiver.cpp
+        src/VenueWatcher.cpp
+        src/VenueCoordinator.cpp
+        src/sdks/SDK_prov.cpp
+        src/storage/storage_boards.cpp
+        src/RESTAPI/RESTAPI_board_list_handler.cpp
+        src/RESTAPI/RESTAPI_board_handler.cpp
+        src/APStats.cpp
+        src/DeviceStatusReceiver.cpp
+        src/RESTAPI/RESTAPI_board_devices_handler.cpp
+        src/HealthReceiver.cpp
+        src/RESTAPI/RESTAPI_board_timepoint_handler.cpp
+        src/storage/storage_timepoints.cpp
+        src/storage/storage_wificlients.cpp
+        src/RESTAPI/RESTAPI_wificlienthistory_handler.cpp)
+
+target_link_libraries(board_migration_test PUBLIC
+                        ${Poco_LIBRARIES}
+                        ${MySQL_LIBRARIES}
+                        ${ZLIB_LIBRARIES}
+                        fmt::fmt
+                        resolv
+                        CppKafka::cppkafka
+)
+endif()
+
+
+

@@ -55,30 +55,9 @@ namespace OpenWifi {
 	}
 
 	static void BackfillVenueField(Poco::Data::Session &Session, Poco::Logger &Logger,
-								   BoardsDB &Db, bool HasVenueColumn, bool HasVenueListColumn,
+								   BoardsDB &Db, bool HasVenueListColumn,
 								   uint64_t &MigratedCount, uint64_t &SkippedCount,
 								   uint64_t &FailedCount) {
-		typedef Poco::Tuple<std::string, std::string, std::string, std::string> LegacyRecord;
-		std::vector<LegacyRecord> Records;
-
-		std::string SelectSql;
-		if (HasVenueColumn && HasVenueListColumn) {
-			SelectSql = "SELECT id, venueid, venue, venueList FROM boards";
-		} else if (HasVenueColumn) {
-			SelectSql = "SELECT id, venueid, venue, '' FROM boards";
-		} else if (HasVenueListColumn) {
-			SelectSql = "SELECT id, venueid, '', venueList FROM boards";
-		} else {
-			SelectSql = "SELECT id, venueid, '', '' FROM boards";
-		}
-
-		Poco::Data::Statement Select(Session);
-		Select << SelectSql, Poco::Data::Keywords::into(Records);
-		Select.execute();
-
-		uint64_t TotalRecords = Records.size();
-		poco_information(Logger, fmt::format("Migrating {} board records", TotalRecords));
-
 		std::string vId, vName, vDesc, boardId;
 		uint64_t vRetention = 0, vInterval = 0;
 		bool vMonitorSubVenues = false;
@@ -104,67 +83,78 @@ namespace OpenWifi {
 			Poco::Data::Keywords::use(vMonitorSubVenues),
 			Poco::Data::Keywords::use(boardId);
 
-		for (const auto &Record : Records) {
-			auto Id = Record.get<0>();
-			auto ExistingVenueId = Record.get<1>();
-			auto LegacyVenue = Record.get<2>();
-			auto LegacyVenueList = Record.get<3>();
+		uint64_t Offset = 0;
+		const uint64_t BatchSize = 500;
+		bool Done = false;
 
-			if (!ExistingVenueId.empty()) {
-				SkippedCount++;
-				continue;
+		while (!Done) {
+			typedef Poco::Tuple<std::string, std::string, std::string> LegacyRecord;
+			std::vector<LegacyRecord> Records;
+
+			std::string SelectSql;
+			if (HasVenueListColumn) {
+				SelectSql = fmt::format("SELECT id, venueid, venueList FROM boards ORDER BY id LIMIT {} OFFSET {}", BatchSize, Offset);
+			} else {
+				SelectSql = fmt::format("SELECT id, venueid, '' FROM boards ORDER BY id LIMIT {} OFFSET {}", BatchSize, Offset);
 			}
 
-			AnalyticsObjects::VenueInfo Venue;
-			bool Parsed = false;
+			Poco::Data::Statement Select(Session);
+			Select << SelectSql, Poco::Data::Keywords::into(Records);
+			Select.execute();
 
-			// If venue contains a JSON object, migrate that object.
-			// Explicit precedence: prefer the newer venue field.
-			if (!LegacyVenue.empty()) {
-				try {
-					Poco::JSON::Parser Parser;
-					auto Object = Parser.parse(LegacyVenue).extract<Poco::JSON::Object::Ptr>();
-					if (Object) {
-						Venue.from_json(Object);
-						if (!Venue.id.empty()) {
+			if (Records.empty()) {
+				break;
+			}
+			if (Records.size() < BatchSize) {
+				Done = true;
+			}
+			Offset += Records.size();
+
+			for (const auto &Record : Records) {
+				auto Id = Record.get<0>();
+				auto ExistingVenueId = Record.get<1>();
+				auto LegacyVenueList = Record.get<2>();
+
+				if (!ExistingVenueId.empty()) {
+					SkippedCount++;
+					continue;
+				}
+
+				AnalyticsObjects::VenueInfo Venue;
+				bool Parsed = false;
+
+				if (!LegacyVenueList.empty()) {
+					try {
+						auto Venues = RESTAPI_utils::to_object_array<AnalyticsObjects::VenueInfo>(LegacyVenueList);
+						if (!Venues.empty() && !Venues[0].id.empty()) {
+							Venue = Venues[0];
 							Parsed = true;
 						}
+					} catch (...) {
+						Parsed = false;
 					}
-				} catch (...) {
 				}
-			}
 
-			// Otherwise, if venueList contains an array, migrate its first entry.
-			if (!Parsed && !LegacyVenueList.empty()) {
-				try {
-					auto Venues = RESTAPI_utils::to_object_array<AnalyticsObjects::VenueInfo>(LegacyVenueList);
-					if (!Venues.empty() && !Venues[0].id.empty()) {
-						Venue = Venues[0];
-						Parsed = true;
-					}
-				} catch (...) {
+				if (!Parsed || Venue.id.empty()) {
+					FailedCount++;
+					poco_error(
+						Logger,
+						fmt::format("Board migration failed for board ID '{}': venueList is missing, empty, malformed, or first venue ID is empty", Id));
+					throw Poco::ApplicationException(
+						fmt::format("Board migration failed for board ID '{}': venueList is missing, empty, malformed, or first venue ID is empty", Id));
 				}
+
+				vId = Venue.id;
+				vName = Venue.name;
+				vDesc = Venue.description;
+				vRetention = Venue.retention;
+				vInterval = Venue.interval;
+				vMonitorSubVenues = Venue.monitorSubVenues;
+				boardId = Id;
+
+				UpdateStmt.execute();
+				MigratedCount++;
 			}
-
-			if (!Parsed || Venue.id.empty()) {
-				FailedCount++;
-				poco_error(
-					Logger,
-					fmt::format("Board migration failed for board ID '{}': JSON is malformed or contains no venue ID", Id));
-				throw Poco::ApplicationException(
-					fmt::format("Board migration failed for board ID '{}': JSON is malformed or contains no venue ID", Id));
-			}
-
-			vId = Venue.id;
-			vName = Venue.name;
-			vDesc = Venue.description;
-			vRetention = Venue.retention;
-			vInterval = Venue.interval;
-			vMonitorSubVenues = Venue.monitorSubVenues;
-			boardId = Id;
-
-			UpdateStmt.execute();
-			MigratedCount++;
 		}
 
 		// Normalize NULL values across non-optional columns for all boards
@@ -206,8 +196,8 @@ namespace OpenWifi {
 		Poco::Data::Session Session = Pool_.get();
 
 		try {
+			bool HasVenueListColumn = ColumnExists(Session, "boards", "venueList") || ColumnExists(Session, "boards", "venuelist");
 			bool HasVenueColumn = ColumnExists(Session, "boards", "venue");
-			bool HasVenueListColumn = ColumnExists(Session, "boards", "venueList");
 
 			std::vector<ColumnDef> AllColumns{
 				{"venueid", "TEXT"},
@@ -234,7 +224,7 @@ namespace OpenWifi {
 			uint64_t MigratedCount = 0;
 			uint64_t SkippedCount = 0;
 			uint64_t FailedCount = 0;
-			BackfillVenueField(Session, Logger(), *this, HasVenueColumn, HasVenueListColumn,
+			BackfillVenueField(Session, Logger(), *this, HasVenueListColumn,
 							   MigratedCount, SkippedCount, FailedCount);
 
 			// Verify that every board has been migrated and all fields are normalized.
@@ -257,6 +247,36 @@ namespace OpenWifi {
 					fmt::format(
 						"Board migration failed: {} records have no venue or partial venue fields",
 						InvalidBoards));
+			}
+
+			if (HasVenueListColumn) {
+				std::string DropListSql = (Type_ == OpenWifi::DBType::sqlite)
+					? "ALTER TABLE boards DROP COLUMN venuelist"
+					: "ALTER TABLE boards DROP COLUMN IF EXISTS venuelist";
+				try {
+					Session << DropListSql, Poco::Data::Keywords::now;
+				} catch (const Poco::Exception &E) {
+					poco_error(Logger(), fmt::format("Board migration DDL statement failed '{}': {}", DropListSql, E.displayText()));
+					throw;
+				} catch (const std::exception &E) {
+					poco_error(Logger(), fmt::format("Board migration DDL statement failed '{}': {}", DropListSql, E.what()));
+					throw;
+				}
+			}
+
+			if (HasVenueColumn) {
+				std::string DropVenueSql = (Type_ == OpenWifi::DBType::sqlite)
+					? "ALTER TABLE boards DROP COLUMN venue"
+					: "ALTER TABLE boards DROP COLUMN IF EXISTS venue";
+				try {
+					Session << DropVenueSql, Poco::Data::Keywords::now;
+				} catch (const Poco::Exception &E) {
+					poco_error(Logger(), fmt::format("Board migration DDL statement failed '{}': {}", DropVenueSql, E.displayText()));
+					throw;
+				} catch (const std::exception &E) {
+					poco_error(Logger(), fmt::format("Board migration DDL statement failed '{}': {}", DropVenueSql, E.what()));
+					throw;
+				}
 			}
 
 			Session.commit();
