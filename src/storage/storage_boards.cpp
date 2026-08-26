@@ -26,11 +26,44 @@ namespace OpenWifi {
 		return Venue;
 	}
 
-	static std::string FirstVenueFromLegacyVenueList(const std::string &In) {
+	static AnalyticsObjects::VenueInfo FirstVenueFromLegacyVenueList(const std::string &In) {
 		auto Venues = RESTAPI_utils::to_object_array<AnalyticsObjects::VenueInfo>(In);
 		if (Venues.empty())
-			return "";
-		return RESTAPI_utils::to_string(Venues[0]);
+			return {};
+		return Venues[0];
+	}
+
+	static void BackfillVenueField(Poco::Data::Session &Session, const std::string &FieldName,
+								   bool FieldIsList) {
+		typedef Poco::Tuple<std::string, std::string, std::string> LegacyRecord;
+		std::vector<LegacyRecord> Records;
+		Poco::Data::Statement Select(Session);
+		Select << "SELECT id, venueid, " + FieldName + " FROM boards",
+			Poco::Data::Keywords::into(Records);
+		Select.execute();
+
+		for (const auto &Record : Records) {
+			auto Id = Record.get<0>();
+			auto ExistingVenueId = Record.get<1>();
+			auto LegacyVenue = Record.get<2>();
+			if (!ExistingVenueId.empty() || LegacyVenue.empty())
+				continue;
+
+			auto Venue = FieldIsList ? FirstVenueFromLegacyVenueList(LegacyVenue)
+									 : VenueFromString(LegacyVenue);
+			if (Venue.id.empty())
+				continue;
+
+			Poco::Data::Statement Update(Session);
+			Update << "UPDATE boards SET venueid=?, venuename=?, venuedescription=?, "
+					  "retention=?, interval=?, monitorsubvenues=? WHERE id=?",
+				Poco::Data::Keywords::use(Venue.id), Poco::Data::Keywords::use(Venue.name),
+				Poco::Data::Keywords::use(Venue.description),
+				Poco::Data::Keywords::use(Venue.retention),
+				Poco::Data::Keywords::use(Venue.interval),
+				Poco::Data::Keywords::use(Venue.monitorSubVenues), Poco::Data::Keywords::use(Id);
+			Update.execute();
+		}
 	}
 
 	static ORM::FieldVec Boards_Fields{// object info
@@ -40,7 +73,12 @@ namespace OpenWifi {
 									   ORM::Field{"notes", ORM::FieldType::FT_TEXT},
 									   ORM::Field{"created", ORM::FieldType::FT_BIGINT},
 									   ORM::Field{"modified", ORM::FieldType::FT_BIGINT},
-									   ORM::Field{"venue", ORM::FieldType::FT_TEXT}};
+									   ORM::Field{"venueId", ORM::FieldType::FT_TEXT},
+									   ORM::Field{"venueName", ORM::FieldType::FT_TEXT},
+									   ORM::Field{"venueDescription", ORM::FieldType::FT_TEXT},
+									   ORM::Field{"retention", ORM::FieldType::FT_BIGINT},
+									   ORM::Field{"interval", ORM::FieldType::FT_BIGINT},
+									   ORM::Field{"monitorSubVenues", ORM::FieldType::FT_BOOLEAN}};
 
 	static ORM::IndexVec BoardsDB_Indexes{
 		{std::string("boards_name_index"),
@@ -50,35 +88,30 @@ namespace OpenWifi {
 		: DB(T, "boards", Boards_Fields, BoardsDB_Indexes, P, L, "bor") {}
 
 	bool BoardsDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{"ALTER TABLE boards ADD COLUMN venue TEXT",
-											"UPDATE boards SET venue='' WHERE venue IS NULL"};
+		std::vector<std::string> Statements{
+			"ALTER TABLE boards ADD COLUMN venueid TEXT",
+			"ALTER TABLE boards ADD COLUMN venuename TEXT",
+			"ALTER TABLE boards ADD COLUMN venuedescription TEXT",
+			"ALTER TABLE boards ADD COLUMN retention BIGINT",
+			"ALTER TABLE boards ADD COLUMN interval BIGINT",
+			"ALTER TABLE boards ADD COLUMN monitorsubvenues BOOLEAN",
+			"UPDATE boards SET venueid='' WHERE venueid IS NULL",
+			"UPDATE boards SET venuename='' WHERE venuename IS NULL",
+			"UPDATE boards SET venuedescription='' WHERE venuedescription IS NULL",
+			"UPDATE boards SET retention=0 WHERE retention IS NULL",
+			"UPDATE boards SET interval=0 WHERE interval IS NULL",
+			"UPDATE boards SET monitorsubvenues=false WHERE monitorsubvenues IS NULL"};
 		RunScript(Statements);
 
 		try {
-			typedef Poco::Tuple<std::string, std::string, std::string> LegacyRecord;
-			std::vector<LegacyRecord> Records;
 			Poco::Data::Session Session = Pool_.get();
-			Poco::Data::Statement Select(Session);
+			BackfillVenueField(Session, "venue", false);
+		} catch (...) {
+		}
+		try {
+			Poco::Data::Session Session = Pool_.get();
 			auto LegacyVenueListField = std::string("venue") + "List";
-			Select << "SELECT id, venue, " + LegacyVenueListField + " FROM boards",
-				Poco::Data::Keywords::into(Records);
-			Select.execute();
-
-			for (const auto &Record : Records) {
-				auto Id = Record.get<0>();
-				auto Venue = Record.get<1>();
-				auto VenueList = Record.get<2>();
-				if (Venue.empty() && !VenueList.empty()) {
-					auto BackfilledVenue = FirstVenueFromLegacyVenueList(VenueList);
-					if (!BackfilledVenue.empty()) {
-						Poco::Data::Statement Update(Session);
-						Update << "UPDATE boards SET venue=? WHERE id=?",
-							Poco::Data::Keywords::use(BackfilledVenue),
-							Poco::Data::Keywords::use(Id);
-						Update.execute();
-					}
-				}
-			}
+			BackfillVenueField(Session, LegacyVenueListField, true);
 		} catch (...) {
 		}
 
@@ -97,7 +130,12 @@ void ORM::DB<OpenWifi::BoardDBRecordType, OpenWifi::AnalyticsObjects::BoardInfo>
 		OpenWifi::RESTAPI_utils::to_object_array<OpenWifi::SecurityObjects::NoteInfo>(In.get<3>());
 	Out.info.created = In.get<4>();
 	Out.info.modified = In.get<5>();
-	Out.venue = OpenWifi::VenueFromString(In.get<6>());
+	Out.venue.id = In.get<6>();
+	Out.venue.name = In.get<7>();
+	Out.venue.description = In.get<8>();
+	Out.venue.retention = In.get<9>();
+	Out.venue.interval = In.get<10>();
+	Out.venue.monitorSubVenues = In.get<11>();
 }
 
 template <>
@@ -109,5 +147,10 @@ void ORM::DB<OpenWifi::BoardDBRecordType, OpenWifi::AnalyticsObjects::BoardInfo>
 	Out.set<3>(OpenWifi::RESTAPI_utils::to_string(In.info.notes));
 	Out.set<4>(In.info.created);
 	Out.set<5>(In.info.modified);
-	Out.set<6>(OpenWifi::RESTAPI_utils::to_string(In.venue));
+	Out.set<6>(In.venue.id);
+	Out.set<7>(In.venue.name);
+	Out.set<8>(In.venue.description);
+	Out.set<9>(In.venue.retention);
+	Out.set<10>(In.venue.interval);
+	Out.set<11>(In.venue.monitorSubVenues);
 }
