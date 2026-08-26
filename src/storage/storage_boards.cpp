@@ -65,9 +65,9 @@ namespace OpenWifi {
 			Select.execute();
 
 			for (const auto &Record : Records) {
-				const auto &Id = Record.get<0>();
-				const auto &Venue = Record.get<1>();
-				const auto &VenueList = Record.get<2>();
+				auto Id = Record.get<0>();
+				auto Venue = Record.get<1>();
+				auto VenueList = Record.get<2>();
 				if (Venue.empty() && !VenueList.empty()) {
 					auto BackfilledVenue = FirstVenueFromLegacyVenueList(VenueList);
 					if (!BackfilledVenue.empty()) {
