@@ -3,6 +3,7 @@ project(owanalytics VERSION 3.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_GENERATOR "Unix Makefiles")
+enable_testing()
 
 if(UNIX AND APPLE)
     set(OPENSSL_ROOT_DIR /usr/local/opt/openssl)
@@ -213,7 +214,10 @@ target_link_libraries(board_migration_test PUBLIC
                         resolv
                         CppKafka::cppkafka
 )
-endif()
 
+add_test(NAME board_migration_test COMMAND board_migration_test)
+add_test(NAME board_migration_postgresql_test COMMAND board_migration_test --postgresql)
+set_tests_properties(board_migration_postgresql_test PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 

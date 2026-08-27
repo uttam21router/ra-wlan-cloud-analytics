@@ -72,6 +72,7 @@ RUN mkdir cmake-build
 WORKDIR /owanalytics/cmake-build
 RUN cmake ..
 RUN cmake --build . --config Release -j8
+RUN ctest --output-on-failure
 
 FROM debian:$DEBIAN_VERSION
 

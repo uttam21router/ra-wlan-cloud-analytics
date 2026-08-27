@@ -196,7 +196,8 @@ namespace OpenWifi {
 		Poco::Data::Session Session = Pool_.get();
 
 		try {
-			bool HasVenueListColumn = ColumnExists(Session, "boards", "venueList") || ColumnExists(Session, "boards", "venuelist");
+			auto LegacyVenueListField = std::string("venue") + "List";
+			bool HasVenueListColumn = ColumnExists(Session, "boards", LegacyVenueListField) || ColumnExists(Session, "boards", "venuelist");
 			bool HasVenueColumn = ColumnExists(Session, "boards", "venue");
 
 			std::vector<ColumnDef> AllColumns{

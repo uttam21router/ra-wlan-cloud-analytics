@@ -1,8 +1,10 @@
 #include <iostream>
 #include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include "Poco/Data/Session.h"
 #include "Poco/Data/SessionPool.h"
+#include "Poco/Data/PostgreSQL/Connector.h"
 #include "Poco/Data/SQLite/Connector.h"
 #include "Poco/Logger.h"
 #include "storage/storage_boards.h"
@@ -436,8 +438,7 @@ void test_15_board_crud_after_migration() {
 	std::cout << "  Passed!" << std::endl;
 }
 
-int main() {
-	Poco::Data::SQLite::Connector::registerConnector();
+void run_sqlite_tests() {
 	std::cout << "==========================================" << std::endl;
 	std::cout << "Running Board Database Migration Tests..." << std::endl;
 	std::cout << "==========================================" << std::endl;
@@ -460,5 +461,67 @@ int main() {
 	std::cout << "==========================================" << std::endl;
 	std::cout << "ALL 15 TESTS PASSED SUCCESSFULLY!" << std::endl;
 	std::cout << "==========================================" << std::endl;
+}
+
+int run_postgresql_test() {
+	const char *ConnectionString = std::getenv("BOARD_MIGRATION_TEST_POSTGRESQL_CONN");
+	if (ConnectionString == nullptr || std::string(ConnectionString).empty()) {
+		std::cout << "Skipping PostgreSQL board migration test: "
+				  << "BOARD_MIGRATION_TEST_POSTGRESQL_CONN is not set." << std::endl;
+		return 77;
+	}
+
+	Poco::Data::PostgreSQL::Connector::registerConnector();
+	std::cout << "Running PostgreSQL board migration test..." << std::endl;
+
+	{
+		Poco::Data::Session Session("PostgreSQL", ConnectionString);
+		Session << "DROP TABLE IF EXISTS boards", Poco::Data::Keywords::now;
+		Session << "CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT, description TEXT, "
+				   "notes TEXT, created BIGINT, modified BIGINT, venueList TEXT)",
+			Poco::Data::Keywords::now;
+		Session << "INSERT INTO boards VALUES ('pg_b1', 'PG Board 1', 'Desc', '[]', 1000, "
+				   "2000, '[{\"id\":\"pg_v1\",\"name\":\"PG Venue\",\"description\":\"PG "
+				   "Desc\",\"retention\":3600,\"interval\":60,\"monitorSubVenues\":true}]')",
+			Poco::Data::Keywords::now;
+	}
+
+	Poco::Data::SessionPool Pool("PostgreSQL", ConnectionString);
+	BoardsDB Db(DBType::pgsql, Pool, GetTestLogger());
+	assert(Db.Create() == true);
+
+	AnalyticsObjects::BoardInfo Board;
+	assert(Db.GetRecord("id", "pg_b1", Board) == true);
+	assert(Board.venue.id == "pg_v1");
+	assert(Board.venue.name == "PG Venue");
+	assert(Board.venue.description == "PG Desc");
+	assert(Board.venue.retention == 3600);
+	assert(Board.venue.interval == 60);
+	assert(Board.venue.monitorSubVenues == true);
+
+	{
+		Poco::Data::Session Session = Pool.get();
+		assert(CheckColumnExists(Session, "boards", "venueid"));
+		assert(CheckColumnExists(Session, "boards", "venuename"));
+		assert(CheckColumnExists(Session, "boards", "venuedescription"));
+		assert(CheckColumnExists(Session, "boards", "retention"));
+		assert(CheckColumnExists(Session, "boards", "interval"));
+		assert(CheckColumnExists(Session, "boards", "monitorsubvenues"));
+		assert(!CheckColumnExists(Session, "boards", "venuelist"));
+		assert(!CheckColumnExists(Session, "boards", "venue"));
+		Session << "DROP TABLE boards", Poco::Data::Keywords::now;
+	}
+
+	std::cout << "PostgreSQL board migration test passed." << std::endl;
+	return 0;
+}
+
+int main(int argc, char **argv) {
+	if (argc > 1 && std::string(argv[1]) == "--postgresql") {
+		return run_postgresql_test();
+	}
+
+	Poco::Data::SQLite::Connector::registerConnector();
+	run_sqlite_tests();
 	return 0;
 }
