@@ -19,6 +19,71 @@ defaults:
     shell: bash
 
 jobs:
+  board-migration-postgresql:
+    runs-on: ubuntu-20.04
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: owanalytics_board_migration_test
+          POSTGRES_USER: owanalytics_test
+          POSTGRES_PASSWORD: owanalytics_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U owanalytics_test -d owanalytics_board_migration_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      BOARD_MIGRATION_TEST_POSTGRESQL_CONN: host=127.0.0.1 user=owanalytics_test password=owanalytics_test_password dbname=owanalytics_board_migration_test port=5432 connect_timeout=10
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v3
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y \
+          make cmake g++ git \
+          libpq-dev libmariadb-dev libmariadbclient-dev-compat \
+          librdkafka-dev libboost-all-dev libssl-dev \
+          zlib1g-dev nlohmann-json3-dev ca-certificates \
+          libcurl4-openssl-dev libfmt-dev
+
+    - name: Build Poco
+      run: |
+        git clone https://github.com/AriliaWireless/poco --branch poco-tip-v2 /tmp/poco
+        cmake -S /tmp/poco -B /tmp/poco/cmake-build
+        cmake --build /tmp/poco/cmake-build --config Release -j2
+        sudo cmake --build /tmp/poco/cmake-build --target install
+
+    - name: Build cppkafka
+      run: |
+        git clone https://github.com/AriliaWireless/cppkafka --branch tip-v1 /tmp/cppkafka
+        cmake -S /tmp/cppkafka -B /tmp/cppkafka/cmake-build
+        cmake --build /tmp/cppkafka/cmake-build --config Release -j2
+        sudo cmake --build /tmp/cppkafka/cmake-build --target install
+
+    - name: Install valijson
+      run: |
+        git clone https://github.com/AriliaWireless/valijson --branch tip-v1 /tmp/valijson
+        cmake -S /tmp/valijson -B /tmp/valijson/cmake-build
+        cmake --build /tmp/valijson/cmake-build --config Release -j2
+        sudo cmake --build /tmp/valijson/cmake-build --target install
+        sudo ldconfig
+
+    - name: Configure board migration test
+      run: |
+        test -n "$BOARD_MIGRATION_TEST_POSTGRESQL_CONN"
+        cmake -S . -B cmake-build -DBOARD_MIGRATION_POSTGRESQL_REQUIRED=ON
+
+    - name: Build board migration test
+      run: cmake --build cmake-build --target board_migration_test --config Release -j2
+
+    - name: Run mandatory PostgreSQL board migration test
+      run: ctest --test-dir cmake-build --output-on-failure -R board_migration_postgresql_test
+
   docker:
     runs-on: ubuntu-20.04
     env:

@@ -58,6 +58,7 @@ FROM build-base AS owanalytics-build
 ADD CMakeLists.txt build /owanalytics/
 ADD cmake /owanalytics/cmake
 ADD src /owanalytics/src
+ADD test /owanalytics/test
 ADD .git /owanalytics/.git
 
 COPY --from=poco-build /usr/local/include /usr/local/include
@@ -71,6 +72,7 @@ RUN mkdir cmake-build
 WORKDIR /owanalytics/cmake-build
 RUN cmake ..
 RUN cmake --build . --config Release -j8
+RUN ctest --output-on-failure
 
 FROM debian:$DEBIAN_VERSION
 

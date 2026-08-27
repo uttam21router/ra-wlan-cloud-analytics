@@ -52,9 +52,9 @@ namespace OpenWifi {
 		while (!done) {
 			if (!BoardsDB().GetRecords(start, batch, BoardList)) {
 				for (const auto &board : BoardList) {
-					for (const auto &venue : board.venueList) {
+					if (!board.venue.id.empty()) {
 						auto now = Utils::Now();
-						auto lower_bound = now - venue.retention;
+						auto lower_bound = now - board.venue.retention;
 						poco_information(
 							Logger(),
 							fmt::format("Removing old records for board '{}'", board.info.name));

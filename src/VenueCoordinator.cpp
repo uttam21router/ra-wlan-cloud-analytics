@@ -72,7 +72,8 @@ namespace OpenWifi {
 					bool VenueExists = true;
 					if (!Watching(board_to_start.info.id)) {
 						StartBoard(board_to_start);
-					} else if (SDK::Prov::Venue::Exists(nullptr, board_to_start.venueList[0].id,
+					} else if (!board_to_start.venue.id.empty() &&
+							   SDK::Prov::Venue::Exists(nullptr, board_to_start.venue.id,
 														VenueExists) &&
 							   !VenueExists) {
 						RetireBoard(board_to_start);
@@ -85,7 +86,7 @@ namespace OpenWifi {
 	void VenueCoordinator::RetireBoard(const AnalyticsObjects::BoardInfo &B) {
 		Logger().error(fmt::format(
 			"Venue board '{}' is no longer in the system. Retiring its associated board.",
-			B.venueList[0].name));
+			B.venue.name));
 		StopBoard(B.info.id);
 		StorageService()->BoardsDB().DeleteRecord("id", B.info.id);
 		StorageService()->TimePointsDB().DeleteRecords(fmt::format(" boardId='{}' ", B.info.id));
@@ -95,8 +96,14 @@ namespace OpenWifi {
 											  std::vector<uint64_t> &Devices, bool &VenueExists) {
 		ProvObjects::VenueDeviceList VDL;
 
-		if (SDK::Prov::Venue::GetDevices(nullptr, B.venueList[0].id,
-										 B.venueList[0].monitorSubVenues, VDL, VenueExists)) {
+		if (B.venue.id.empty()) {
+			Devices.clear();
+			VenueExists = true;
+			return true;
+		}
+
+		if (SDK::Prov::Venue::GetDevices(nullptr, B.venue.id,
+										 B.venue.monitorSubVenues, VDL, VenueExists)) {
 			Devices.clear();
 			for (const auto &device : VDL.devices) {
 				Devices.push_back(Utils::SerialNumberToInt(device));
@@ -115,19 +122,15 @@ namespace OpenWifi {
 	}
 
 	bool VenueCoordinator::StartBoard(const AnalyticsObjects::BoardInfo &B) {
-		if (B.venueList.empty())
+		if (B.venue.id.empty())
 			return true;
 
 		bool VenueExists = true;
 		std::vector<uint64_t> Devices;
 		if (GetDevicesForBoard(B, Devices, VenueExists)) {
-			std::lock_guard G(Mutex_);
-			ExistingBoards_[B.info.id] = Devices;
-			Watchers_[B.info.id] =
-				std::make_shared<VenueWatcher>(B.info.id, B.venueList[0].id, Logger(), Devices);
-			Watchers_[B.info.id]->Start();
+			StartBoardWatcher(B, Devices);
 			poco_information(Logger(), fmt::format("Started board {} for venue {}", B.info.name,
-												   B.venueList[0].id));
+												   B.venue.id));
 			return true;
 		}
 
@@ -138,6 +141,15 @@ namespace OpenWifi {
 
 		poco_information(Logger(), fmt::format("Could not start board {}", B.info.name));
 		return false;
+	}
+
+	void VenueCoordinator::StartBoardWatcher(const AnalyticsObjects::BoardInfo &B,
+											 const std::vector<uint64_t> &Devices) {
+		auto Watcher = std::make_shared<VenueWatcher>(B.info.id, B.venue.id, Logger(), Devices);
+		std::lock_guard G(Mutex_);
+		ExistingBoards_[B.info.id] = Devices;
+		Watchers_[B.info.id] = Watcher;
+		Watcher->Start();
 	}
 
 	void VenueCoordinator::StopBoard(const std::string &id) {
@@ -156,19 +168,38 @@ namespace OpenWifi {
 			std::vector<uint64_t> Devices;
 			bool VenueExists = true;
 			if (GetDevicesForBoard(B, Devices, VenueExists)) {
-				std::lock_guard G(Mutex_);
-				auto it = ExistingBoards_.find(id);
-				if (it != ExistingBoards_.end()) {
-					if (it->second != Devices) {
-						auto it2 = Watchers_.find(id);
-						if (it2 != Watchers_.end()) {
-							it2->second->ModifySerialNumbers(Devices);
+				std::shared_ptr<VenueWatcher> WatcherToStop;
+				{
+					std::lock_guard G(Mutex_);
+					auto WatcherIt = Watchers_.find(id);
+					if (WatcherIt != Watchers_.end() && WatcherIt->second->Venue() != B.venue.id) {
+						WatcherToStop = WatcherIt->second;
+						Watchers_.erase(WatcherIt);
+						ExistingBoards_.erase(id);
+					}
+				}
+
+				if (WatcherToStop) {
+					WatcherToStop->Stop();
+					StartBoardWatcher(B, Devices);
+					poco_information(Logger(),
+									 fmt::format("Rebound board {} to venue {}", B.info.name,
+												 B.venue.id));
+				} else {
+					std::lock_guard G(Mutex_);
+					auto it = ExistingBoards_.find(id);
+					if (it != ExistingBoards_.end()) {
+						if (it->second != Devices) {
+							auto it2 = Watchers_.find(id);
+							if (it2 != Watchers_.end()) {
+								it2->second->ModifySerialNumbers(Devices);
+							}
+							ExistingBoards_[id] = Devices;
+							poco_information(Logger(), fmt::format("Modified board {}", B.info.name));
+						} else {
+							poco_information(Logger(),
+											 fmt::format("No device changes in board {}", B.info.name));
 						}
-						ExistingBoards_[id] = Devices;
-						poco_information(Logger(), fmt::format("Modified board {}", B.info.name));
-					} else {
-						poco_information(Logger(),
-										 fmt::format("No device changes in board {}", B.info.name));
 					}
 				}
 				return;

@@ -408,11 +408,11 @@ components:
       allOf:
         - $ref: '#/components/schemas/ObjectInfo'
         - type: object
+          required:
+            - venue
           properties:
-            venueList:
-              type: array
-              items:
-                $ref: '#/components/schemas/VenueInfo'
+            venue:
+              $ref: '#/components/schemas/VenueInfo'
 
     BoardInfoList:
       type: object

@@ -43,13 +43,13 @@ namespace OpenWifi::AnalyticsObjects {
 
 	void BoardInfo::to_json(Poco::JSON::Object &Obj) const {
 		info.to_json(Obj);
-		field_to_json(Obj, "venueList", venueList);
+		field_to_json(Obj, "venue", venue);
 	}
 
 	bool BoardInfo::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		try {
 			info.from_json(Obj);
-			field_from_json(Obj, "venueList", venueList);
+			field_from_json(Obj, "venue", venue);
 			return true;
 		} catch (...) {
 		}
