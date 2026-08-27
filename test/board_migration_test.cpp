@@ -1,7 +1,8 @@
 #include <iostream>
-#include <cassert>
 #include <cstdlib>
 #include <filesystem>
+#include <stdexcept>
+#include <string>
 #include "Poco/Data/Session.h"
 #include "Poco/Data/SessionPool.h"
 #include "Poco/Data/PostgreSQL/Connector.h"
@@ -15,6 +16,19 @@ using namespace OpenWifi;
 namespace OpenWifi {
 	void DaemonPostInitialization(Poco::Util::Application &) {}
 }
+
+class TestFailure : public std::runtime_error {
+  public:
+	explicit TestFailure(const std::string &Message) : std::runtime_error(Message) {}
+};
+
+static void CheckTest(bool Result, const char *Expression, const char *File, int Line) {
+	if (!Result) {
+		throw TestFailure(fmt::format("{}:{}: check failed: {}", File, Line, Expression));
+	}
+}
+
+#define CHECK_TEST(Expression) CheckTest((Expression), #Expression, __FILE__, __LINE__)
 
 static Poco::Logger &GetTestLogger() {
 	return Poco::Logger::get("TestLogger");
@@ -58,22 +72,22 @@ void test_1_successful_migration_single_venuelist() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == true);
+	CHECK_TEST(Result == true);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(!CheckColumnExists(Session, "boards", "venuelist"));
-		assert(!CheckColumnExists(Session, "boards", "venue"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venue"));
 	}
 
 	AnalyticsObjects::BoardInfo Board;
-	assert(Db.GetRecord("id", "b1", Board) == true);
-	assert(Board.venue.id == "v1");
-	assert(Board.venue.name == "Venue 1");
-	assert(Board.venue.description == "VDesc 1");
-	assert(Board.venue.retention == 3600);
-	assert(Board.venue.interval == 60);
-	assert(Board.venue.monitorSubVenues == true);
+	CHECK_TEST(Db.GetRecord("id", "b1", Board) == true);
+	CHECK_TEST(Board.venue.id == "v1");
+	CHECK_TEST(Board.venue.name == "Venue 1");
+	CHECK_TEST(Board.venue.description == "VDesc 1");
+	CHECK_TEST(Board.venue.retention == 3600);
+	CHECK_TEST(Board.venue.interval == 60);
+	CHECK_TEST(Board.venue.monitorSubVenues == true);
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
 }
@@ -91,12 +105,12 @@ void test_2_multi_venue_list_uses_first_entry() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == true);
+	CHECK_TEST(Result == true);
 
 	AnalyticsObjects::BoardInfo Board;
-	assert(Db.GetRecord("id", "b2", Board) == true);
-	assert(Board.venue.id == "v1");
-	assert(Board.venue.name == "First Venue");
+	CHECK_TEST(Db.GetRecord("id", "b2", Board) == true);
+	CHECK_TEST(Board.venue.id == "v1");
+	CHECK_TEST(Board.venue.name == "First Venue");
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
 }
@@ -114,39 +128,39 @@ void test_3_existing_populated_typed_columns_preserved() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == true);
+	CHECK_TEST(Result == true);
 
 	AnalyticsObjects::BoardInfo Board;
-	assert(Db.GetRecord("id", "b3", Board) == true);
-	assert(Board.venue.id == "v_existing");
-	assert(Board.venue.name == "Existing Venue");
+	CHECK_TEST(Db.GetRecord("id", "b3", Board) == true);
+	CHECK_TEST(Board.venue.id == "v_existing");
+	CHECK_TEST(Board.venue.name == "Existing Venue");
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
 }
 
-// 4. The venue column contains valid data but is ignored.
-void test_4_venue_column_ignored() {
-	std::cout << "Running Test 4: Obsolete venue column is ignored..." << std::endl;
+// 4. The venue column takes precedence over legacy venueList.
+void test_4_venue_column_takes_precedence() {
+	std::cout << "Running Test 4: Obsolete venue column takes precedence..." << std::endl;
 	std::string DbPath = GetTempDbPath("test_4");
 	{
 		Poco::Data::Session PoolSession("SQLite", DbPath);
 		PoolSession << "CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT, description TEXT, notes TEXT, created BIGINT, modified BIGINT, venue TEXT, venueList TEXT);", Poco::Data::Keywords::now;
-		PoolSession << "INSERT INTO boards VALUES ('b4', 'Board 4', '', '[]', 0, 0, '{\"id\":\"v_ignored\",\"name\":\"Ignored Venue\"}', '[{\"id\":\"v_list\",\"name\":\"List Venue\"}]');", Poco::Data::Keywords::now;
+		PoolSession << "INSERT INTO boards VALUES ('b4', 'Board 4', '', '[]', 0, 0, '{\"id\":\"v_venue\",\"name\":\"Venue Column\"}', '[{\"id\":\"v_list\",\"name\":\"List Venue\"}]');", Poco::Data::Keywords::now;
 	}
 
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == true);
+	CHECK_TEST(Result == true);
 
 	AnalyticsObjects::BoardInfo Board;
-	assert(Db.GetRecord("id", "b4", Board) == true);
-	assert(Board.venue.id == "v_list");
-	assert(Board.venue.name == "List Venue");
+	CHECK_TEST(Db.GetRecord("id", "b4", Board) == true);
+	CHECK_TEST(Board.venue.id == "v_venue");
+	CHECK_TEST(Board.venue.name == "Venue Column");
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(!CheckColumnExists(Session, "boards", "venue"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venue"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -165,11 +179,11 @@ void test_5_empty_venuelist_fails_migration() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == false);
+	CHECK_TEST(Result == false);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuelist"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -188,11 +202,11 @@ void test_6_malformed_json_fails_migration() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == false);
+	CHECK_TEST(Result == false);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuelist"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -211,11 +225,11 @@ void test_7_first_venue_empty_id_fails_migration() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == false);
+	CHECK_TEST(Result == false);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuelist"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -235,11 +249,11 @@ void test_8_invalid_board_rolls_back_all() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == false);
+	CHECK_TEST(Result == false);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuelist"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -261,7 +275,7 @@ void test_9_ddl_failure_rolls_back() {
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	// Upgrade tries to add missing columns to VIEW, which causes DDL failure
 	bool Result = Db.Create();
-	assert(Result == false);
+	CHECK_TEST(Result == false);
 
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -274,18 +288,18 @@ void test_10_validation_failure_preserves_legacy_columns() {
 	{
 		Poco::Data::Session PoolSession("SQLite", DbPath);
 		PoolSession << "CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT, description TEXT, notes TEXT, created BIGINT, modified BIGINT, venue TEXT, venueList TEXT);", Poco::Data::Keywords::now;
-		PoolSession << "INSERT INTO boards VALUES ('b10', 'Board 10', '', '[]', 0, 0, '{\"id\":\"v1\"}', '[{\"id\":\"\",\"name\":\"Invalid\"}]');", Poco::Data::Keywords::now;
+		PoolSession << "INSERT INTO boards VALUES ('b10', 'Board 10', '', '[]', 0, 0, '{\"id\":\"\"}', '[{\"id\":\"v1\",\"name\":\"Valid List\"}]');", Poco::Data::Keywords::now;
 	}
 
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == false);
+	CHECK_TEST(Result == false);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "venuelist"));
-		assert(CheckColumnExists(Session, "boards", "venue"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venue"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -304,12 +318,12 @@ void test_11_12_migration_removes_legacy_columns() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == true);
+	CHECK_TEST(Result == true);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(!CheckColumnExists(Session, "boards", "venuelist"));
-		assert(!CheckColumnExists(Session, "boards", "venue"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venue"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -330,7 +344,7 @@ void test_13_migration_retry_succeeds() {
 
 	// First attempt: fails because venueList is empty
 	bool Result1 = Db.Create();
-	assert(Result1 == false);
+	CHECK_TEST(Result1 == false);
 
 	// Fix row in DB
 	{
@@ -340,16 +354,16 @@ void test_13_migration_retry_succeeds() {
 
 	// Retry attempt: succeeds!
 	bool Result2 = Db.Create();
-	assert(Result2 == true);
+	CHECK_TEST(Result2 == true);
 
 	AnalyticsObjects::BoardInfo Board;
-	assert(Db.GetRecord("id", "b13", Board) == true);
-	assert(Board.venue.id == "v13");
-	assert(Board.venue.name == "Fixed Venue");
+	CHECK_TEST(Db.GetRecord("id", "b13", Board) == true);
+	CHECK_TEST(Board.venue.id == "v13");
+	CHECK_TEST(Board.venue.name == "Fixed Venue");
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(!CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venuelist"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -363,24 +377,24 @@ void test_14_fresh_db_creation() {
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
 	bool Result = Db.Create();
-	assert(Result == true);
+	CHECK_TEST(Result == true);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "id"));
-		assert(CheckColumnExists(Session, "boards", "name"));
-		assert(CheckColumnExists(Session, "boards", "description"));
-		assert(CheckColumnExists(Session, "boards", "notes"));
-		assert(CheckColumnExists(Session, "boards", "created"));
-		assert(CheckColumnExists(Session, "boards", "modified"));
-		assert(CheckColumnExists(Session, "boards", "venueid"));
-		assert(CheckColumnExists(Session, "boards", "venuename"));
-		assert(CheckColumnExists(Session, "boards", "venuedescription"));
-		assert(CheckColumnExists(Session, "boards", "retention"));
-		assert(CheckColumnExists(Session, "boards", "interval"));
-		assert(CheckColumnExists(Session, "boards", "monitorsubvenues"));
-		assert(!CheckColumnExists(Session, "boards", "venuelist"));
-		assert(!CheckColumnExists(Session, "boards", "venue"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "id"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "name"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "description"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "notes"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "created"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "modified"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venueid"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuename"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuedescription"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "retention"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "interval"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "monitorsubvenues"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venue"));
 	}
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -393,7 +407,7 @@ void test_15_board_crud_after_migration() {
 
 	Poco::Data::SessionPool Pool("SQLite", DbPath);
 	BoardsDB Db(DBType::sqlite, Pool, GetTestLogger());
-	assert(Db.Create() == true);
+	CHECK_TEST(Db.Create() == true);
 
 	// Create
 	AnalyticsObjects::BoardInfo NewBoard;
@@ -409,30 +423,30 @@ void test_15_board_crud_after_migration() {
 	NewBoard.venue.interval = 300;
 	NewBoard.venue.monitorSubVenues = true;
 
-	assert(Db.CreateRecord(NewBoard) == true);
+	CHECK_TEST(Db.CreateRecord(NewBoard) == true);
 
 	// Get
 	AnalyticsObjects::BoardInfo FetchedBoard;
-	assert(Db.GetRecord("id", "b15", FetchedBoard) == true);
-	assert(FetchedBoard.info.name == "Board 15");
-	assert(FetchedBoard.venue.id == "v15");
-	assert(FetchedBoard.venue.name == "Venue 15");
+	CHECK_TEST(Db.GetRecord("id", "b15", FetchedBoard) == true);
+	CHECK_TEST(FetchedBoard.info.name == "Board 15");
+	CHECK_TEST(FetchedBoard.venue.id == "v15");
+	CHECK_TEST(FetchedBoard.venue.name == "Venue 15");
 
 	// Update
 	FetchedBoard.info.name = "Updated Board 15";
 	FetchedBoard.venue.name = "Updated Venue 15";
-	assert(Db.UpdateRecord("id", "b15", FetchedBoard) == true);
+	CHECK_TEST(Db.UpdateRecord("id", "b15", FetchedBoard) == true);
 
 	AnalyticsObjects::BoardInfo UpdatedBoard;
-	assert(Db.GetRecord("id", "b15", UpdatedBoard) == true);
-	assert(UpdatedBoard.info.name == "Updated Board 15");
-	assert(UpdatedBoard.venue.name == "Updated Venue 15");
+	CHECK_TEST(Db.GetRecord("id", "b15", UpdatedBoard) == true);
+	CHECK_TEST(UpdatedBoard.info.name == "Updated Board 15");
+	CHECK_TEST(UpdatedBoard.venue.name == "Updated Venue 15");
 
 	// List
 	BoardsDB::RecordVec List;
-	assert(Db.GetRecords(0, 10, List) == true);
-	assert(List.size() == 1);
-	assert(List[0].info.id == "b15");
+	CHECK_TEST(Db.GetRecords(0, 10, List) == true);
+	CHECK_TEST(List.size() == 1);
+	CHECK_TEST(List[0].info.id == "b15");
 
 	CleanDbFile(DbPath);
 	std::cout << "  Passed!" << std::endl;
@@ -446,7 +460,7 @@ void run_sqlite_tests() {
 	test_1_successful_migration_single_venuelist();
 	test_2_multi_venue_list_uses_first_entry();
 	test_3_existing_populated_typed_columns_preserved();
-	test_4_venue_column_ignored();
+	test_4_venue_column_takes_precedence();
 	test_5_empty_venuelist_fails_migration();
 	test_6_malformed_json_fails_migration();
 	test_7_first_venue_empty_id_fails_migration();
@@ -463,53 +477,205 @@ void run_sqlite_tests() {
 	std::cout << "==========================================" << std::endl;
 }
 
-int run_postgresql_test() {
-	const char *ConnectionString = std::getenv("BOARD_MIGRATION_TEST_POSTGRESQL_CONN");
-	if (ConnectionString == nullptr || std::string(ConnectionString).empty()) {
-		std::cout << "Skipping PostgreSQL board migration test: "
-				  << "BOARD_MIGRATION_TEST_POSTGRESQL_CONN is not set." << std::endl;
-		return 77;
+static void CleanupPostgresql(const std::string &ConnectionString) {
+	try {
+		Poco::Data::Session Session("PostgreSQL", ConnectionString);
+		Session << "DROP TABLE IF EXISTS boards", Poco::Data::Keywords::now;
+	} catch (...) {
 	}
+}
 
-	Poco::Data::PostgreSQL::Connector::registerConnector();
-	std::cout << "Running PostgreSQL board migration test..." << std::endl;
+static void RequireDedicatedPostgresqlTestDatabase(const std::string &ConnectionString) {
+	if (ConnectionString.find("owanalytics_board_migration_test") == std::string::npos) {
+		throw TestFailure(
+			"PostgreSQL migration test requires the dedicated owanalytics_board_migration_test database");
+	}
+}
+
+static void CreatePostgresqlLegacyTable(Poco::Data::Session &Session) {
+	Session << "DROP TABLE IF EXISTS boards", Poco::Data::Keywords::now;
+	Session << "CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT, description TEXT, "
+			   "notes TEXT, created BIGINT, modified BIGINT, venue TEXT, venueList TEXT)",
+		Poco::Data::Keywords::now;
+}
+
+static void run_postgresql_valid_migration(const std::string &ConnectionString) {
+	std::cout << "Running PostgreSQL valid migration test..." << std::endl;
 
 	{
 		Poco::Data::Session Session("PostgreSQL", ConnectionString);
-		Session << "DROP TABLE IF EXISTS boards", Poco::Data::Keywords::now;
-		Session << "CREATE TABLE boards (id TEXT PRIMARY KEY, name TEXT, description TEXT, "
-				   "notes TEXT, created BIGINT, modified BIGINT, venueList TEXT)",
-			Poco::Data::Keywords::now;
+		CreatePostgresqlLegacyTable(Session);
 		Session << "INSERT INTO boards VALUES ('pg_b1', 'PG Board 1', 'Desc', '[]', 1000, "
-				   "2000, '[{\"id\":\"pg_v1\",\"name\":\"PG Venue\",\"description\":\"PG "
-				   "Desc\",\"retention\":3600,\"interval\":60,\"monitorSubVenues\":true}]')",
+				   "2000, '', '[{\"id\":\"pg_v1\",\"name\":\"PG Venue 1\",\"description\":\"PG "
+				   "Desc 1\",\"retention\":3600,\"interval\":60,\"monitorSubVenues\":true},"
+				   "{\"id\":\"pg_v2\",\"name\":\"PG Venue 2\"}]')",
+			Poco::Data::Keywords::now;
+		Session << "INSERT INTO boards VALUES ('pg_b2', 'PG Board 2', 'Desc', '[]', 1000, "
+				   "2000, '{\"id\":\"pg_v3\",\"name\":\"PG Venue 3\",\"description\":\"PG "
+				   "Desc 3\",\"retention\":7200,\"interval\":120,\"monitorSubVenues\":false}', "
+				   "'[{\"id\":\"pg_v4\",\"name\":\"Ignored List Venue\"}]')",
 			Poco::Data::Keywords::now;
 	}
 
 	Poco::Data::SessionPool Pool("PostgreSQL", ConnectionString);
 	BoardsDB Db(DBType::pgsql, Pool, GetTestLogger());
-	assert(Db.Create() == true);
+	CHECK_TEST(Db.Create() == true);
 
-	AnalyticsObjects::BoardInfo Board;
-	assert(Db.GetRecord("id", "pg_b1", Board) == true);
-	assert(Board.venue.id == "pg_v1");
-	assert(Board.venue.name == "PG Venue");
-	assert(Board.venue.description == "PG Desc");
-	assert(Board.venue.retention == 3600);
-	assert(Board.venue.interval == 60);
-	assert(Board.venue.monitorSubVenues == true);
+	AnalyticsObjects::BoardInfo Board1;
+	CHECK_TEST(Db.GetRecord("id", "pg_b1", Board1) == true);
+	CHECK_TEST(Board1.info.name == "PG Board 1");
+	CHECK_TEST(Board1.venue.id == "pg_v1");
+	CHECK_TEST(Board1.venue.name == "PG Venue 1");
+	CHECK_TEST(Board1.venue.description == "PG Desc 1");
+	CHECK_TEST(Board1.venue.retention == 3600);
+	CHECK_TEST(Board1.venue.interval == 60);
+	CHECK_TEST(Board1.venue.monitorSubVenues == true);
+
+	AnalyticsObjects::BoardInfo Board2;
+	CHECK_TEST(Db.GetRecord("id", "pg_b2", Board2) == true);
+	CHECK_TEST(Board2.info.name == "PG Board 2");
+	CHECK_TEST(Board2.venue.id == "pg_v3");
+	CHECK_TEST(Board2.venue.name == "PG Venue 3");
+	CHECK_TEST(Board2.venue.description == "PG Desc 3");
+	CHECK_TEST(Board2.venue.retention == 7200);
+	CHECK_TEST(Board2.venue.interval == 120);
+	CHECK_TEST(Board2.venue.monitorSubVenues == false);
 
 	{
 		Poco::Data::Session Session = Pool.get();
-		assert(CheckColumnExists(Session, "boards", "venueid"));
-		assert(CheckColumnExists(Session, "boards", "venuename"));
-		assert(CheckColumnExists(Session, "boards", "venuedescription"));
-		assert(CheckColumnExists(Session, "boards", "retention"));
-		assert(CheckColumnExists(Session, "boards", "interval"));
-		assert(CheckColumnExists(Session, "boards", "monitorsubvenues"));
-		assert(!CheckColumnExists(Session, "boards", "venuelist"));
-		assert(!CheckColumnExists(Session, "boards", "venue"));
-		Session << "DROP TABLE boards", Poco::Data::Keywords::now;
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venueid"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuename"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuedescription"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "retention"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "interval"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "monitorsubvenues"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venue"));
+	}
+}
+
+static void run_postgresql_rollback_and_retry(const std::string &ConnectionString) {
+	std::cout << "Running PostgreSQL rollback and retry migration test..." << std::endl;
+
+	{
+		Poco::Data::Session Session("PostgreSQL", ConnectionString);
+		CreatePostgresqlLegacyTable(Session);
+		Session << "INSERT INTO boards VALUES ('pg_b3', 'PG Board 3', '', '[]', 0, 0, '', "
+				   "'[{\"id\":\"pg_v5\",\"name\":\"Valid Before Rollback\"}]')",
+			Poco::Data::Keywords::now;
+		Session << "INSERT INTO boards VALUES ('pg_b4', 'PG Board 4', '', '[]', 0, 0, '', '[]')",
+			Poco::Data::Keywords::now;
+	}
+
+	Poco::Data::SessionPool Pool("PostgreSQL", ConnectionString);
+	BoardsDB Db(DBType::pgsql, Pool, GetTestLogger());
+	CHECK_TEST(Db.Create() == false);
+
+	{
+		Poco::Data::Session Session = Pool.get();
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(CheckColumnExists(Session, "boards", "venue"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venueid"));
+		Session << "UPDATE boards SET venueList='[{\"id\":\"pg_v6\",\"name\":\"Fixed Venue\","
+				   "\"retention\":1800,\"interval\":30,\"monitorSubVenues\":true}]' "
+				   "WHERE id='pg_b4'",
+			Poco::Data::Keywords::now;
+	}
+
+	CHECK_TEST(Db.Create() == true);
+
+	AnalyticsObjects::BoardInfo Board3;
+	CHECK_TEST(Db.GetRecord("id", "pg_b3", Board3) == true);
+	CHECK_TEST(Board3.venue.id == "pg_v5");
+
+	AnalyticsObjects::BoardInfo Board4;
+	CHECK_TEST(Db.GetRecord("id", "pg_b4", Board4) == true);
+	CHECK_TEST(Board4.venue.id == "pg_v6");
+	CHECK_TEST(Board4.venue.name == "Fixed Venue");
+	CHECK_TEST(Board4.venue.retention == 1800);
+	CHECK_TEST(Board4.venue.interval == 30);
+	CHECK_TEST(Board4.venue.monitorSubVenues == true);
+
+	{
+		Poco::Data::Session Session = Pool.get();
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venuelist"));
+		CHECK_TEST(!CheckColumnExists(Session, "boards", "venue"));
+	}
+}
+
+static void run_postgresql_crud_after_migration(const std::string &ConnectionString) {
+	std::cout << "Running PostgreSQL CRUD after migration test..." << std::endl;
+
+	Poco::Data::SessionPool Pool("PostgreSQL", ConnectionString);
+	BoardsDB Db(DBType::pgsql, Pool, GetTestLogger());
+
+	AnalyticsObjects::BoardInfo NewBoard;
+	NewBoard.info.id = "pg_b5";
+	NewBoard.info.name = "PG Board 5";
+	NewBoard.info.description = "CRUD Board";
+	NewBoard.info.created = 12345;
+	NewBoard.info.modified = 12345;
+	NewBoard.venue.id = "pg_v7";
+	NewBoard.venue.name = "PG Venue 7";
+	NewBoard.venue.description = "CRUD Venue";
+	NewBoard.venue.retention = 86400;
+	NewBoard.venue.interval = 300;
+	NewBoard.venue.monitorSubVenues = false;
+
+	CHECK_TEST(Db.CreateRecord(NewBoard) == true);
+
+	AnalyticsObjects::BoardInfo FetchedBoard;
+	CHECK_TEST(Db.GetRecord("id", "pg_b5", FetchedBoard) == true);
+	CHECK_TEST(FetchedBoard.info.name == "PG Board 5");
+	CHECK_TEST(FetchedBoard.venue.id == "pg_v7");
+	CHECK_TEST(FetchedBoard.venue.monitorSubVenues == false);
+
+	FetchedBoard.info.name = "Updated PG Board 5";
+	FetchedBoard.venue.name = "Updated PG Venue 7";
+	FetchedBoard.venue.monitorSubVenues = true;
+	CHECK_TEST(Db.UpdateRecord("id", "pg_b5", FetchedBoard) == true);
+
+	AnalyticsObjects::BoardInfo UpdatedBoard;
+	CHECK_TEST(Db.GetRecord("id", "pg_b5", UpdatedBoard) == true);
+	CHECK_TEST(UpdatedBoard.info.name == "Updated PG Board 5");
+	CHECK_TEST(UpdatedBoard.venue.name == "Updated PG Venue 7");
+	CHECK_TEST(UpdatedBoard.venue.monitorSubVenues == true);
+
+	BoardsDB::RecordVec List;
+	CHECK_TEST(Db.GetRecords(0, 10, List) == true);
+	CHECK_TEST(List.size() == 3);
+}
+
+int run_postgresql_test(bool AllowSkip) {
+	const char *ConnectionString = std::getenv("BOARD_MIGRATION_TEST_POSTGRESQL_CONN");
+	if (ConnectionString == nullptr || std::string(ConnectionString).empty()) {
+		if (AllowSkip) {
+			std::cout << "Skipping PostgreSQL board migration test: "
+					  << "BOARD_MIGRATION_TEST_POSTGRESQL_CONN is not set." << std::endl;
+			return 77;
+		}
+		std::cerr << "BOARD_MIGRATION_TEST_POSTGRESQL_CONN is required." << std::endl;
+		return 1;
+	}
+
+	Poco::Data::PostgreSQL::Connector::registerConnector();
+
+	try {
+		RequireDedicatedPostgresqlTestDatabase(ConnectionString);
+		CleanupPostgresql(ConnectionString);
+		run_postgresql_valid_migration(ConnectionString);
+		CleanupPostgresql(ConnectionString);
+		run_postgresql_rollback_and_retry(ConnectionString);
+		run_postgresql_crud_after_migration(ConnectionString);
+		CleanupPostgresql(ConnectionString);
+	} catch (const std::exception &E) {
+		CleanupPostgresql(ConnectionString);
+		std::cerr << "PostgreSQL board migration test failed: " << E.what() << std::endl;
+		return 1;
+	} catch (...) {
+		CleanupPostgresql(ConnectionString);
+		std::cerr << "PostgreSQL board migration test failed: unknown error" << std::endl;
+		return 1;
 	}
 
 	std::cout << "PostgreSQL board migration test passed." << std::endl;
@@ -517,11 +683,25 @@ int run_postgresql_test() {
 }
 
 int main(int argc, char **argv) {
+	bool AllowSkip = false;
+	for (int i = 1; i < argc; ++i) {
+		if (std::string(argv[i]) == "--allow-skip") {
+			AllowSkip = true;
+		}
+	}
 	if (argc > 1 && std::string(argv[1]) == "--postgresql") {
-		return run_postgresql_test();
+		return run_postgresql_test(AllowSkip);
 	}
 
-	Poco::Data::SQLite::Connector::registerConnector();
-	run_sqlite_tests();
+	try {
+		Poco::Data::SQLite::Connector::registerConnector();
+		run_sqlite_tests();
+	} catch (const std::exception &E) {
+		std::cerr << "Board migration test failed: " << E.what() << std::endl;
+		return 1;
+	} catch (...) {
+		std::cerr << "Board migration test failed: unknown error" << std::endl;
+		return 1;
+	}
 	return 0;
 }

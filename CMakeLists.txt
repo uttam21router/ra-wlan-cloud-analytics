@@ -4,6 +4,7 @@ project(owanalytics VERSION 3.2.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_GENERATOR "Unix Makefiles")
 enable_testing()
+option(BOARD_MIGRATION_POSTGRESQL_REQUIRED "Require PostgreSQL board migration test configuration" OFF)
 
 if(UNIX AND APPLE)
     set(OPENSSL_ROOT_DIR /usr/local/opt/openssl)
@@ -216,8 +217,11 @@ target_link_libraries(board_migration_test PUBLIC
 )
 
 add_test(NAME board_migration_test COMMAND board_migration_test)
+if(BOARD_MIGRATION_POSTGRESQL_REQUIRED)
 add_test(NAME board_migration_postgresql_test COMMAND board_migration_test --postgresql)
+else()
+add_test(NAME board_migration_postgresql_test COMMAND board_migration_test --postgresql --allow-skip)
 set_tests_properties(board_migration_postgresql_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
-
+endif()
 
