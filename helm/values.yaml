@@ -21,12 +21,14 @@ images:
     pullPolicy: IfNotPresent
   flyway:
     repository: redgate/flyway
-    tag: latest
+    tag: 13.4.0
     pullPolicy: IfNotPresent
 
 flyway:
   enabled: true
-  baselineOnMigrate: false
+  baselineOnMigrate: true
+  baselineVersion: "1"
+  baselineDescription: existing-schema
 
 services:
   owanalytics:

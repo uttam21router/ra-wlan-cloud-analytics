@@ -19,8 +19,18 @@ defaults:
     shell: bash
 
 jobs:
+  flyway-migrations:
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Test Flyway migrations
+      run: ./test_scripts/flyway_migrations_test.sh
+
   docker:
     runs-on: ubuntu-20.04
+    needs: flyway-migrations
     env:
       DOCKER_REGISTRY_URL: tip-tip-wlan-cloud-ucentral.jfrog.io
       DOCKER_REGISTRY_USERNAME: ucentral
