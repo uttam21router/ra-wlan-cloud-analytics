@@ -58,6 +58,7 @@ FROM build-base AS owanalytics-build
 ADD CMakeLists.txt build /owanalytics/
 ADD cmake /owanalytics/cmake
 ADD src /owanalytics/src
+ADD migrations /owanalytics/migrations
 ADD .git /owanalytics/.git
 
 COPY --from=poco-build /usr/local/include /usr/local/include
@@ -90,6 +91,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 
 COPY readiness_check /readiness_check
 COPY test_scripts/curl/cli /cli
+COPY migrations /openwifi/migrations
 
 COPY owanalytics.properties.tmpl /
 COPY docker-entrypoint.sh /

@@ -31,6 +31,9 @@ namespace OpenWifi {
 		void onTimer(Poco::Timer &timer);
 
 	  private:
+		bool ValidatePostgreSQLSchema();
+		bool ValidatePostgreSQLTable(const std::string &tableName);
+		bool ValidatePostgreSQLColumn(const std::string &tableName, const std::string &columnName);
 		std::unique_ptr<OpenWifi::BoardsDB> BoardsDB_;
 		std::unique_ptr<OpenWifi::TimePointDB> TimePointsDB_;
 		std::unique_ptr<OpenWifi::WifiClientHistoryDB> WifiClientHistoryDB_;
