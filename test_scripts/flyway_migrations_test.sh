@@ -54,105 +54,7 @@ assert_sql() {
 }
 
 verify_legacy_schema_for_baseline() {
-    psql_exec <<'SQL'
-DO $$
-DECLARE
-    all_table_count integer;
-    app_table_count integer;
-    flyway_history_count integer;
-    missing_column_count integer;
-    missing_index_count integer;
-BEGIN
-    SELECT count(*) INTO flyway_history_count
-    FROM information_schema.tables
-    WHERE table_schema = current_schema()
-      AND table_name = 'flyway_schema_history';
-
-    IF flyway_history_count = 1 THEN
-        RAISE NOTICE 'Flyway schema history exists; skipping legacy baseline verification.';
-        RETURN;
-    END IF;
-
-    SELECT count(*) INTO all_table_count
-    FROM information_schema.tables
-    WHERE table_schema = current_schema()
-      AND table_type = 'BASE TABLE';
-
-    IF all_table_count = 0 THEN
-        RAISE NOTICE 'Empty PostgreSQL schema; Flyway will apply V1 normally.';
-        RETURN;
-    END IF;
-
-    SELECT count(*) INTO app_table_count
-    FROM information_schema.tables
-    WHERE table_schema = current_schema()
-      AND table_name IN ('boards', 'timepoints', 'wificlienthistory');
-
-    IF app_table_count <> 3 THEN
-        RAISE EXCEPTION 'Non-empty PostgreSQL schema is not a verified OWAnalytics legacy schema.';
-    END IF;
-
-    WITH expected(table_name, column_name) AS (
-        VALUES
-            ('boards', 'id'), ('boards', 'name'), ('boards', 'description'),
-            ('boards', 'notes'), ('boards', 'created'), ('boards', 'modified'),
-            ('boards', 'venuelist'),
-            ('timepoints', 'id'), ('timepoints', 'boardid'),
-            ('timepoints', 'timestamp'), ('timepoints', 'ap_data'),
-            ('timepoints', 'ssid_data'), ('timepoints', 'radio_data'),
-            ('timepoints', 'device_info'), ('timepoints', 'serialnumber'),
-            ('wificlienthistory', 'timestamp'), ('wificlienthistory', 'station_id'),
-            ('wificlienthistory', 'bssid'), ('wificlienthistory', 'ssid'),
-            ('wificlienthistory', 'rssi'), ('wificlienthistory', 'rx_bitrate'),
-            ('wificlienthistory', 'rx_chwidth'), ('wificlienthistory', 'rx_mcs'),
-            ('wificlienthistory', 'rx_nss'), ('wificlienthistory', 'rx_vht'),
-            ('wificlienthistory', 'tx_bitrate'), ('wificlienthistory', 'tx_chwidth'),
-            ('wificlienthistory', 'tx_mcs'), ('wificlienthistory', 'tx_nss'),
-            ('wificlienthistory', 'tx_vht'), ('wificlienthistory', 'rx_bytes'),
-            ('wificlienthistory', 'tx_bytes'), ('wificlienthistory', 'rx_duration'),
-            ('wificlienthistory', 'tx_duration'), ('wificlienthistory', 'rx_packets'),
-            ('wificlienthistory', 'tx_packets'), ('wificlienthistory', 'ipv4'),
-            ('wificlienthistory', 'ipv6'), ('wificlienthistory', 'channel_width'),
-            ('wificlienthistory', 'noise'), ('wificlienthistory', 'tx_power'),
-            ('wificlienthistory', 'channel'), ('wificlienthistory', 'active_ms'),
-            ('wificlienthistory', 'busy_ms'), ('wificlienthistory', 'receive_ms'),
-            ('wificlienthistory', 'mode'), ('wificlienthistory', 'ack_signal'),
-            ('wificlienthistory', 'ack_signal_avg'), ('wificlienthistory', 'connected'),
-            ('wificlienthistory', 'inactive'), ('wificlienthistory', 'tx_retries'),
-            ('wificlienthistory', 'venue_id')
-    )
-    SELECT count(*) INTO missing_column_count
-    FROM expected
-    LEFT JOIN information_schema.columns actual
-      ON actual.table_schema = current_schema()
-     AND actual.table_name = expected.table_name
-     AND actual.column_name = expected.column_name
-    WHERE actual.column_name IS NULL;
-
-    IF missing_column_count <> 0 THEN
-        RAISE EXCEPTION 'OWAnalytics legacy schema verification failed: % expected columns are missing.', missing_column_count;
-    END IF;
-
-    WITH expected(indexname) AS (
-        VALUES
-            ('boards_name_index'),
-            ('timepoint_board_index'),
-            ('timepoint_serial_time_index'),
-            ('stationid_name_index'),
-            ('station_ven_ts_id_name_index')
-    )
-    SELECT count(*) INTO missing_index_count
-    FROM expected
-    LEFT JOIN pg_indexes actual
-      ON actual.schemaname = current_schema()
-     AND actual.indexname = expected.indexname
-    WHERE actual.indexname IS NULL;
-
-    IF missing_index_count <> 0 THEN
-        RAISE EXCEPTION 'OWAnalytics legacy schema verification failed: % expected indexes are missing.', missing_index_count;
-    END IF;
-END $$;
-SQL
+    psql_exec < "${ROOT_DIR}/scripts/verify_postgresql_v1_schema.sql"
 }
 
 docker network create "${NETWORK}" >/dev/null
@@ -244,6 +146,45 @@ done
 psql_exec -c "create table unrelated_table (id integer);"
 if verify_legacy_schema_for_baseline; then
     echo "Expected legacy schema verification failure" >&2
+    exit 1
+fi
+
+echo "Invalid same-name schema baseline"
+docker rm -f "${POSTGRES_CONTAINER}" >/dev/null
+docker run -d \
+    --name "${POSTGRES_CONTAINER}" \
+    --network "${NETWORK}" \
+    -e "POSTGRES_DB=${DB_NAME}" \
+    -e "POSTGRES_USER=${DB_USER}" \
+    -e "POSTGRES_PASSWORD=${DB_PASSWORD}" \
+    "${POSTGRES_IMAGE}" >/dev/null
+until psql_exec -Atc "select 1" >/dev/null 2>&1; do
+    sleep 1
+done
+psql_exec < "${legacy_dir}/legacy.sql"
+psql_exec -c "alter table boards alter column name type integer using 0;"
+if verify_legacy_schema_for_baseline; then
+    echo "Expected same-name schema type verification failure" >&2
+    exit 1
+fi
+
+echo "Invalid same-name index baseline"
+docker rm -f "${POSTGRES_CONTAINER}" >/dev/null
+docker run -d \
+    --name "${POSTGRES_CONTAINER}" \
+    --network "${NETWORK}" \
+    -e "POSTGRES_DB=${DB_NAME}" \
+    -e "POSTGRES_USER=${DB_USER}" \
+    -e "POSTGRES_PASSWORD=${DB_PASSWORD}" \
+    "${POSTGRES_IMAGE}" >/dev/null
+until psql_exec -Atc "select 1" >/dev/null 2>&1; do
+    sleep 1
+done
+psql_exec < "${legacy_dir}/legacy.sql"
+psql_exec -c "drop index timepoint_board_index;"
+psql_exec -c "create index timepoint_board_index on timepoints (timestamp asc, boardid asc);"
+if verify_legacy_schema_for_baseline; then
+    echo "Expected same-name schema index verification failure" >&2
     exit 1
 fi
 
