@@ -49,6 +49,9 @@ namespace OpenWifi {
 		if (!NewObject.from_json(RawObject)) {
 			return BadRequest(RESTAPI::Errors::InvalidJSONDocument);
 		}
+		if (NewObject.venueList.empty()) {
+			return BadRequest(RESTAPI::Errors::VenueMustExist);
+		}
 
 		ProvObjects::CreateObjectInfo(RawObject, UserInfo_.userinfo, NewObject.info);
 

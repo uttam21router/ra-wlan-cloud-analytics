@@ -19,7 +19,12 @@ namespace OpenWifi {
 									   ORM::Field{"notes", ORM::FieldType::FT_TEXT},
 									   ORM::Field{"created", ORM::FieldType::FT_BIGINT},
 									   ORM::Field{"modified", ORM::FieldType::FT_BIGINT},
-									   ORM::Field{"venueList", ORM::FieldType::FT_TEXT}};
+									   ORM::Field{"venueId", ORM::FieldType::FT_TEXT},
+									   ORM::Field{"venueName", ORM::FieldType::FT_TEXT},
+									   ORM::Field{"venueDescription", ORM::FieldType::FT_TEXT},
+									   ORM::Field{"retention", ORM::FieldType::FT_BIGINT},
+									   ORM::Field{"interval", ORM::FieldType::FT_BIGINT},
+									   ORM::Field{"monitorSubVenues", ORM::FieldType::FT_BOOLEAN}};
 
 	static ORM::IndexVec BoardsDB_Indexes{
 		{std::string("boards_name_index"),
@@ -46,18 +51,37 @@ void ORM::DB<OpenWifi::BoardDBRecordType, OpenWifi::AnalyticsObjects::BoardInfo>
 		OpenWifi::RESTAPI_utils::to_object_array<OpenWifi::SecurityObjects::NoteInfo>(In.get<3>());
 	Out.info.created = In.get<4>();
 	Out.info.modified = In.get<5>();
-	Out.venueList = OpenWifi::RESTAPI_utils::to_object_array<OpenWifi::AnalyticsObjects::VenueInfo>(
-		In.get<6>());
+	Out.venueList.clear();
+	if (!In.get<6>().empty()) {
+		OpenWifi::AnalyticsObjects::VenueInfo Venue;
+		Venue.id = In.get<6>();
+		Venue.name = In.get<7>();
+		Venue.description = In.get<8>();
+		Venue.retention = In.get<9>();
+		Venue.interval = In.get<10>();
+		Venue.monitorSubVenues = In.get<11>();
+		Out.venueList.emplace_back(Venue);
+	}
 }
 
 template <>
 void ORM::DB<OpenWifi::BoardDBRecordType, OpenWifi::AnalyticsObjects::BoardInfo>::Convert(
 	const OpenWifi::AnalyticsObjects::BoardInfo &In, OpenWifi::BoardDBRecordType &Out) {
+	OpenWifi::AnalyticsObjects::VenueInfo Venue;
+	if (!In.venueList.empty()) {
+		Venue = In.venueList[0];
+	}
+
 	Out.set<0>(In.info.id);
 	Out.set<1>(In.info.name);
 	Out.set<2>(In.info.description);
 	Out.set<3>(OpenWifi::RESTAPI_utils::to_string(In.info.notes));
 	Out.set<4>(In.info.created);
 	Out.set<5>(In.info.modified);
-	Out.set<6>(OpenWifi::RESTAPI_utils::to_string(In.venueList));
+	Out.set<6>(Venue.id);
+	Out.set<7>(Venue.name);
+	Out.set<8>(Venue.description);
+	Out.set<9>(Venue.retention);
+	Out.set<10>(Venue.interval);
+	Out.set<11>(Venue.monitorSubVenues);
 }

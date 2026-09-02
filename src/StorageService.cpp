@@ -31,7 +31,7 @@ namespace OpenWifi {
 			if (!ValidatePostgreSQLSchema()) {
 				const std::string Error =
 					"Database schema is not compatible with this analytics version. "
-					"Run Flyway migrations before starting the service.";
+					"Apply the required database schema before starting the service.";
 				poco_fatal(Logger(), Error);
 				throw Poco::RuntimeException(Error);
 			}
@@ -78,15 +78,14 @@ namespace OpenWifi {
 				values
 					('boards'),
 					('timepoints'),
-					('wificlienthistory'),
-					('flyway_schema_history')
+					('wificlienthistory')
 			),
 			actual(table_name) as (
 				select table_name
 				from information_schema.tables
 				where table_schema = current_schema()
 				  and table_type = 'BASE TABLE'
-				  and table_name in ('boards', 'timepoints', 'wificlienthistory', 'flyway_schema_history')
+				  and table_name in ('boards', 'timepoints', 'wificlienthistory')
 			)
 			select count(*)
 			from (
@@ -109,7 +108,12 @@ namespace OpenWifi {
 					('boards', 'notes', 'text', null::integer, 'YES'),
 					('boards', 'created', 'bigint', null::integer, 'YES'),
 					('boards', 'modified', 'bigint', null::integer, 'YES'),
-					('boards', 'venuelist', 'text', null::integer, 'YES'),
+					('boards', 'venueid', 'text', null::integer, 'YES'),
+					('boards', 'venuename', 'text', null::integer, 'YES'),
+					('boards', 'venuedescription', 'text', null::integer, 'YES'),
+					('boards', 'retention', 'bigint', null::integer, 'YES'),
+					('boards', 'interval', 'bigint', null::integer, 'YES'),
+					('boards', 'monitorsubvenues', 'boolean', null::integer, 'YES'),
 					('timepoints', 'id', 'character varying', 64, 'NO'),
 					('timepoints', 'boardid', 'text', null::integer, 'YES'),
 					('timepoints', 'timestamp', 'bigint', null::integer, 'YES'),
@@ -257,19 +261,11 @@ namespace OpenWifi {
 			) mismatches
 		)SQL";
 
-		static const std::string FlywayValidation = R"SQL(
-			select case when count(*) = 1 then 0 else 1 end
-			from flyway_schema_history
-			where version = '1'
-			  and success = true
-		)SQL";
-
 		return ValidatePostgreSQLQuery(TableValidation, "PostgreSQL table validation failed") &&
 			   ValidatePostgreSQLQuery(ColumnValidation, "PostgreSQL column validation failed") &&
 			   ValidatePostgreSQLQuery(PrimaryKeyValidation,
 									   "PostgreSQL primary-key validation failed") &&
-			   ValidatePostgreSQLQuery(IndexValidation, "PostgreSQL index validation failed") &&
-			   ValidatePostgreSQLQuery(FlywayValidation, "PostgreSQL Flyway validation failed");
+			   ValidatePostgreSQLQuery(IndexValidation, "PostgreSQL index validation failed");
 	}
 
 	void Storage::onTimer([[maybe_unused]] Poco::Timer &timer) {

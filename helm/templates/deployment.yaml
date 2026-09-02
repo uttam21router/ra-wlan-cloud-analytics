@@ -78,73 +78,6 @@ spec:
             subPath: {{ .subPath }}
             {{- end }}
           {{- end }}
-{{- if .Values.flyway.enabled }}
-        - name: copy-flyway-migrations
-          image: "{{ .Values.images.owanalytics.repository }}:{{ .Values.images.owanalytics.tag }}"
-          imagePullPolicy: {{ .Values.images.owanalytics.pullPolicy }}
-          command:
-            - sh
-            - -c
-            - cp -R /openwifi/migrations/. /flyway/sql/
-          volumeMounts:
-            - name: flyway-sql
-              mountPath: /flyway/sql
-
-{{- if .Values.flyway.baselineOnMigrate }}
-        - name: verify-flyway-baseline-schema
-          image: "{{ .Values.images.owanalytics.repository }}:{{ .Values.images.owanalytics.tag }}"
-          imagePullPolicy: {{ .Values.images.owanalytics.pullPolicy }}
-          command:
-            - sh
-            - -c
-            - psql -v ON_ERROR_STOP=1 -f /openwifi/migration-utils/verify_postgresql_v1_schema.sql
-          env:
-            - name: PGHOST
-              value: {{ index .Values.configProperties "storage.type.postgresql.host" | quote }}
-            - name: PGPORT
-              value: {{ index .Values.configProperties "storage.type.postgresql.port" | quote }}
-            - name: PGDATABASE
-              value: {{ index .Values.configProperties "storage.type.postgresql.database" | quote }}
-            - name: PGUSER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "owanalytics.fullname" . }}-flyway
-                  key: FLYWAY_USER
-            - name: PGPASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "owanalytics.fullname" . }}-flyway
-                  key: FLYWAY_PASSWORD
-
-{{- end }}
-        - name: flyway-migrate
-          image: "{{ .Values.images.flyway.repository }}:{{ .Values.images.flyway.tag }}"
-          imagePullPolicy: {{ .Values.images.flyway.pullPolicy }}
-          args:
-            - migrate
-          env:
-            - name: FLYWAY_URL
-              value: "jdbc:postgresql://{{ index .Values.configProperties "storage.type.postgresql.host" }}:{{ index .Values.configProperties "storage.type.postgresql.port" }}/{{ index .Values.configProperties "storage.type.postgresql.database" }}"
-            - name: FLYWAY_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "owanalytics.fullname" . }}-flyway
-                  key: FLYWAY_USER
-            - name: FLYWAY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "owanalytics.fullname" . }}-flyway
-                  key: FLYWAY_PASSWORD
-            - name: FLYWAY_BASELINE_ON_MIGRATE
-              value: {{ .Values.flyway.baselineOnMigrate | quote }}
-            - name: FLYWAY_BASELINE_VERSION
-              value: {{ .Values.flyway.baselineVersion | quote }}
-            - name: FLYWAY_BASELINE_DESCRIPTION
-              value: {{ .Values.flyway.baselineDescription | quote }}
-          volumeMounts:
-            - name: flyway-sql
-              mountPath: /flyway/sql
-{{- end }}
 {{- end }}
 
       containers:
@@ -211,10 +144,6 @@ spec:
       {{- end }}
 
       volumes:
-{{- if and (eq $storageType "postgresql") .Values.flyway.enabled }}
-      - name: flyway-sql
-        emptyDir: {}
-{{- end }}
       {{- range $container, $containerVolumes := .Values.volumes }}
       {{- range $containerVolumes }}
       - name: {{ .name }}

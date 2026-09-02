@@ -115,8 +115,12 @@ namespace OpenWifi {
 	}
 
 	bool VenueCoordinator::StartBoard(const AnalyticsObjects::BoardInfo &B) {
-		if (B.venueList.empty())
-			return true;
+		if (B.venueList.empty()) {
+			poco_warning(Logger(),
+						 fmt::format("Board {} has no venue configured; watcher not started.",
+									 B.info.name));
+			return false;
+		}
 
 		bool VenueExists = true;
 		std::vector<uint64_t> Devices;

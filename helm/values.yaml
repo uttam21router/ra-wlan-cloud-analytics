@@ -19,16 +19,6 @@ images:
     repository: tip-tip-wlan-cloud-ucentral.jfrog.io/dockerize
     tag: 0.16.0
     pullPolicy: IfNotPresent
-  flyway:
-    repository: redgate/flyway
-    tag: 13.4.0
-    pullPolicy: IfNotPresent
-
-flyway:
-  enabled: true
-  baselineOnMigrate: true
-  baselineVersion: "1"
-  baselineDescription: existing-schema
 
 services:
   owanalytics:
