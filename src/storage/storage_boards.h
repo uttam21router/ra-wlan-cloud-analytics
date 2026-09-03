@@ -21,6 +21,7 @@ namespace OpenWifi {
 	enum class BoardVenueLookupResult {
 		Found,
 		NotFound,
+		MultipleFound,
 		StorageError,
 	};
 

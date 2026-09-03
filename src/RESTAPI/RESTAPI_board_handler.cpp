@@ -6,6 +6,12 @@
 #include "VenueCoordinator.h"
 
 namespace OpenWifi {
+	namespace {
+		bool HasExactlyOneVenue(const AnalyticsObjects::BoardInfo &Board) {
+			return Board.venueList.size() == 1 && !Board.venueList[0].id.empty();
+		}
+	} // namespace
+
 	void RESTAPI_board_handler::DoGet() {
 		auto id = GetBinding("id", "");
 		if (id.empty()) {
@@ -51,6 +57,9 @@ namespace OpenWifi {
 		if (!NewObject.from_json(RawObject)) {
 			return BadRequest(RESTAPI::Errors::InvalidJSONDocument);
 		}
+		if (!HasExactlyOneVenue(NewObject)) {
+			return BadRequest(RESTAPI::Errors::VenueMustExist);
+		}
 
 		ProvObjects::CreateObjectInfo(RawObject, UserInfo_.userinfo, NewObject.info);
 
@@ -95,7 +104,7 @@ namespace OpenWifi {
 		ProvObjects::UpdateObjectInfo(RawObject, UserInfo_.userinfo, Existing.info);
 
 		if (RawObject->has("venueList")) {
-			if (NewObject.venueList.empty()) {
+			if (!HasExactlyOneVenue(NewObject)) {
 				return BadRequest(RESTAPI::Errors::VenueMustExist);
 			}
 			Existing.venueList = NewObject.venueList;

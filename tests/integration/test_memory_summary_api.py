@@ -66,6 +66,9 @@ DEFAULT_BOARD_ID = "board-test-01"
 DEFAULT_VENUE_ID = "venue-test-01"
 OLD_BOARD_ID = "old-board"
 OTHER_BOARD_ID = "other-board"
+MULTI_VENUE_REJECT_BOARD_ID = "multi-venue-reject-board"
+DUPLICATE_MAPPING_BOARD_A = "duplicate-mapping-board-a"
+DUPLICATE_MAPPING_BOARD_B = "duplicate-mapping-board-b"
 VALID_TOKEN_PREFIX = "memory-summary-valid"
 
 
@@ -314,11 +317,21 @@ def analytics_url(path: str) -> str:
     return env_or_skip("OWANALYTICS_TEST_URL").rstrip("/") + path
 
 
-def http_json(path: str, token: str | None = None) -> HttpResult:
+def http_json(
+    path: str,
+    token: str | None = None,
+    *,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+) -> HttpResult:
     headers = {"Accept": "application/json"}
+    data = None
+    if body is not None:
+        data = json_bytes(body)
+        headers["Content-Type"] = "application/json"
     if token is not None:
         headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request(analytics_url(path), headers=headers, method="GET")
+    request = urllib.request.Request(analytics_url(path), data=data, headers=headers, method=method)
     context = None
     if request.full_url.startswith("https://") and os.environ.get("OWANALYTICS_TEST_VERIFY_TLS") != "1":
         context = ssl._create_unverified_context()
@@ -376,12 +389,25 @@ def db_connection():
 
 
 def cleanup_test_rows(cursor) -> None:
-    boards = (board_id(), OLD_BOARD_ID, OTHER_BOARD_ID)
+    boards = (
+        board_id(),
+        OLD_BOARD_ID,
+        OTHER_BOARD_ID,
+        MULTI_VENUE_REJECT_BOARD_ID,
+        DUPLICATE_MAPPING_BOARD_A,
+        DUPLICATE_MAPPING_BOARD_B,
+    )
     cursor.execute("delete from timepoints where serialnumber in (%s, %s)", (router_id(), "other-router"))
-    cursor.execute("delete from timepoints where boardid in (%s, %s, %s)", boards)
-    cursor.execute("delete from board_venues where board_id in (%s, %s, %s)", boards)
+    cursor.execute(
+        "delete from timepoints where boardid in (%s, %s, %s, %s, %s, %s)",
+        boards,
+    )
+    cursor.execute(
+        "delete from board_venues where board_id in (%s, %s, %s, %s, %s, %s)",
+        boards,
+    )
     cursor.execute("delete from board_venues where venue_id = %s", (venue_id(),))
-    cursor.execute("delete from boards where id in (%s, %s, %s)", boards)
+    cursor.execute("delete from boards where id in (%s, %s, %s, %s, %s, %s)", boards)
 
 
 def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: str | None = None) -> None:
@@ -595,6 +621,66 @@ def test_memory_summary_invalid_query_rejects_after_auth(fake_owsec: FakeOwsec) 
     assert fake_owsec.validate_count(token) == 1
     assert result.status == 400
     assert result.body["error"] == "invalid_query_parameter"
+
+
+def test_board_create_rejects_multiple_venues(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+
+    token = fake_owsec.issue_token("multi-venue-board")
+    result = http_json(
+        "/api/v1/board/0",
+        token,
+        method="POST",
+        body={
+            "id": MULTI_VENUE_REJECT_BOARD_ID,
+            "name": "Multi Venue Reject Board",
+            "venueList": [
+                {
+                    "id": venue_id(),
+                    "name": "Venue A",
+                    "description": "",
+                    "retention": 7200,
+                    "interval": 60,
+                    "monitorSubVenues": False,
+                },
+                {
+                    "id": venue_id() + "-second",
+                    "name": "Venue B",
+                    "description": "",
+                    "retention": 7200,
+                    "interval": 60,
+                    "monitorSubVenues": False,
+                },
+            ],
+        },
+    )
+
+    assert result.status == 400
+
+
+def test_board_venue_mapping_rejects_duplicate_venue_id() -> None:
+    connection = connect_db(env_or_skip("OWANALYTICS_TEST_DB_DSN"))
+    try:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            cursor.execute(
+                "insert into board_venues (board_id, venue_id) values (%s, %s)",
+                (DUPLICATE_MAPPING_BOARD_A, venue_id()),
+            )
+            with pytest.raises(Exception):
+                cursor.execute(
+                    "insert into board_venues (board_id, venue_id) values (%s, %s)",
+                    (DUPLICATE_MAPPING_BOARD_B, venue_id()),
+                )
+        connection.rollback()
+    finally:
+        connection.close()
+
+    with db_connection() as cleanup_connection:
+        with cleanup_connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
 
 
 def test_memory_summary_current_router_ownership_controls_board_data(

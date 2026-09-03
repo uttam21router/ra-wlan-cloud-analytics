@@ -51,6 +51,12 @@ namespace OpenWifi {
 			AnalyticsBoardStorageFailure(E);
 			return false;
 		}
+		if (LookupResult == BoardVenueLookupResult::MultipleFound) {
+			E.status = Poco::Net::HTTPResponse::HTTP_CONFLICT;
+			E.error = "multiple_boards";
+			E.message = "Router is mapped to multiple current boards";
+			return false;
+		}
 		if (LookupResult == BoardVenueLookupResult::NotFound) {
 			NotFound(E);
 			return false;
