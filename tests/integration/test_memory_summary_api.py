@@ -417,21 +417,11 @@ def cleanup_test_rows(cursor) -> None:
 def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: str | None = None) -> None:
     board = board or board_id()
     venue = venue or venue_id()
-    venue_list = [
-        {
-            "id": venue,
-            "name": "Memory Summary Test Venue",
-            "description": "Integration test venue",
-            "retention": retention,
-            "interval": 60,
-            "monitorSubVenues": False,
-        }
-    ]
     now = int(time.time())
     cursor.execute(
         """
-        insert into boards (id, name, description, notes, created, modified, venuelist)
-        values (%s, %s, %s, %s, %s, %s, %s)
+        insert into boards (id, name, description, notes, created, modified, venueId, venueName, venueDescription, retention, interval, monitorSubVenues)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             board,
@@ -440,7 +430,12 @@ def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: s
             "[]",
             now,
             now,
-            json.dumps(venue_list),
+            venue,
+            "Memory Summary Test Venue",
+            "Integration test venue",
+            retention,
+            60,
+            False,
         ),
     )
 
@@ -475,10 +470,18 @@ def delete_board_rows(cursor, created_board_id: str) -> None:
 
 
 def fetch_board_storage(cursor, board: str) -> tuple[str, str, list[dict[str, Any]]]:
-    cursor.execute("select name, description, venuelist from boards where id = %s", (board,))
+    cursor.execute("select name, description, venueId, venueName, venueDescription, retention, interval, monitorSubVenues from boards where id = %s", (board,))
     row = cursor.fetchone()
     assert row is not None
-    return row[0], row[1], json.loads(row[2])
+    stored_venues = [{
+        "id": row[2],
+        "name": row[3],
+        "description": row[4],
+        "retention": row[5],
+        "interval": row[6],
+        "monitorSubVenues": bool(row[7]),
+    }] if row[2] else []
+    return row[0], row[1], stored_venues
 
 
 def insert_timepoint(
@@ -815,8 +818,8 @@ def test_board_create_concurrent_same_venue_rejects_second(fake_owsec: FakeOwsec
         with db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "select count(*) from boards where venuelist like %s",
-                    (f"%{target_venue}%",),
+                    "select count(*) from boards where venueId = %s",
+                    (target_venue,),
                 )
                 cnt = cursor.fetchone()[0]
                 assert cnt == 1
