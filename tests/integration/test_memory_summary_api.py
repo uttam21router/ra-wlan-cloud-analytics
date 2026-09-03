@@ -490,19 +490,21 @@ def insert_timepoint(
     resource_data: dict[str, Any],
     *,
     board: str | None = None,
+    venue: str | None = None,
     serial: str | None = None,
     suffix: str = "",
 ) -> None:
     board = board or board_id()
+    venue = venue or venue_id()
     serial = serial or router_id()
     row_id = f"mem-int-{board}-{serial}-{utc_epoch(timestamp)}-{suffix}".replace(":", "-")
     cursor.execute(
         """
         insert into timepoints (
             id, boardid, timestamp, ap_data, ssid_data, radio_data,
-            device_info, serialnumber, resource_data
+            device_info, serialnumber, resource_data, venueid
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             row_id,
@@ -514,6 +516,7 @@ def insert_timepoint(
             "{}",
             serial,
             json.dumps(resource_data),
+            venue,
         ),
     )
 
@@ -1049,6 +1052,40 @@ def test_memory_summary_timepoint_storage_failure_returns_memory_specific_error(
             cursor.execute(f"grant select on table timepoints to {app_user}")
         admin.commit()
         admin.close()
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_memory_summary_filters_by_venue_and_serial_number(fake_owsec: FakeOwsec) -> None:
+    venue_a = venue_id() + "-a"
+    venue_b = venue_id() + "-b"
+    board_a = board_id() + "-a"
+    board_b = board_id() + "-b"
+    router_1 = router_id()
+    router_2 = router_id() + "9"
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            seed_board(cursor, board=board_a, venue=venue_a)
+            seed_board(cursor, board=board_b, venue=venue_b)
+            # Sample for venue_a + router_1 -> memory_free 100000
+            insert_timepoint(cursor, "2026-07-27T10:00:00Z", {"memory_free": 100000, "memory_total": 512000}, board=board_a, venue=venue_a, serial=router_1, suffix="vA-r1")
+            # Sample for venue_b + router_1 -> memory_free 200000 (different venue, same serial)
+            insert_timepoint(cursor, "2026-07-27T10:05:00Z", {"memory_free": 200000, "memory_total": 512000}, board=board_b, venue=venue_b, serial=router_1, suffix="vB-r1")
+            # Sample for venue_a + router_2 -> memory_free 300000 (same venue, different serial)
+            insert_timepoint(cursor, "2026-07-27T10:10:00Z", {"memory_free": 300000, "memory_total": 512000}, board=board_a, venue=venue_a, serial=router_2, suffix="vA-r2")
+
+    try:
+        # Querying venue_a + router_1 must return ONLY the 100000 sample
+        result = http_json(memory_summary_path(router_id=router_1), fake_owsec.issue_token("filter-test"))
+        assert result.status == 200
+        assert result.body["data"]["min_memfree"] == 100000
+        assert result.body["data"]["max_memfree"] == 100000
+        assert result.body["data"]["avg_memfree"] == 100000
+        assert result.body["data"]["latest_memfree"] == 100000
+    finally:
         with db_connection() as connection:
             with connection.cursor() as cursor:
                 cleanup_test_rows(cursor)

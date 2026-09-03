@@ -207,6 +207,7 @@ namespace OpenWifi {
 		struct DeviceTimePoint {
 			std::string id;
 			std::string boardId;
+			std::string venueId;
 			uint64_t timestamp = 0;
 			APTimePoint ap_data;
 			std::vector<SSIDTimePoint> ssid_data;

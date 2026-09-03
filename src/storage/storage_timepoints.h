@@ -10,7 +10,7 @@
 
 namespace OpenWifi {
 	typedef Poco::Tuple<std::string, std::string, uint64_t, std::string, std::string, std::string,
-						std::string, std::string, std::string>
+						std::string, std::string, std::string, std::string>
 		TimePointDBRecordType;
 	typedef Poco::Tuple<std::string, uint64_t, std::string> TimePointResourceDBRecordType;
 
@@ -25,6 +25,9 @@ namespace OpenWifi {
 		bool SelectResourceRecordsBySerial(const std::string &boardId,
 										   const std::string &serialNumber, uint64_t startTime,
 										   uint64_t endTime, DB::RecordVec &Recs);
+		bool SelectResourceRecordsByVenueAndSerial(const std::string &venueId,
+												  const std::string &serialNumber, uint64_t startTime,
+												  uint64_t endTime, DB::RecordVec &Recs);
 		bool DeleteBoard(const std::string &boardId);
 		bool DeleteTimeLine(const std::string &boardId, uint64_t fromDate, uint64_t endDate);
 		bool GetRecordsPerDevice(const std::string &boardId, uint64_t FromDate, uint64_t LastDate,

@@ -28,7 +28,8 @@ namespace OpenWifi {
 										  ORM::Field{"radio_data", ORM::FieldType::FT_TEXT},
 										  ORM::Field{"device_info", ORM::FieldType::FT_TEXT},
 										  ORM::Field{"serialNumber", ORM::FieldType::FT_TEXT},
-										  ORM::Field{"resource_data", ORM::FieldType::FT_TEXT}};
+										  ORM::Field{"resource_data", ORM::FieldType::FT_TEXT},
+										  ORM::Field{"venueId", ORM::FieldType::FT_TEXT}};
 
 	static ORM::IndexVec TimePointDB_Indexes{
 		{std::string("timepoint_board_index"),
@@ -36,6 +37,10 @@ namespace OpenWifi {
 							{std::string("timestamp"), ORM::Indextype::ASC}}},
 		{std::string("timepoint_serial_time_index"),
 		 ORM::IndexEntryVec{{std::string("serialNumber"), ORM::Indextype::ASC},
+							{std::string("timestamp"), ORM::Indextype::ASC}}},
+		{std::string("timepoint_venue_serial_time_index"),
+		 ORM::IndexEntryVec{{std::string("venueId"), ORM::Indextype::ASC},
+							{std::string("serialNumber"), ORM::Indextype::ASC},
 							{std::string("timestamp"), ORM::Indextype::ASC}}}};
 
 	TimePointDB::TimePointDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
@@ -129,6 +134,34 @@ namespace OpenWifi {
 		auto WhereClause = fmt::format(
 			" boardId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
 			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
+		const auto Sql = fmt::format(
+			"select id, timestamp, resource_data from {} where {} order by timestamp, id ASC",
+			TableName_, WhereClause);
+		std::vector<TimePointResourceDBRecordType> RawRecords;
+		if (!Join(Sql, RawRecords))
+			return false;
+		Recs.reserve(RawRecords.size());
+		for (const auto &Row : RawRecords) {
+			AnalyticsObjects::DeviceTimePoint Point;
+			Point.id = Row.get<0>();
+			Point.timestamp = Row.get<1>();
+			Point.resource_data =
+				RESTAPI_utils::to_object<AnalyticsObjects::DeviceResourceTimePoint>(Row.get<2>());
+			Recs.emplace_back(std::move(Point));
+		}
+		return true;
+	}
+
+	bool TimePointDB::SelectResourceRecordsByVenueAndSerial(
+		const std::string &venueId, const std::string &serialNumber, uint64_t startTime,
+		uint64_t endTime, std::vector<AnalyticsObjects::DeviceTimePoint> &Recs) {
+		Recs.clear();
+		if (endTime <= startTime)
+			return true;
+
+		auto WhereClause = fmt::format(
+			" venueId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
+			ORM::Escape(venueId), ORM::Escape(serialNumber), startTime, endTime);
 		const auto Sql = fmt::format(
 			"select id, timestamp, resource_data from {} where {} order by timestamp, id ASC",
 			TableName_, WhereClause);
@@ -262,6 +295,7 @@ void ORM::DB<OpenWifi::TimePointDBRecordType, OpenWifi::AnalyticsObjects::Device
 	Out.resource_data =
 		OpenWifi::RESTAPI_utils::to_object<OpenWifi::AnalyticsObjects::DeviceResourceTimePoint>(
 			In.get<8>());
+	Out.venueId = In.get<9>();
 }
 
 template <>
@@ -276,4 +310,5 @@ void ORM::DB<OpenWifi::TimePointDBRecordType, OpenWifi::AnalyticsObjects::Device
 	Out.set<6>(OpenWifi::RESTAPI_utils::to_string(In.device_info));
 	Out.set<7>(In.serialNumber);
 	Out.set<8>(OpenWifi::RESTAPI_utils::to_string(In.resource_data));
+	Out.set<9>(In.venueId);
 }

@@ -582,6 +582,7 @@ namespace OpenWifi {
 			if (got_connection && got_health) {
 				db_DTP.id = MicroServiceCreateUUID();
 				db_DTP.boardId = boardId_;
+				db_DTP.venueId = venue_id_;
 				db_DTP.serialNumber = db_DTP.device_info.serialNumber;
 				StorageService()->TimePointsDB().CreateRecord(db_DTP);
 			}
