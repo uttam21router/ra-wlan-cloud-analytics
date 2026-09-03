@@ -40,6 +40,7 @@ The storage-failure test is opt-in because it temporarily changes DB grants:
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import shlex
@@ -778,6 +779,53 @@ def test_board_create_rejects_venue_already_assigned_to_another_board(fake_owsec
             with db_connection() as connection:
                 with connection.cursor() as cursor:
                     delete_board_rows(cursor, created_board_id)
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_create_concurrent_same_venue_rejects_second(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+
+    target_venue = venue_id() + "-concurrent"
+
+    def create_request(board_name: str):
+        return http_json(
+            "/api/v1/board/0",
+            fake_owsec.issue_token("concurrent-create"),
+            method="POST",
+            body=board_payload(board_name, venues=[venue_payload(target_venue)]),
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(create_request, "Concurrent Board A")
+        f2 = executor.submit(create_request, "Concurrent Board B")
+        r1 = f1.result()
+        r2 = f2.result()
+
+    statuses = [r1.status, r2.status]
+    created_board_ids = [r.body.get("id") for r in (r1, r2) if isinstance(r.body.get("id"), str)]
+
+    try:
+        assert sorted(statuses) == [200, 400]
+        failed_res = r1 if r1.status == 400 else r2
+        assert "Venue is already assigned to another board" in failed_res.body.get("ErrorDescription", "")
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "select count(*) from boards where venuelist like %s",
+                    (f"%{target_venue}%",),
+                )
+                cnt = cursor.fetchone()[0]
+                assert cnt == 1
+    finally:
+        for bid in created_board_ids:
+            if bid:
+                with db_connection() as connection:
+                    with connection.cursor() as cursor:
+                        delete_board_rows(cursor, bid)
         with db_connection() as connection:
             with connection.cursor() as cursor:
                 cleanup_test_rows(cursor)
