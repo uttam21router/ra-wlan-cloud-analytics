@@ -105,6 +105,9 @@ namespace OpenWifi {
 	}
 
 	bool BoardVenueDB::ReplaceBoardVenues(const AnalyticsObjects::BoardInfo &Board) {
+		if (Board.venueList.size() != 1 || Board.venueList[0].id.empty())
+			return false;
+
 		try {
 			Poco::Data::Session Session = Pool_.get();
 			Session.begin();
@@ -115,14 +118,12 @@ namespace OpenWifi {
 				Poco::Data::Keywords::use(BoardId);
 			Delete.execute();
 
-			if (Board.venueList.size() == 1 && !Board.venueList[0].id.empty()) {
-				Poco::Data::Statement Insert(Session);
-				auto VenueId = Board.venueList[0].id;
-				Insert << ConvertParams("insert into " + TableName_ +
-										 " ( board_id, venue_id ) values (?, ?)"),
-					Poco::Data::Keywords::use(BoardId), Poco::Data::Keywords::use(VenueId);
-				Insert.execute();
-			}
+			Poco::Data::Statement Insert(Session);
+			auto VenueId = Board.venueList[0].id;
+			Insert << ConvertParams("insert into " + TableName_ +
+									 " ( board_id, venue_id ) values (?, ?)"),
+				Poco::Data::Keywords::use(BoardId), Poco::Data::Keywords::use(VenueId);
+			Insert.execute();
 
 			Session.commit();
 			return true;
@@ -162,8 +163,6 @@ namespace OpenWifi {
 
 		std::set<std::string> SeenVenueIds;
 		for (const auto &Board : BoardList) {
-			if (Board.venueList.empty())
-				continue;
 			if (Board.venueList.size() != 1 || Board.venueList[0].id.empty())
 				return false;
 			if (!SeenVenueIds.insert(Board.venueList[0].id).second)
@@ -179,9 +178,6 @@ namespace OpenWifi {
 			Clear.execute();
 
 			for (const auto &Board : BoardList) {
-				if (Board.venueList.empty())
-					continue;
-
 				Poco::Data::Statement Insert(Session);
 				auto BoardId = Board.info.id;
 				auto VenueId = Board.venueList[0].id;

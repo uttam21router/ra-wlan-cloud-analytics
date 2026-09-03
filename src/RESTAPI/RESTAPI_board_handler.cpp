@@ -67,7 +67,8 @@ namespace OpenWifi {
 		if (!StorageService()->BoardVenuesDB().CanAssignBoardVenues(NewObject, VenueConflict))
 			return InternalError(RESTAPI::Errors::RecordNotCreated);
 		if (VenueConflict)
-			return InternalError(RESTAPI::Errors::RecordNotCreated);
+			return BadRequest(RESTAPI::Errors::RecordNotCreated,
+							  "Venue is already assigned to another board");
 
 		if (StorageService()->BoardsDB().CreateRecord(NewObject)) {
 			if (!StorageService()->BoardVenuesDB().ReplaceBoardVenues(NewObject)) {
@@ -107,18 +108,16 @@ namespace OpenWifi {
 			if (!HasExactlyOneVenue(NewObject)) {
 				return BadRequest(RESTAPI::Errors::VenueMustExist);
 			}
-			Existing.venueList = NewObject.venueList;
+			if (!HasExactlyOneVenue(Existing)) {
+				return BadRequest(RESTAPI::Errors::VenueMustExist);
+			}
+			if (NewObject.venueList[0].id != Existing.venueList[0].id) {
+				return BadRequest(RESTAPI::Errors::RecordNotUpdated,
+								  "Venue reassignment is not supported");
+			}
 		}
 
-		bool VenueConflict = false;
-		if (!StorageService()->BoardVenuesDB().CanAssignBoardVenues(Existing, VenueConflict))
-			return InternalError(RESTAPI::Errors::RecordNotUpdated);
-		if (VenueConflict)
-			return InternalError(RESTAPI::Errors::RecordNotUpdated);
-
 		if (StorageService()->BoardsDB().UpdateRecord("id", Existing.info.id, Existing)) {
-			if (!StorageService()->BoardVenuesDB().ReplaceBoardVenues(Existing))
-				return InternalError(RESTAPI::Errors::RecordNotUpdated);
 			VenueCoordinator()->UpdateBoard(Existing.info.id);
 			AnalyticsObjects::BoardInfo NewBoard;
 			StorageService()->BoardsDB().GetRecord("id", Existing.info.id, NewBoard);

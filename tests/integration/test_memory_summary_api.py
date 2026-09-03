@@ -66,7 +66,11 @@ DEFAULT_BOARD_ID = "board-test-01"
 DEFAULT_VENUE_ID = "venue-test-01"
 OLD_BOARD_ID = "old-board"
 OTHER_BOARD_ID = "other-board"
-MULTI_VENUE_REJECT_BOARD_ID = "multi-venue-reject-board"
+CREATE_BOARD_ID = "create-board"
+NO_VENUE_BOARD_ID = "no-venue-board"
+MULTI_VENUE_BOARD_ID = "multi-venue-board"
+UPDATE_BOARD_ID = "update-board"
+CONFLICT_BOARD_ID = "conflict-board"
 DUPLICATE_MAPPING_BOARD_A = "duplicate-mapping-board-a"
 DUPLICATE_MAPPING_BOARD_B = "duplicate-mapping-board-b"
 VALID_TOKEN_PREFIX = "memory-summary-valid"
@@ -393,21 +397,28 @@ def cleanup_test_rows(cursor) -> None:
         board_id(),
         OLD_BOARD_ID,
         OTHER_BOARD_ID,
-        MULTI_VENUE_REJECT_BOARD_ID,
+        CREATE_BOARD_ID,
+        NO_VENUE_BOARD_ID,
+        MULTI_VENUE_BOARD_ID,
+        UPDATE_BOARD_ID,
+        CONFLICT_BOARD_ID,
         DUPLICATE_MAPPING_BOARD_A,
         DUPLICATE_MAPPING_BOARD_B,
     )
     cursor.execute("delete from timepoints where serialnumber in (%s, %s)", (router_id(), "other-router"))
     cursor.execute(
-        "delete from timepoints where boardid in (%s, %s, %s, %s, %s, %s)",
+        "delete from timepoints where boardid in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         boards,
     )
     cursor.execute(
-        "delete from board_venues where board_id in (%s, %s, %s, %s, %s, %s)",
+        "delete from board_venues where board_id in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         boards,
     )
-    cursor.execute("delete from board_venues where venue_id = %s", (venue_id(),))
-    cursor.execute("delete from boards where id in (%s, %s, %s, %s, %s, %s)", boards)
+    cursor.execute(
+        "delete from board_venues where venue_id in (%s, %s)",
+        (venue_id(), venue_id() + "-second"),
+    )
+    cursor.execute("delete from boards where id in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", boards)
 
 
 def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: str | None = None) -> None:
@@ -443,6 +454,48 @@ def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: s
         "insert into board_venues (board_id, venue_id) values (%s, %s)",
         (board, venue),
     )
+
+
+def venue_payload(venue: str | None = None) -> dict[str, Any]:
+    return {
+        "id": venue or venue_id(),
+        "name": "Memory Summary Test Venue",
+        "description": "Integration test venue",
+        "retention": 7200,
+        "interval": 60,
+        "monitorSubVenues": False,
+    }
+
+
+def board_payload(
+    name: str,
+    *,
+    description: str = "Integration test board",
+    venues: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "venueList": venues if venues is not None else [venue_payload()],
+    }
+
+
+def delete_board_rows(cursor, created_board_id: str) -> None:
+    cursor.execute("delete from timepoints where boardid = %s", (created_board_id,))
+    cursor.execute("delete from board_venues where board_id = %s", (created_board_id,))
+    cursor.execute("delete from boards where id = %s", (created_board_id,))
+
+
+def fetch_board_storage(cursor, board: str) -> tuple[str, str, list[dict[str, Any]]]:
+    cursor.execute("select name, description, venuelist from boards where id = %s", (board,))
+    row = cursor.fetchone()
+    assert row is not None
+    return row[0], row[1], json.loads(row[2])
+
+
+def fetch_board_venues(cursor, board: str) -> list[str]:
+    cursor.execute("select venue_id from board_venues where board_id = %s order by venue_id", (board,))
+    return [row[0] for row in cursor.fetchall()]
 
 
 def insert_timepoint(
@@ -623,19 +676,104 @@ def test_memory_summary_invalid_query_rejects_after_auth(fake_owsec: FakeOwsec) 
     assert result.body["error"] == "invalid_query_parameter"
 
 
-def test_board_create_rejects_multiple_venues(fake_owsec: FakeOwsec) -> None:
+def test_board_create_with_exactly_one_venue_succeeds(fake_owsec: FakeOwsec) -> None:
     with db_connection() as connection:
         with connection.cursor() as cursor:
             cleanup_test_rows(cursor)
 
-    token = fake_owsec.issue_token("multi-venue-board")
+    token = fake_owsec.issue_token("create-board")
+    result = http_json(
+        "/api/v1/board/0",
+        token,
+        method="POST",
+        body=board_payload("Create Board"),
+    )
+
+    created_board_id = result.body.get("id")
+    try:
+        assert result.status == 200
+        assert isinstance(created_board_id, str)
+        assert created_board_id
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                assert fetch_board_venues(cursor, created_board_id) == [venue_id()]
+    finally:
+        if created_board_id:
+            with db_connection() as connection:
+                with connection.cursor() as cursor:
+                    delete_board_rows(cursor, created_board_id)
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_create_with_no_venue_fails(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+
+    result = http_json(
+        "/api/v1/board/0",
+        fake_owsec.issue_token("no-venue-board"),
+        method="POST",
+        body=board_payload("No Venue Board", venues=[]),
+    )
+
+    created_board_id = result.body.get("id")
+    try:
+        assert result.status == 400
+    finally:
+        if created_board_id:
+            with db_connection() as connection:
+                with connection.cursor() as cursor:
+                    delete_board_rows(cursor, created_board_id)
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_create_with_multiple_venues_fails(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+
+    result = http_json(
+        "/api/v1/board/0",
+        fake_owsec.issue_token("multi-venue-board"),
+        method="POST",
+        body=board_payload(
+            "Multi Venue Board",
+            venues=[venue_payload(), venue_payload(venue_id() + "-second")],
+        ),
+    )
+
+    created_board_id = result.body.get("id")
+    try:
+        assert result.status == 400
+    finally:
+        if created_board_id:
+            with db_connection() as connection:
+                with connection.cursor() as cursor:
+                    delete_board_rows(cursor, created_board_id)
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_create_rejects_venue_already_assigned_to_another_board(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            seed_board(cursor)
+
+    token = fake_owsec.issue_token("duplicate-venue-board")
     result = http_json(
         "/api/v1/board/0",
         token,
         method="POST",
         body={
-            "id": MULTI_VENUE_REJECT_BOARD_ID,
-            "name": "Multi Venue Reject Board",
+            "id": CONFLICT_BOARD_ID,
+            "name": "Conflict Board",
             "venueList": [
                 {
                     "id": venue_id(),
@@ -645,19 +783,139 @@ def test_board_create_rejects_multiple_venues(fake_owsec: FakeOwsec) -> None:
                     "interval": 60,
                     "monitorSubVenues": False,
                 },
-                {
-                    "id": venue_id() + "-second",
-                    "name": "Venue B",
-                    "description": "",
-                    "retention": 7200,
-                    "interval": 60,
-                    "monitorSubVenues": False,
-                },
             ],
         },
     )
 
-    assert result.status == 400
+    created_board_id = result.body.get("id")
+    try:
+        assert result.status == 400
+    finally:
+        if created_board_id:
+            with db_connection() as connection:
+                with connection.cursor() as cursor:
+                    delete_board_rows(cursor, created_board_id)
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_update_name_and_description_without_venue_change_succeeds(
+    fake_owsec: FakeOwsec,
+) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            seed_board(cursor, board=UPDATE_BOARD_ID)
+
+    try:
+        result = http_json(
+            f"/api/v1/board/{UPDATE_BOARD_ID}",
+            fake_owsec.issue_token("update-metadata"),
+            method="PUT",
+            body={
+                "name": "Updated Board Name",
+                "description": "Updated board description",
+            },
+        )
+
+        assert result.status == 200
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                name, description, stored_venues = fetch_board_storage(cursor, UPDATE_BOARD_ID)
+                assert name == "Updated Board Name"
+                assert description == "Updated board description"
+                assert [venue["id"] for venue in stored_venues] == [venue_id()]
+                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == [venue_id()]
+    finally:
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_put_with_same_existing_venue_succeeds(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            seed_board(cursor, board=UPDATE_BOARD_ID)
+
+    try:
+        result = http_json(
+            f"/api/v1/board/{UPDATE_BOARD_ID}",
+            fake_owsec.issue_token("same-venue"),
+            method="PUT",
+            body=board_payload("Same Venue Update"),
+        )
+
+        assert result.status == 200
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                name, _, stored_venues = fetch_board_storage(cursor, UPDATE_BOARD_ID)
+                assert name == "Same Venue Update"
+                assert [venue["id"] for venue in stored_venues] == [venue_id()]
+                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == [venue_id()]
+    finally:
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_put_attempting_venue_reassignment_fails_without_changing_storage(
+    fake_owsec: FakeOwsec,
+) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            seed_board(cursor, board=UPDATE_BOARD_ID)
+
+    try:
+        result = http_json(
+            f"/api/v1/board/{UPDATE_BOARD_ID}",
+            fake_owsec.issue_token("venue-reassignment"),
+            method="PUT",
+            body=board_payload(
+                "Rejected Venue Update",
+                description="Rejected description",
+                venues=[venue_payload(venue_id() + "-second")],
+            ),
+        )
+
+        assert result.status == 400
+        assert "Venue reassignment is not supported" in result.body["ErrorDescription"]
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                name, description, stored_venues = fetch_board_storage(cursor, UPDATE_BOARD_ID)
+                assert name == "Memory Summary Test Board"
+                assert description == "Integration test board"
+                assert [venue["id"] for venue in stored_venues] == [venue_id()]
+                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == [venue_id()]
+    finally:
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
+
+
+def test_board_delete_removes_board_venue_mapping(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cleanup_test_rows(cursor)
+            seed_board(cursor, board=UPDATE_BOARD_ID)
+
+    try:
+        result = http_json(
+            f"/api/v1/board/{UPDATE_BOARD_ID}",
+            fake_owsec.issue_token("delete-board"),
+            method="DELETE",
+        )
+
+        assert result.status == 200
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == []
+    finally:
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
 
 
 def test_board_venue_mapping_rejects_duplicate_venue_id() -> None:
