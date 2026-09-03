@@ -26,15 +26,6 @@ namespace OpenWifi {
 		{std::string("boards_name_index"),
 		 ORM::IndexEntryVec{{std::string("name"), ORM::Indextype::ASC}}}};
 
-	static ORM::FieldVec BoardVenue_Fields{ORM::Field{"board_id", 64, false},
-										   ORM::Field{"venue_id", 64, true}};
-
-	static ORM::IndexVec BoardVenueDB_Indexes{
-		{std::string("board_venues_board_idx"),
-		 ORM::IndexEntryVec{{std::string("board_id"), ORM::Indextype::ASC}}},
-		{std::string("board_venues_venue_idx"),
-		 ORM::IndexEntryVec{{std::string("venue_id"), ORM::Indextype::ASC}}}};
-
 	BoardsDB::BoardsDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
 		: DB(T, "boards", Boards_Fields, BoardsDB_Indexes, P, L, "bor") {}
 
@@ -45,154 +36,20 @@ namespace OpenWifi {
 		return true;
 	}
 
-	BoardVenueDB::BoardVenueDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
-		: DB(T, "board_venues", BoardVenue_Fields, BoardVenueDB_Indexes, P, L, "bve") {}
-
-	bool BoardVenueDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{};
-		RunScript(Statements);
-		to = 1;
-		return true;
-	}
-
-	BoardVenueLookupResult BoardVenueDB::GetBoardIdByVenue(const std::string &venueId,
-														   std::string &boardId) {
-		boardId.clear();
+	bool BoardsDB::FindBoardsByVenue(const std::string &venueId,
+									 std::vector<AnalyticsObjects::BoardInfo> &boards) {
+		boards.clear();
 		if (venueId.empty())
-			return BoardVenueLookupResult::NotFound;
-
-		try {
-			Poco::Data::Session Session = Pool_.get();
-			Poco::Data::Statement Select(Session);
-			std::vector<std::string> BoardIds;
-			auto VenueId = venueId;
-
-			Select << ConvertParams("select board_id from " + TableName_ + " where venue_id=?"),
-				Poco::Data::Keywords::into(BoardIds), Poco::Data::Keywords::use(VenueId);
-			Select.execute();
-
-			if (BoardIds.empty())
-				return BoardVenueLookupResult::NotFound;
-			if (BoardIds.size() > 1)
-				return BoardVenueLookupResult::MultipleFound;
-
-			boardId = BoardIds.front();
-			return BoardVenueLookupResult::Found;
-		} catch (const Poco::Exception &E) {
-			Logger_.log(E);
-		}
-		return BoardVenueLookupResult::StorageError;
-	}
-
-	bool BoardVenueDB::CanAssignBoardVenues(const AnalyticsObjects::BoardInfo &Board,
-											bool &Conflict) {
-		Conflict = false;
-		if (Board.venueList.size() != 1 || Board.venueList[0].id.empty()) {
-			Conflict = true;
 			return true;
-		}
 
-		std::string ExistingBoardId;
-		auto Result = GetBoardIdByVenue(Board.venueList[0].id, ExistingBoardId);
-		if (Result == BoardVenueLookupResult::StorageError)
-			return false;
-		if (Result == BoardVenueLookupResult::MultipleFound ||
-			(Result == BoardVenueLookupResult::Found && ExistingBoardId != Board.info.id)) {
-			Conflict = true;
-			return true;
-		}
-		return true;
-	}
-
-	bool BoardVenueDB::ReplaceBoardVenues(const AnalyticsObjects::BoardInfo &Board) {
-		if (Board.venueList.size() != 1 || Board.venueList[0].id.empty())
-			return false;
-
-		try {
-			Poco::Data::Session Session = Pool_.get();
-			Session.begin();
-
-			Poco::Data::Statement Delete(Session);
-			auto BoardId = Board.info.id;
-			Delete << ConvertParams("delete from " + TableName_ + " where board_id=?"),
-				Poco::Data::Keywords::use(BoardId);
-			Delete.execute();
-
-			Poco::Data::Statement Insert(Session);
-			auto VenueId = Board.venueList[0].id;
-			Insert << ConvertParams("insert into " + TableName_ +
-									 " ( board_id, venue_id ) values (?, ?)"),
-				Poco::Data::Keywords::use(BoardId), Poco::Data::Keywords::use(VenueId);
-			Insert.execute();
-
-			Session.commit();
-			return true;
-		} catch (const Poco::Exception &E) {
-			Logger_.log(E);
-		}
-		return false;
-	}
-
-	bool BoardVenueDB::DeleteBoard(const std::string &boardId) {
-		try {
-			Poco::Data::Session Session = Pool_.get();
-			Session.begin();
-
-			Poco::Data::Statement Delete(Session);
-			auto BoardId = boardId;
-			Delete << ConvertParams("delete from " + TableName_ + " where board_id=?"),
-				Poco::Data::Keywords::use(BoardId);
-			Delete.execute();
-
-			Session.commit();
-			return true;
-		} catch (const Poco::Exception &E) {
-			Logger_.log(E);
-		}
-		return false;
-	}
-
-	bool BoardVenueDB::RebuildFromBoards(BoardsDB &Boards) {
-		std::vector<AnalyticsObjects::BoardInfo> BoardList;
-		auto Visitor = [&](const AnalyticsObjects::BoardInfo &Board) {
-			BoardList.emplace_back(Board);
-			return true;
-		};
-		if (!Boards.Iterate(Visitor))
-			return false;
-
-		std::set<std::string> SeenVenueIds;
-		for (const auto &Board : BoardList) {
-			if (Board.venueList.size() != 1 || Board.venueList[0].id.empty())
-				return false;
-			if (!SeenVenueIds.insert(Board.venueList[0].id).second)
-				return false;
-		}
-
-		try {
-			Poco::Data::Session Session = Pool_.get();
-			Session.begin();
-
-			Poco::Data::Statement Clear(Session);
-			Clear << "delete from " + TableName_;
-			Clear.execute();
-
-			for (const auto &Board : BoardList) {
-				Poco::Data::Statement Insert(Session);
-				auto BoardId = Board.info.id;
-				auto VenueId = Board.venueList[0].id;
-				Insert << ConvertParams("insert into " + TableName_ +
-										 " ( board_id, venue_id ) values (?, ?)"),
-					Poco::Data::Keywords::use(BoardId), Poco::Data::Keywords::use(VenueId);
-				Insert.execute();
+		return Iterate([&](const AnalyticsObjects::BoardInfo &Board) {
+			if (Board.venueList.size() == 1 &&
+				!Board.venueList[0].id.empty() &&
+				Board.venueList[0].id == venueId) {
+				boards.emplace_back(Board);
 			}
-
-			Session.commit();
 			return true;
-		} catch (const Poco::Exception &E) {
-			Logger_.log(E);
-		}
-		return false;
+		});
 	}
 } // namespace OpenWifi
 
@@ -220,18 +77,4 @@ void ORM::DB<OpenWifi::BoardDBRecordType, OpenWifi::AnalyticsObjects::BoardInfo>
 	Out.set<4>(In.info.created);
 	Out.set<5>(In.info.modified);
 	Out.set<6>(OpenWifi::RESTAPI_utils::to_string(In.venueList));
-}
-
-template <>
-void ORM::DB<OpenWifi::BoardVenueDBRecordType, OpenWifi::BoardVenueRecord>::Convert(
-	const OpenWifi::BoardVenueDBRecordType &In, OpenWifi::BoardVenueRecord &Out) {
-	Out.board_id = In.get<0>();
-	Out.venue_id = In.get<1>();
-}
-
-template <>
-void ORM::DB<OpenWifi::BoardVenueDBRecordType, OpenWifi::BoardVenueRecord>::Convert(
-	const OpenWifi::BoardVenueRecord &In, OpenWifi::BoardVenueDBRecordType &Out) {
-	Out.set<0>(In.board_id);
-	Out.set<1>(In.venue_id);
 }

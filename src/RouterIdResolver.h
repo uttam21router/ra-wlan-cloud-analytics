@@ -85,11 +85,10 @@ namespace OpenWifi {
 		Result &Resolved, Error &E) {
 		std::vector<AnalyticsObjects::BoardInfo> MatchingBoards;
 		for (const auto &Board : Boards) {
-			for (const auto &Venue : Board.venueList) {
-				if (Venue.id == venueId) {
-					MatchingBoards.emplace_back(Board);
-					break;
-				}
+			if (Board.venueList.size() == 1 &&
+				!Board.venueList[0].id.empty() &&
+				Board.venueList[0].id == venueId) {
+				MatchingBoards.emplace_back(Board);
 			}
 		}
 

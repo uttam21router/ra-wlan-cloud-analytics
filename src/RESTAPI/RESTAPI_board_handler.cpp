@@ -39,8 +39,6 @@ namespace OpenWifi {
 			return NotFound();
 		}
 		VenueCoordinator()->StopBoard(id);
-		if (!StorageService()->BoardVenuesDB().DeleteBoard(id))
-			return InternalError(RESTAPI::Errors::CouldNotBeDeleted);
 		StorageService()->BoardsDB().DeleteRecord("id", id);
 		StorageService()->TimePointsDB().DeleteBoard(id);
 		return OK();
@@ -63,18 +61,14 @@ namespace OpenWifi {
 
 		ProvObjects::CreateObjectInfo(RawObject, UserInfo_.userinfo, NewObject.info);
 
-		bool VenueConflict = false;
-		if (!StorageService()->BoardVenuesDB().CanAssignBoardVenues(NewObject, VenueConflict))
+		std::vector<AnalyticsObjects::BoardInfo> ExistingBoards;
+		if (!StorageService()->BoardsDB().FindBoardsByVenue(NewObject.venueList[0].id, ExistingBoards))
 			return InternalError(RESTAPI::Errors::RecordNotCreated);
-		if (VenueConflict)
+		if (!ExistingBoards.empty())
 			return BadRequest(RESTAPI::Errors::RecordNotCreated,
 							  "Venue is already assigned to another board");
 
 		if (StorageService()->BoardsDB().CreateRecord(NewObject)) {
-			if (!StorageService()->BoardVenuesDB().ReplaceBoardVenues(NewObject)) {
-				StorageService()->BoardsDB().DeleteRecord("id", NewObject.info.id);
-				return InternalError(RESTAPI::Errors::RecordNotCreated);
-			}
 			VenueCoordinator()->AddBoard(NewObject.info.id);
 			AnalyticsObjects::BoardInfo NewBoard;
 			StorageService()->BoardsDB().GetRecord("id", NewObject.info.id, NewBoard);
@@ -115,6 +109,7 @@ namespace OpenWifi {
 				return BadRequest(RESTAPI::Errors::RecordNotUpdated,
 								  "Venue reassignment is not supported");
 			}
+			Existing.venueList = NewObject.venueList;
 		}
 
 		if (StorageService()->BoardsDB().UpdateRecord("id", Existing.info.id, Existing)) {

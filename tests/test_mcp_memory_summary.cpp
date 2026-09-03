@@ -87,14 +87,14 @@ namespace {
 		assert(!Obj.has("requestedWindow"));
 		assert(!Obj.has("observedWindow"));
 
-		auto Data = Obj.getObject("data");
-		auto Meta = Obj.getObject("meta");
-		assert(Data->has("min_memfree"));
-		assert(Data->has("max_memfree"));
-		assert(Data->has("avg_memfree"));
-		assert(Data->has("latest_memfree"));
-		assert(Meta->has("requestedWindow"));
-		assert(Meta->has("observedWindow"));
+		auto DataObj = Obj.get("data").extract<Poco::JSON::Object>();
+		auto MetaObj = Obj.get("meta").extract<Poco::JSON::Object>();
+		assert(DataObj.has("min_memfree"));
+		assert(DataObj.has("max_memfree"));
+		assert(DataObj.has("avg_memfree"));
+		assert(DataObj.has("latest_memfree"));
+		assert(MetaObj.has("requestedWindow"));
+		assert(MetaObj.has("observedWindow"));
 	}
 
 	void TestInvalidSamplesAreIgnored() {
@@ -225,6 +225,13 @@ namespace {
 			"venue-a", {Board("board-a", "venue-a"), Board("board-b", "venue-a")}, R, E));
 		assert(E.status == Poco::Net::HTTPResponse::HTTP_CONFLICT);
 		assert(E.error == "multiple_boards");
+
+		AnalyticsObjects::BoardInfo MultiVenueBoard = Board("board-c", "venue-a");
+		AnalyticsObjects::VenueInfo ExtraVenue;
+		ExtraVenue.id = "venue-extra";
+		MultiVenueBoard.venueList.push_back(ExtraVenue);
+		assert(!RouterIdResolver::ResolveBoardForVenue("venue-a", {MultiVenueBoard}, R, E));
+		assert(E.status == Poco::Net::HTTPResponse::HTTP_NOT_FOUND);
 
 		assert(!RouterIdResolver::ClassifyProvisioningFailure(
 			Poco::Net::HTTPResponse::HTTP_FORBIDDEN, E));

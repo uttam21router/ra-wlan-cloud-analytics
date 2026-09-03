@@ -410,14 +410,6 @@ def cleanup_test_rows(cursor) -> None:
         "delete from timepoints where boardid in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         boards,
     )
-    cursor.execute(
-        "delete from board_venues where board_id in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        boards,
-    )
-    cursor.execute(
-        "delete from board_venues where venue_id in (%s, %s)",
-        (venue_id(), venue_id() + "-second"),
-    )
     cursor.execute("delete from boards where id in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", boards)
 
 
@@ -450,10 +442,6 @@ def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: s
             json.dumps(venue_list),
         ),
     )
-    cursor.execute(
-        "insert into board_venues (board_id, venue_id) values (%s, %s)",
-        (board, venue),
-    )
 
 
 def venue_payload(venue: str | None = None) -> dict[str, Any]:
@@ -482,7 +470,6 @@ def board_payload(
 
 def delete_board_rows(cursor, created_board_id: str) -> None:
     cursor.execute("delete from timepoints where boardid = %s", (created_board_id,))
-    cursor.execute("delete from board_venues where board_id = %s", (created_board_id,))
     cursor.execute("delete from boards where id = %s", (created_board_id,))
 
 
@@ -491,11 +478,6 @@ def fetch_board_storage(cursor, board: str) -> tuple[str, str, list[dict[str, An
     row = cursor.fetchone()
     assert row is not None
     return row[0], row[1], json.loads(row[2])
-
-
-def fetch_board_venues(cursor, board: str) -> list[str]:
-    cursor.execute("select venue_id from board_venues where board_id = %s order by venue_id", (board,))
-    return [row[0] for row in cursor.fetchall()]
 
 
 def insert_timepoint(
@@ -696,7 +678,8 @@ def test_board_create_with_exactly_one_venue_succeeds(fake_owsec: FakeOwsec) -> 
         assert created_board_id
         with db_connection() as connection:
             with connection.cursor() as cursor:
-                assert fetch_board_venues(cursor, created_board_id) == [venue_id()]
+                _, _, stored_venues = fetch_board_storage(cursor, created_board_id)
+                assert [venue["id"] for venue in stored_venues] == [venue_id()]
     finally:
         if created_board_id:
             with db_connection() as connection:
@@ -826,7 +809,6 @@ def test_board_update_name_and_description_without_venue_change_succeeds(
                 assert name == "Updated Board Name"
                 assert description == "Updated board description"
                 assert [venue["id"] for venue in stored_venues] == [venue_id()]
-                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == [venue_id()]
     finally:
         with db_connection() as connection:
             with connection.cursor() as cursor:
@@ -853,7 +835,6 @@ def test_board_put_with_same_existing_venue_succeeds(fake_owsec: FakeOwsec) -> N
                 name, _, stored_venues = fetch_board_storage(cursor, UPDATE_BOARD_ID)
                 assert name == "Same Venue Update"
                 assert [venue["id"] for venue in stored_venues] == [venue_id()]
-                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == [venue_id()]
     finally:
         with db_connection() as connection:
             with connection.cursor() as cursor:
@@ -888,14 +869,13 @@ def test_board_put_attempting_venue_reassignment_fails_without_changing_storage(
                 assert name == "Memory Summary Test Board"
                 assert description == "Integration test board"
                 assert [venue["id"] for venue in stored_venues] == [venue_id()]
-                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == [venue_id()]
     finally:
         with db_connection() as connection:
             with connection.cursor() as cursor:
                 cleanup_test_rows(cursor)
 
 
-def test_board_delete_removes_board_venue_mapping(fake_owsec: FakeOwsec) -> None:
+def test_board_delete_succeeds(fake_owsec: FakeOwsec) -> None:
     with db_connection() as connection:
         with connection.cursor() as cursor:
             cleanup_test_rows(cursor)
@@ -911,34 +891,29 @@ def test_board_delete_removes_board_venue_mapping(fake_owsec: FakeOwsec) -> None
         assert result.status == 200
         with db_connection() as connection:
             with connection.cursor() as cursor:
-                assert fetch_board_venues(cursor, UPDATE_BOARD_ID) == []
+                cursor.execute("select id from boards where id = %s", (UPDATE_BOARD_ID,))
+                assert cursor.fetchone() is None
     finally:
         with db_connection() as connection:
             with connection.cursor() as cursor:
                 cleanup_test_rows(cursor)
 
 
-def test_board_venue_mapping_rejects_duplicate_venue_id() -> None:
-    connection = connect_db(env_or_skip("OWANALYTICS_TEST_DB_DSN"))
-    try:
+def test_memory_summary_duplicate_legacy_boards_returns_conflict_409(fake_owsec: FakeOwsec) -> None:
+    with db_connection() as connection:
         with connection.cursor() as cursor:
             cleanup_test_rows(cursor)
-            cursor.execute(
-                "insert into board_venues (board_id, venue_id) values (%s, %s)",
-                (DUPLICATE_MAPPING_BOARD_A, venue_id()),
-            )
-            with pytest.raises(Exception):
-                cursor.execute(
-                    "insert into board_venues (board_id, venue_id) values (%s, %s)",
-                    (DUPLICATE_MAPPING_BOARD_B, venue_id()),
-                )
-        connection.rollback()
-    finally:
-        connection.close()
+            seed_board(cursor, board=DUPLICATE_MAPPING_BOARD_A)
+            seed_board(cursor, board=DUPLICATE_MAPPING_BOARD_B)
 
-    with db_connection() as cleanup_connection:
-        with cleanup_connection.cursor() as cursor:
-            cleanup_test_rows(cursor)
+    try:
+        result = http_json(memory_summary_path(), fake_owsec.issue_token("duplicate-boards"))
+        assert result.status == 409
+        assert result.body["error"] == "multiple_boards"
+    finally:
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cleanup_test_rows(cursor)
 
 
 def test_memory_summary_current_router_ownership_controls_board_data(

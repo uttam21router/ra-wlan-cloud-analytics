@@ -42,35 +42,30 @@ namespace OpenWifi {
 			return false;
 		}
 
-		std::string BoardId;
-		auto LookupResult = StorageService()->BoardVenuesDB().GetBoardIdByVenue(Device.venue, BoardId);
-		if (LookupResult == BoardVenueLookupResult::StorageError) {
+		std::vector<AnalyticsObjects::BoardInfo> Matches;
+		if (!StorageService()->BoardsDB().FindBoardsByVenue(Device.venue, Matches)) {
 			poco_error(Client.Logger(),
-					   "Failed to read Analytics board venue mapping while resolving routerId=" +
+					   "Failed to read Analytics boards while resolving routerId=" +
 						   routerId);
 			AnalyticsBoardStorageFailure(E);
 			return false;
 		}
-		if (LookupResult == BoardVenueLookupResult::MultipleFound) {
+
+		if (Matches.empty()) {
+			NotFound(E);
+			return false;
+		}
+
+		if (Matches.size() > 1) {
 			E.status = Poco::Net::HTTPResponse::HTTP_CONFLICT;
 			E.error = "multiple_boards";
 			E.message = "Router is mapped to multiple current boards";
 			return false;
 		}
-		if (LookupResult == BoardVenueLookupResult::NotFound) {
-			NotFound(E);
-			return false;
-		}
-
-		if (!StorageService()->BoardsDB().GetRecord("id", BoardId, Resolved.board)) {
-			poco_error(Client.Logger(), "Resolved board venue mapping references missing boardId=" +
-											BoardId + " for routerId=" + routerId);
-			AnalyticsBoardStorageFailure(E);
-			return false;
-		}
 
 		Resolved.routerId = routerId;
-		Resolved.resolvedBoardId = BoardId;
+		Resolved.board = Matches.front();
+		Resolved.resolvedBoardId = Matches.front().info.id;
 		Resolved.resolvedVenueId = Device.venue;
 		return true;
 	}
