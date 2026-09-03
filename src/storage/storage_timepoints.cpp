@@ -41,10 +41,10 @@ namespace OpenWifi {
 	TimePointDB::TimePointDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
 		: DB(T, "timepoints", TimePoint_Fields, TimePointDB_Indexes, P, L, "tpo") {}
 
-	bool TimePointDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{"alter table timepoints add column resource_data TEXT"};
+	bool TimePointDB::Upgrade(uint32_t from, uint32_t &to) {
+		std::vector<std::string> Statements{};
 		RunScript(Statements);
-		to = 3;
+		to = from;
 		return true;
 	}
 
