@@ -163,7 +163,7 @@ namespace OpenWifi {
 			" venueId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
 			ORM::Escape(venueId), ORM::Escape(serialNumber), startTime, endTime);
 		const auto Sql = fmt::format(
-			"select id, timestamp, resource_data from {} where {} order by timestamp, id ASC",
+			"select id, timestamp, resource_data from {} where {}",
 			TableName_, WhereClause);
 		std::vector<TimePointResourceDBRecordType> RawRecords;
 		if (!Join(Sql, RawRecords))

@@ -29,7 +29,9 @@ namespace OpenWifi {
 
 	static ORM::IndexVec BoardsDB_Indexes{
 		{std::string("boards_name_index"),
-		 ORM::IndexEntryVec{{std::string("name"), ORM::Indextype::ASC}}}};
+		 ORM::IndexEntryVec{{std::string("name"), ORM::Indextype::ASC}}},
+		{std::string("boards_venue_id_index"),
+		 ORM::IndexEntryVec{{std::string("venueId"), ORM::Indextype::ASC}}}};
 
 	BoardsDB::BoardsDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
 		: DB(T, "boards", Boards_Fields, BoardsDB_Indexes, P, L, "bor") {}
@@ -47,14 +49,7 @@ namespace OpenWifi {
 		if (venueId.empty())
 			return true;
 
-		return Iterate([&](const AnalyticsObjects::BoardInfo &Board) {
-			if (Board.venueList.size() == 1 &&
-				!Board.venueList[0].id.empty() &&
-				Board.venueList[0].id == venueId) {
-				boards.emplace_back(Board);
-			}
-			return true;
-		});
+		return GetRecords(0, 100, boards, "venueId='" + ORM::Escape(venueId) + "'");
 	}
 } // namespace OpenWifi
 
