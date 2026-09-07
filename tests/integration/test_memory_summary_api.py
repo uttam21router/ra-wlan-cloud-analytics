@@ -53,7 +53,7 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -84,8 +84,24 @@ def env_or_skip(name: str) -> str:
     return value
 
 
-def router_id() -> str:
+def default_router_id() -> str:
     return os.environ.get("OWANALYTICS_TEST_ROUTER_ID", DEFAULT_ROUTER_ID)
+
+
+def router_id() -> str:
+    return default_router_id()
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def format_utc(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def recent_timestamp(minutes_ago: int = 1) -> str:
+    return format_utc(utc_now() - timedelta(minutes=minutes_ago))
 
 
 def board_id() -> str:
@@ -348,10 +364,14 @@ def http_json(
 
 
 def memory_summary_path(
-    timestamp_till: str = "2026-07-29T12:00:00Z",
-    lookback_hours: str = "2",
+    timestamp_till: str | None = None,
+    lookback_hours: str = "1",
     extra_query: str | None = None,
+    router_id: str | None = None,
 ) -> str:
+    selected_router = router_id if router_id is not None else default_router_id()
+    if timestamp_till is None:
+        timestamp_till = recent_timestamp(minutes_ago=1)
     query = {
         "timestampTill": timestamp_till,
         "lookbackHours": lookback_hours,
@@ -359,7 +379,7 @@ def memory_summary_path(
     encoded = urllib.parse.urlencode(query)
     if extra_query:
         encoded += "&" + extra_query
-    return f"/api/v1/devices/{router_id()}/memory-summary?{encoded}"
+    return f"/api/v1/devices/{selected_router}/memory-summary?{encoded}"
 
 
 def connect_db(dsn: str):
@@ -533,10 +553,10 @@ def seeded_board():
             cleanup_test_rows(cursor)
 
 
-def assert_empty_summary(body: dict[str, Any]) -> None:
+def assert_empty_summary(body: dict[str, Any], expected_start: str, expected_end: str) -> None:
     assert body["meta"]["requestedWindow"] == {
-        "startTime": "2026-07-29T10:00:00Z",
-        "endTime": "2026-07-29T12:00:00Z",
+        "startTime": expected_start,
+        "endTime": expected_end,
     }
     assert body["meta"]["observedWindow"] == {"startTime": None, "endTime": None}
     assert body["data"] == {
@@ -548,24 +568,31 @@ def assert_empty_summary(body: dict[str, Any]) -> None:
 
 
 def test_memory_summary_aggregates_persisted_samples(fake_owsec: FakeOwsec, seeded_board) -> None:
+    now = utc_now()
+    end_dt = now - timedelta(seconds=30)
+    start_dt = end_dt - timedelta(hours=1)
+    t_a = end_dt - timedelta(minutes=55)
+    t_b = end_dt - timedelta(minutes=30)
+    t_c = end_dt - timedelta(minutes=5)
+
     with db_connection() as connection:
         with connection.cursor() as cursor:
-            insert_timepoint(cursor, "2026-07-29T10:05:00Z", {"memory_free": 200000, "memory_total": 512000}, suffix="a")
-            insert_timepoint(cursor, "2026-07-29T10:30:00Z", {"memory_free": 250000, "memory_total": 512000}, suffix="b")
-            insert_timepoint(cursor, "2026-07-29T11:55:00Z", {"memory_free": 300000, "memory_total": 512000}, suffix="c")
+            insert_timepoint(cursor, format_utc(t_a), {"memory_free": 200000, "memory_total": 512000}, suffix="a")
+            insert_timepoint(cursor, format_utc(t_b), {"memory_free": 250000, "memory_total": 512000}, suffix="b")
+            insert_timepoint(cursor, format_utc(t_c), {"memory_free": 300000, "memory_total": 512000}, suffix="c")
 
     token = fake_owsec.issue_token("happy-path")
-    result = http_json(memory_summary_path(), token)
+    result = http_json(memory_summary_path(timestamp_till=format_utc(end_dt), lookback_hours="1"), token)
 
     assert result.status == 200
     assert set(result.body) == {"data", "meta"}
     assert result.body["meta"]["requestedWindow"] == {
-        "startTime": "2026-07-29T10:00:00Z",
-        "endTime": "2026-07-29T12:00:00Z",
+        "startTime": format_utc(start_dt),
+        "endTime": format_utc(end_dt),
     }
     assert result.body["meta"]["observedWindow"] == {
-        "startTime": "2026-07-29T10:05:00Z",
-        "endTime": "2026-07-29T11:55:00Z",
+        "startTime": format_utc(t_a),
+        "endTime": format_utc(t_c),
     }
     assert result.body["data"] == {
         "min_memfree": 200000,
@@ -578,28 +605,37 @@ def test_memory_summary_aggregates_persisted_samples(fake_owsec: FakeOwsec, seed
 def test_memory_summary_applies_half_open_window_and_filters_board_and_serial(
     fake_owsec: FakeOwsec, seeded_board
 ) -> None:
+    now = utc_now()
+    end_dt = now - timedelta(seconds=30)
+    start_dt = end_dt - timedelta(hours=1)
+    before_dt = start_dt - timedelta(seconds=1)
+    start_sample_dt = start_dt
+    inside_dt = end_dt - timedelta(seconds=1)
+    end_sample_dt = end_dt
+    mid_dt = end_dt - timedelta(minutes=30)
+
     with db_connection() as connection:
         with connection.cursor() as cursor:
-            insert_timepoint(cursor, "2026-07-29T09:59:59Z", {"memory_free": 111111, "memory_total": 512000}, suffix="before")
-            insert_timepoint(cursor, "2026-07-29T10:00:00Z", {"memory_free": 200000, "memory_total": 512000}, suffix="start")
-            insert_timepoint(cursor, "2026-07-29T11:59:59Z", {"memory_free": 300000, "memory_total": 512000}, suffix="inside")
-            insert_timepoint(cursor, "2026-07-29T12:00:00Z", {"memory_free": 999999, "memory_total": 999999}, suffix="end")
+            insert_timepoint(cursor, format_utc(before_dt), {"memory_free": 111111, "memory_total": 512000}, suffix="before")
+            insert_timepoint(cursor, format_utc(start_sample_dt), {"memory_free": 200000, "memory_total": 512000}, suffix="start")
+            insert_timepoint(cursor, format_utc(inside_dt), {"memory_free": 300000, "memory_total": 512000}, suffix="inside")
+            insert_timepoint(cursor, format_utc(end_sample_dt), {"memory_free": 999999, "memory_total": 999999}, suffix="end")
             insert_timepoint(
                 cursor,
-                "2026-07-29T10:30:00Z",
+                format_utc(mid_dt),
                 {"memory_free": 1, "memory_total": 512000},
                 serial="other-router",
                 suffix="other-router",
             )
             insert_timepoint(
                 cursor,
-                "2026-07-29T10:30:00Z",
+                format_utc(mid_dt),
                 {"memory_free": 2, "memory_total": 512000},
                 board=OTHER_BOARD_ID,
                 suffix="other-board",
             )
 
-    result = http_json(memory_summary_path(), fake_owsec.issue_token("filters"))
+    result = http_json(memory_summary_path(timestamp_till=format_utc(end_dt), lookback_hours="1"), fake_owsec.issue_token("filters"))
 
     assert result.status == 200
     assert result.body["data"] == {
@@ -609,28 +645,40 @@ def test_memory_summary_applies_half_open_window_and_filters_board_and_serial(
         "latest_memfree": 300000,
     }
     assert result.body["meta"]["observedWindow"] == {
-        "startTime": "2026-07-29T10:00:00Z",
-        "endTime": "2026-07-29T11:59:59Z",
+        "startTime": format_utc(start_sample_dt),
+        "endTime": format_utc(inside_dt),
     }
 
 
 def test_memory_summary_no_samples_returns_empty_success(fake_owsec: FakeOwsec, seeded_board) -> None:
-    result = http_json(memory_summary_path(), fake_owsec.issue_token("empty"))
+    now = utc_now()
+    end_dt = now - timedelta(seconds=30)
+    start_dt = end_dt - timedelta(hours=1)
+
+    result = http_json(memory_summary_path(timestamp_till=format_utc(end_dt), lookback_hours="1"), fake_owsec.issue_token("empty"))
 
     assert result.status == 200
-    assert_empty_summary(result.body)
+    assert_empty_summary(result.body, format_utc(start_dt), format_utc(end_dt))
 
 
 def test_memory_summary_ignores_invalid_resource_rows(fake_owsec: FakeOwsec, seeded_board) -> None:
+    now = utc_now()
+    end_dt = now - timedelta(seconds=30)
+    t_empty = end_dt - timedelta(minutes=55)
+    t_missing = end_dt - timedelta(minutes=50)
+    t_corrupt = end_dt - timedelta(minutes=45)
+    t_valid_a = end_dt - timedelta(minutes=40)
+    t_valid_b = end_dt - timedelta(minutes=35)
+
     with db_connection() as connection:
         with connection.cursor() as cursor:
-            insert_timepoint(cursor, "2026-07-29T10:05:00Z", {}, suffix="empty")
-            insert_timepoint(cursor, "2026-07-29T10:10:00Z", {"memory_total": 512000}, suffix="missing-free")
-            insert_timepoint(cursor, "2026-07-29T10:15:00Z", {"memory_free": 700000, "memory_total": 512000}, suffix="corrupt")
-            insert_timepoint(cursor, "2026-07-29T10:20:00Z", {"memory_free": 200000, "memory_total": 512000}, suffix="valid-a")
-            insert_timepoint(cursor, "2026-07-29T10:25:00Z", {"memory_free": 300000}, suffix="valid-b")
+            insert_timepoint(cursor, format_utc(t_empty), {}, suffix="empty")
+            insert_timepoint(cursor, format_utc(t_missing), {"memory_total": 512000}, suffix="missing-free")
+            insert_timepoint(cursor, format_utc(t_corrupt), {"memory_free": 700000, "memory_total": 512000}, suffix="corrupt")
+            insert_timepoint(cursor, format_utc(t_valid_a), {"memory_free": 200000, "memory_total": 512000}, suffix="valid-a")
+            insert_timepoint(cursor, format_utc(t_valid_b), {"memory_free": 300000}, suffix="valid-b")
 
-    result = http_json(memory_summary_path(), fake_owsec.issue_token("invalid-resource"))
+    result = http_json(memory_summary_path(timestamp_till=format_utc(end_dt), lookback_hours="1"), fake_owsec.issue_token("invalid-resource"))
 
     assert result.status == 200
     assert result.body["data"] == {
@@ -640,8 +688,8 @@ def test_memory_summary_ignores_invalid_resource_rows(fake_owsec: FakeOwsec, see
         "latest_memfree": 300000,
     }
     assert result.body["meta"]["observedWindow"] == {
-        "startTime": "2026-07-29T10:20:00Z",
-        "endTime": "2026-07-29T10:25:00Z",
+        "startTime": format_utc(t_valid_a),
+        "endTime": format_utc(t_valid_b),
     }
 
 
@@ -658,7 +706,7 @@ def test_memory_summary_missing_auth_rejects_before_fake_owsec_or_query_validati
 
 def test_memory_summary_invalid_query_rejects_after_auth(fake_owsec: FakeOwsec) -> None:
     token = fake_owsec.issue_token("invalid-query")
-    result = http_json(memory_summary_path(extra_query="unexpected=true"), token)
+    result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="1", extra_query="unexpected=true"), token)
 
     assert fake_owsec.validate_count(token) == 1
     assert result.status == 400
@@ -961,7 +1009,7 @@ def test_memory_summary_duplicate_legacy_boards_returns_conflict_409(fake_owsec:
             seed_board(cursor, board=DUPLICATE_MAPPING_BOARD_B)
 
     try:
-        result = http_json(memory_summary_path(), fake_owsec.issue_token("duplicate-boards"))
+        result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="1"), fake_owsec.issue_token("duplicate-boards"))
         assert result.status == 409
         assert result.body["error"] == "multiple_boards"
     finally:
@@ -973,19 +1021,25 @@ def test_memory_summary_duplicate_legacy_boards_returns_conflict_409(fake_owsec:
 def test_memory_summary_current_router_ownership_controls_board_data(
     fake_owsec: FakeOwsec, seeded_board
 ) -> None:
+    now = utc_now()
+    end_dt = now - timedelta(seconds=30)
+    t_old = end_dt - timedelta(minutes=45)
+    t_cur_a = end_dt - timedelta(minutes=40)
+    t_cur_b = end_dt - timedelta(minutes=35)
+
     with db_connection() as connection:
         with connection.cursor() as cursor:
             insert_timepoint(
                 cursor,
-                "2026-07-29T10:15:00Z",
+                format_utc(t_old),
                 {"memory_free": 999999, "memory_total": 999999},
                 board=OLD_BOARD_ID,
                 suffix="old",
             )
-            insert_timepoint(cursor, "2026-07-29T10:20:00Z", {"memory_free": 200000, "memory_total": 512000}, suffix="current-a")
-            insert_timepoint(cursor, "2026-07-29T10:25:00Z", {"memory_free": 300000, "memory_total": 512000}, suffix="current-b")
+            insert_timepoint(cursor, format_utc(t_cur_a), {"memory_free": 200000, "memory_total": 512000}, suffix="current-a")
+            insert_timepoint(cursor, format_utc(t_cur_b), {"memory_free": 300000, "memory_total": 512000}, suffix="current-b")
 
-    result = http_json(memory_summary_path(), fake_owsec.issue_token("current-owner"))
+    result = http_json(memory_summary_path(timestamp_till=format_utc(end_dt), lookback_hours="1"), fake_owsec.issue_token("current-owner"))
 
     assert result.status == 200
     assert result.body["data"] == {
@@ -1003,7 +1057,7 @@ def test_memory_summary_retention_is_enforced_from_resolved_venue(fake_owsec: Fa
             seed_board(cursor, retention=3600)
 
     try:
-        result = http_json(memory_summary_path(), fake_owsec.issue_token("retention"))
+        result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="2"), fake_owsec.issue_token("retention"))
         assert result.status == 400
         assert result.body["error"] == "invalid_lookback_hours"
     finally:
@@ -1017,7 +1071,7 @@ def test_memory_summary_without_analytics_board_mapping_returns_not_found(fake_o
         with connection.cursor() as cursor:
             cleanup_test_rows(cursor)
 
-    result = http_json(memory_summary_path(), fake_owsec.issue_token("no-board"))
+    result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="1"), fake_owsec.issue_token("no-board"))
 
     assert result.status == 404
     assert result.body["error"] == "not_found"
@@ -1043,7 +1097,7 @@ def test_memory_summary_timepoint_storage_failure_returns_memory_specific_error(
             cursor.execute(f"revoke select on table timepoints from {app_user}")
         admin.commit()
 
-        result = http_json(memory_summary_path(), fake_owsec.issue_token("storage-failure"))
+        result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="1"), fake_owsec.issue_token("storage-failure"))
         assert result.status == 500
         assert result.body["error"] == "memory_summary_query_failed"
         assert result.body["message"] == "Unable to retrieve gateway memory history"
@@ -1065,21 +1119,27 @@ def test_memory_summary_filters_by_venue_and_serial_number(fake_owsec: FakeOwsec
     router_1 = router_id()
     router_2 = router_id() + "9"
 
+    now = utc_now()
+    end_dt = now - timedelta(seconds=30)
+    t1 = end_dt - timedelta(minutes=45)
+    t2 = end_dt - timedelta(minutes=40)
+    t3 = end_dt - timedelta(minutes=35)
+
     with db_connection() as connection:
         with connection.cursor() as cursor:
             cleanup_test_rows(cursor)
             seed_board(cursor, board=board_a, venue=venue_a)
             seed_board(cursor, board=board_b, venue=venue_b)
             # Sample for venue_a + router_1 -> memory_free 100000
-            insert_timepoint(cursor, "2026-07-27T10:00:00Z", {"memory_free": 100000, "memory_total": 512000}, board=board_a, venue=venue_a, serial=router_1, suffix="vA-r1")
+            insert_timepoint(cursor, format_utc(t1), {"memory_free": 100000, "memory_total": 512000}, board=board_a, venue=venue_a, serial=router_1, suffix="vA-r1")
             # Sample for venue_b + router_1 -> memory_free 200000 (different venue, same serial)
-            insert_timepoint(cursor, "2026-07-27T10:05:00Z", {"memory_free": 200000, "memory_total": 512000}, board=board_b, venue=venue_b, serial=router_1, suffix="vB-r1")
+            insert_timepoint(cursor, format_utc(t2), {"memory_free": 200000, "memory_total": 512000}, board=board_b, venue=venue_b, serial=router_1, suffix="vB-r1")
             # Sample for venue_a + router_2 -> memory_free 300000 (same venue, different serial)
-            insert_timepoint(cursor, "2026-07-27T10:10:00Z", {"memory_free": 300000, "memory_total": 512000}, board=board_a, venue=venue_a, serial=router_2, suffix="vA-r2")
+            insert_timepoint(cursor, format_utc(t3), {"memory_free": 300000, "memory_total": 512000}, board=board_a, venue=venue_a, serial=router_2, suffix="vA-r2")
 
     try:
         # Querying venue_a + router_1 must return ONLY the 100000 sample
-        result = http_json(memory_summary_path(router_id=router_1), fake_owsec.issue_token("filter-test"))
+        result = http_json(memory_summary_path(timestamp_till=format_utc(end_dt), lookback_hours="1", router_id=router_1), fake_owsec.issue_token("filter-test"))
         assert result.status == 200
         assert result.body["data"]["min_memfree"] == 100000
         assert result.body["data"]["max_memfree"] == 100000
@@ -1089,3 +1149,10 @@ def test_memory_summary_filters_by_venue_and_serial_number(fake_owsec: FakeOwsec
         with db_connection() as connection:
             with connection.cursor() as cursor:
                 cleanup_test_rows(cursor)
+
+
+def test_memory_summary_path_router_id_override() -> None:
+    path1 = memory_summary_path(router_id="router-1")
+    path2 = memory_summary_path(router_id="router-2")
+    assert "/api/v1/devices/router-1/memory-summary" in path1
+    assert "/api/v1/devices/router-2/memory-summary" in path2
