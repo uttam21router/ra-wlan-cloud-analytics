@@ -416,6 +416,7 @@ def db_connection():
 def cleanup_test_rows(cursor) -> None:
     boards = (
         board_id(),
+        board_id() + "-b",
         OLD_BOARD_ID,
         OTHER_BOARD_ID,
         CREATE_BOARD_ID,
@@ -426,12 +427,12 @@ def cleanup_test_rows(cursor) -> None:
         DUPLICATE_MAPPING_BOARD_A,
         DUPLICATE_MAPPING_BOARD_B,
     )
-    cursor.execute("delete from timepoints where serialnumber in (%s, %s)", (router_id(), "other-router"))
+    cursor.execute("delete from timepoints where serialnumber in (%s, %s, %s)", (router_id(), router_id() + "9", "other-router"))
     cursor.execute(
-        "delete from timepoints where boardid in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "delete from timepoints where boardid in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         boards,
     )
-    cursor.execute("delete from boards where id in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", boards)
+    cursor.execute("delete from boards where id in (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", boards)
 
 
 def seed_board(cursor, retention: int = 7200, board: str | None = None, venue: str | None = None) -> None:
@@ -1112,9 +1113,9 @@ def test_memory_summary_timepoint_storage_failure_returns_memory_specific_error(
 
 
 def test_memory_summary_filters_by_venue_and_serial_number(fake_owsec: FakeOwsec) -> None:
-    venue_a = venue_id() + "-a"
+    venue_a = venue_id()
     venue_b = venue_id() + "-b"
-    board_a = board_id() + "-a"
+    board_a = board_id()
     board_b = board_id() + "-b"
     router_1 = router_id()
     router_2 = router_id() + "9"
