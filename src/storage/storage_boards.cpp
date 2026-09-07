@@ -36,11 +36,29 @@ namespace OpenWifi {
 	BoardsDB::BoardsDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
 		: DB(T, "boards", Boards_Fields, BoardsDB_Indexes, P, L, "bor") {}
 
-	bool BoardsDB::Upgrade(uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{};
-		RunScript(Statements);
-		to = from;
-		return true;
+	bool BoardsDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
+		std::vector<std::string> Statements;
+		if (Type_ == mysql) {
+			Statements = {
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venueid TEXT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuename TEXT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuedescription TEXT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS retention BIGINT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS `interval` BIGINT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS monitorsubvenues BOOLEAN",
+				"CREATE INDEX IF NOT EXISTS boards_venue_id_index ON boards(venueid)"};
+		} else {
+			Statements = {
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venueid TEXT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuename TEXT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS venuedescription TEXT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS retention BIGINT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS interval BIGINT",
+				"ALTER TABLE boards ADD COLUMN IF NOT EXISTS monitorsubvenues BOOLEAN",
+				"CREATE INDEX IF NOT EXISTS boards_venue_id_index ON boards(venueid)"};
+		}
+		to = 2;
+		return RunScript(Statements);
 	}
 
 	bool BoardsDB::FindBoardsByVenue(const std::string &venueId,

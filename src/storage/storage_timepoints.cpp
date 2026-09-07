@@ -46,11 +46,14 @@ namespace OpenWifi {
 	TimePointDB::TimePointDB(OpenWifi::DBType T, Poco::Data::SessionPool &P, Poco::Logger &L)
 		: DB(T, "timepoints", TimePoint_Fields, TimePointDB_Indexes, P, L, "tpo") {}
 
-	bool TimePointDB::Upgrade(uint32_t from, uint32_t &to) {
-		std::vector<std::string> Statements{};
-		RunScript(Statements);
-		to = from;
-		return true;
+	bool TimePointDB::Upgrade([[maybe_unused]] uint32_t from, uint32_t &to) {
+		std::vector<std::string> Statements{
+			"ALTER TABLE timepoints ADD COLUMN IF NOT EXISTS resource_data TEXT",
+			"ALTER TABLE timepoints ADD COLUMN IF NOT EXISTS venueid TEXT",
+			"CREATE INDEX IF NOT EXISTS timepoint_venue_serial_time_index "
+			"ON timepoints(venueid, serialnumber, timestamp)"};
+		to = 2;
+		return RunScript(Statements);
 	}
 
 	bool TimePointDB::GetStats(const std::string &id, AnalyticsObjects::DeviceTimePointStats &S) {
