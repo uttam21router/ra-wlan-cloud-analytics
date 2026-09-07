@@ -92,6 +92,29 @@ namespace OpenWifi {
 		}
 	}
 
+	bool TimePointDB::SelectRecordsBySerial(const std::string &boardId,
+											const std::string &serialNumber, uint64_t FromDate,
+											uint64_t LastDate,
+											std::vector<AnalyticsObjects::DeviceTimePoint> &Recs) {
+		Recs.clear();
+		std::string Query =
+			fmt::format("select {} from {} where boardId='{}' and serialNumber='{}' and "
+						"timestamp >= {} and timestamp < {} order by timestamp, serialNumber ASC",
+						SelectFields(), TableName_, ORM::Escape(boardId), ORM::Escape(serialNumber),
+						FromDate, LastDate);
+
+		std::vector<TimePointDBRecordType> RawRecords;
+		if (!Join(Query, RawRecords))
+			return false;
+
+		for (const auto &RawRecord : RawRecords) {
+			AnalyticsObjects::DeviceTimePoint Record;
+			Convert(RawRecord, Record);
+			Recs.emplace_back(std::move(Record));
+		}
+		return true;
+	}
+
 	bool TimePointDB::DeleteBoard(const std::string &boardId) {
 		return DeleteRecords(fmt::format(" boardId='{}' ", boardId));
 	}

@@ -145,6 +145,7 @@ add_executable(owanalytics
         src/RESTAPI/RESTAPI_board_devices_handler.cpp src/RESTAPI/RESTAPI_board_devices_handler.h
         src/HealthReceiver.cpp src/HealthReceiver.h
         src/StatFunc.h
+        src/RESTAPI/RESTAPI_gateway_wifi_temp_handler.cpp src/RESTAPI/RESTAPI_gateway_wifi_temp_handler.h
         src/RESTAPI/RESTAPI_board_timepoint_handler.cpp src/RESTAPI/RESTAPI_board_timepoint_handler.h
         src/storage/storage_timepoints.cpp src/storage/storage_timepoints.h
         src/storage/storage_wificlients.cpp src/storage/storage_wificlients.h
@@ -158,4 +159,3 @@ target_link_libraries(owanalytics PUBLIC
                         resolv
                         CppKafka::cppkafka
 )
-

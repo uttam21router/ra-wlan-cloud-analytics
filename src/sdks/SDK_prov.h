@@ -19,6 +19,11 @@ namespace OpenWifi::SDK::Prov {
 
 	namespace Device {
 		bool Get(RESTAPIHandler *client, const std::string &Mac,
+				 ProvObjects::InventoryTag &Device);
+		bool GetWithStatus(RESTAPIHandler *client, const std::string &Mac,
+						   ProvObjects::InventoryTag &Device,
+						   Poco::Net::HTTPResponse::HTTPStatus &Status);
+		bool Get(RESTAPIHandler *client, const std::string &Mac,
 				 ProvObjects::InventoryTagList &Device);
 		bool SetConfiguration(RESTAPIHandler *client, const std::string &Mac,
 							  const std::string &ConfigUUID);

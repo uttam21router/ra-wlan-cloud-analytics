@@ -6,6 +6,7 @@
 
 #include "RESTAPI_ProvObjects.h"
 #include "framework/utils.h"
+#include <optional>
 #include <vector>
 
 namespace OpenWifi {
@@ -186,6 +187,8 @@ namespace OpenWifi {
 			uint64_t active_ms = 0, busy_ms = 0, receive_ms = 0, transmit_ms = 0, tx_power = 0,
 					 channel = 0;
 			int64_t temperature = 0, noise = 0;
+			std::optional<int64_t> wifi_temp;
+			bool wifi_temp_zero_is_unavailable = false;
 
 			double active_pct = 0.0, busy_pct = 0.0, receive_pct = 0.0, transmit_pct = 0.0;
 
