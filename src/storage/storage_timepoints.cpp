@@ -155,34 +155,6 @@ namespace OpenWifi {
 		return true;
 	}
 
-	bool TimePointDB::SelectResourceRecordsByVenueAndSerial(
-		const std::string &venueId, const std::string &serialNumber, uint64_t startTime,
-		uint64_t endTime, std::vector<AnalyticsObjects::DeviceTimePoint> &Recs) {
-		Recs.clear();
-		if (endTime <= startTime)
-			return true;
-
-		auto WhereClause = fmt::format(
-			" venueId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
-			ORM::Escape(venueId), ORM::Escape(serialNumber), startTime, endTime);
-		const auto Sql = fmt::format(
-			"select id, timestamp, resource_data from {} where {}",
-			TableName_, WhereClause);
-		std::vector<TimePointResourceDBRecordType> RawRecords;
-		if (!Join(Sql, RawRecords))
-			return false;
-		Recs.reserve(RawRecords.size());
-		for (const auto &Row : RawRecords) {
-			AnalyticsObjects::DeviceTimePoint Point;
-			Point.id = Row.get<0>();
-			Point.timestamp = Row.get<1>();
-			Point.resource_data =
-				RESTAPI_utils::to_object<AnalyticsObjects::DeviceResourceTimePoint>(Row.get<2>());
-			Recs.emplace_back(std::move(Point));
-		}
-		return true;
-	}
-
 	bool TimePointDB::DeleteBoard(const std::string &boardId) {
 		return DeleteRecords(fmt::format(" boardId='{}' ", boardId));
 	}

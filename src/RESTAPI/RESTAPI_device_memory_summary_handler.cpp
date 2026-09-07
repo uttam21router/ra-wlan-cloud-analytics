@@ -62,8 +62,8 @@ namespace OpenWifi {
 			return MCP::SendError(*this, Error);
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> Records;
-		if (!StorageService()->TimePointsDB().SelectResourceRecordsByVenueAndSerial(
-				Resolved.resolvedVenueId, routerId, Window.startTime, Window.endTime, Records)) {
+		if (!StorageService()->TimePointsDB().SelectResourceRecordsBySerial(
+				Resolved.resolvedBoardId, routerId, Window.startTime, Window.endTime, Records)) {
 			poco_error(Logger(), "Failed to query timepoints for memory summary");
 			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
 						  "memory_summary_query_failed",
