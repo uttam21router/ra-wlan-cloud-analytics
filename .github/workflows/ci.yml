@@ -147,54 +147,62 @@ jobs:
 
 
       # -----------------------------------------------------------------------
-      # Docker network used by OWAnalytics + Redpanda
+      # Fake external services
       # -----------------------------------------------------------------------
-      - name: Create integration test network
+      - name: Start Fake OWSEC
         run: |
-          docker network create owanalytics-ci
+          python3 test_scripts/fakes/fake_owsec_service.py \
+            --host 127.0.0.1 \
+            --port 18080 \
+            > /tmp/fake-owsec.log 2>&1 &
 
+          echo $! > /tmp/fake-owsec.pid
 
-      # -----------------------------------------------------------------------
-      # Kafka-compatible broker
-      # -----------------------------------------------------------------------
-      - name: Start Kafka-compatible broker
-        run: |
-          docker run -d \
-            --name redpanda \
-            --network owanalytics-ci \
-            -p 9092:9092 \
-            docker.redpanda.com/redpanda/redpanda:v23.3.18 \
-            redpanda start \
-              --overprovisioned \
-              --smp 1 \
-              --memory 1G \
-              --reserve-memory 0M \
-              --node-id 0 \
-              --check=false \
-              --kafka-addr PLAINTEXT://0.0.0.0:9092 \
-              --advertise-kafka-addr PLAINTEXT://redpanda:9092
+          for i in $(seq 1 20); do
+            if curl -fsS \
+              "http://127.0.0.1:18080/api/v1/validateToken?token=root-token" \
+              >/dev/null; then
 
-          for i in $(seq 1 30); do
-            if docker exec redpanda \
-              rpk cluster health \
-              --brokers redpanda:9092 | grep -q Healthy; then
-
-              docker exec redpanda \
-                rpk topic create service_events \
-                --brokers redpanda:9092 || true
-
-              echo "Redpanda is ready"
+              echo "Fake OWSEC is ready"
               exit 0
             fi
 
-            echo "Waiting for Redpanda..."
-            sleep 2
+            echo "Waiting for Fake OWSEC..."
+            sleep 1
           done
 
-          echo "Redpanda failed to become healthy"
-          docker logs redpanda
+          echo "Fake OWSEC failed to start"
+          cat /tmp/fake-owsec.log || true
           exit 1
 
+      - name: Start Fake OWPROV
+        env:
+          OWANALYTICS_TEST_VENUE_ID: venue-test-01
+        run: |
+          python3 test_scripts/fakes/fake_owprov_service.py \
+            --host 127.0.0.1 \
+            --port 18081 \
+            > /tmp/fake-owprov.log 2>&1 &
+
+          echo $! > /tmp/fake-owprov.pid
+
+          for i in $(seq 1 20); do
+            if curl -fsS \
+              -H "Authorization: Bearer root-token" \
+              "http://127.0.0.1:18081/api/v1/inventory/60cf84f22290" \
+              >/dev/null; then
+
+              echo "Fake OWPROV is ready"
+              exit 0
+            fi
+
+            echo "Waiting for Fake OWPROV..."
+            sleep 1
+          done
+
+          echo "Fake OWPROV failed to start"
+          cat /tmp/fake-owprov.log || true
+          exit 1
 
       # -----------------------------------------------------------------------
       # Certificates required by OWAnalytics
@@ -232,26 +240,24 @@ jobs:
       # -----------------------------------------------------------------------
       # Start OWAnalytics
       #
-      # PostgreSQL is a GitHub Actions service container and exposes port 5432
-      # on the runner. host.docker.internal is mapped to the runner using
-      # host-gateway so OWAnalytics can connect to it.
+      # PostgreSQL and fake services are exposed on the runner. Host networking
+      # lets OWAnalytics reach them on 127.0.0.1, matching the OWProv CI model.
       # -----------------------------------------------------------------------
       - name: Start Analytics service
         run: |
           docker run -d \
             --name owanalytics-ci \
-            --network owanalytics-ci \
-            --add-host=host.docker.internal:host-gateway \
-            -p 16009:16009 \
-            -p 16109:16109 \
+            --net=host \
             -v /tmp/owanalytics-certs:/owanalytics-data/certs:ro \
             -e TEMPLATE_CONFIG=true \
             -e RUN_CHOWN=true \
-            -e SECURITY_RESTAPI_DISABLE=true \
-            -e KAFKA_ENABLE=true \
-            -e KAFKA_BROKERLIST=redpanda:9092 \
+            -e SECURITY_RESTAPI_DISABLE=false \
+            -e KAFKA_ENABLE=false \
+            -e CI_FAKE_EXTERNAL_SERVICES=1 \
+            -e FAKE_EXTERNAL_SERVICE_OWSEC=http://127.0.0.1:18080 \
+            -e FAKE_EXTERNAL_SERVICE_OWPROV=http://127.0.0.1:18081 \
             -e STORAGE_TYPE=postgresql \
-            -e STORAGE_TYPE_POSTGRESQL_HOST=host.docker.internal \
+            -e STORAGE_TYPE_POSTGRESQL_HOST=127.0.0.1 \
             -e STORAGE_TYPE_POSTGRESQL_PORT=5432 \
             -e STORAGE_TYPE_POSTGRESQL_DATABASE=owanalytics \
             -e STORAGE_TYPE_POSTGRESQL_USERNAME=owanalytics \
@@ -289,9 +295,10 @@ jobs:
       # -----------------------------------------------------------------------
       # Memory Summary integration tests
       # -----------------------------------------------------------------------
-      - name: Run Python integration tests with mocked OWSEC
+      - name: Run Python integration tests with fake OWSEC and OWPROV
         env:
           OWANALYTICS_TEST_URL: http://127.0.0.1:16009
+          OWANALYTICS_TEST_VALID_TOKEN: root-token
 
           OWANALYTICS_TEST_DB_DSN: >-
             host=127.0.0.1
@@ -299,19 +306,6 @@ jobs:
             dbname=owanalytics
             user=owanalytics
             password=owanalytics
-
-          OWANALYTICS_TEST_FAKE_OWSEC_HOST: 0.0.0.0
-          OWANALYTICS_TEST_FAKE_OWSEC_PORT: 18080
-
-          OWANALYTICS_TEST_FAKE_OWSEC_PUBLIC_URL: >-
-            http://host.docker.internal:18080
-
-          OWANALYTICS_TEST_SERVICE_EVENT_COMMAND: >-
-            docker exec -i redpanda
-            rpk topic produce service_events
-            --brokers redpanda:9092
-
-          OWANALYTICS_TEST_SERVICE_EVENT_WAIT: 3
 
         run: |
           test -f tests/integration/test_memory_summary_api.py
@@ -330,8 +324,11 @@ jobs:
           echo "================ Docker containers ================"
           docker ps -a
 
-          echo "================ Redpanda logs ===================="
-          docker logs redpanda || true
+          echo "================ Fake OWSEC logs =================="
+          cat /tmp/fake-owsec.log || true
+
+          echo "================ Fake OWPROV logs ================="
+          cat /tmp/fake-owprov.log || true
 
           echo "================ OWAnalytics logs ================="
           docker logs owanalytics-ci || true
@@ -344,8 +341,12 @@ jobs:
         if: always()
         run: |
           docker rm -f owanalytics-ci || true
-          docker rm -f redpanda || true
-          docker network rm owanalytics-ci || true
+          if test -f /tmp/fake-owsec.pid; then
+            kill "$(cat /tmp/fake-owsec.pid)" || true
+          fi
+          if test -f /tmp/fake-owprov.pid; then
+            kill "$(cat /tmp/fake-owprov.pid)" || true
+          fi
 
 
   # ---------------------------------------------------------------------------
