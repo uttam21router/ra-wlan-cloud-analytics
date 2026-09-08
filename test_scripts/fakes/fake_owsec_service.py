@@ -20,6 +20,10 @@ def valid_tokens():
     }
 
 
+def log(message):
+    print(message, flush=True)
+
+
 def user_info_payload():
     return {
         "id": "memory-summary-test-user",
@@ -104,9 +108,11 @@ class Handler(BaseHTTPRequestHandler):
             token = query.get("token", [""])[0]
 
             if token not in valid_tokens():
+                log("validateToken status=401")
                 self.send_json(401, {"error": "unauthorized"})
                 return
 
+            log("validateToken status=200")
             self.send_json(
                 200,
                 {
@@ -117,9 +123,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/v1/systemEndpoints":
+            log("systemEndpoints status=200")
             self.send_json(200, {"endpoints": []})
             return
 
+        log(f"{parsed.path} status=404")
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):

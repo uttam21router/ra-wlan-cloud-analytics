@@ -151,14 +151,21 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Start Fake OWSEC
         run: |
-          python3 test_scripts/fakes/fake_owsec_service.py \
+          nohup python3 test_scripts/fakes/fake_owsec_service.py \
             --host 127.0.0.1 \
             --port 18080 \
+            </dev/null \
             > /tmp/fake-owsec.log 2>&1 &
 
           echo $! > /tmp/fake-owsec.pid
 
           for i in $(seq 1 20); do
+            if ! kill -0 "$(cat /tmp/fake-owsec.pid)" 2>/dev/null; then
+              echo "Fake OWSEC exited unexpectedly"
+              cat /tmp/fake-owsec.log || true
+              exit 1
+            fi
+
             if curl -fsS \
               "http://127.0.0.1:18080/api/v1/validateToken?token=root-token" \
               >/dev/null; then
@@ -179,14 +186,21 @@ jobs:
         env:
           OWANALYTICS_TEST_VENUE_ID: venue-test-01
         run: |
-          python3 test_scripts/fakes/fake_owprov_service.py \
+          nohup python3 test_scripts/fakes/fake_owprov_service.py \
             --host 127.0.0.1 \
             --port 18081 \
+            </dev/null \
             > /tmp/fake-owprov.log 2>&1 &
 
           echo $! > /tmp/fake-owprov.pid
 
           for i in $(seq 1 20); do
+            if ! kill -0 "$(cat /tmp/fake-owprov.pid)" 2>/dev/null; then
+              echo "Fake OWPROV exited unexpectedly"
+              cat /tmp/fake-owprov.log || true
+              exit 1
+            fi
+
             if curl -fsS \
               -H "Authorization: Bearer root-token" \
               "http://127.0.0.1:18081/api/v1/inventory/60cf84f22290" \
@@ -250,7 +264,7 @@ jobs:
             --net=host \
             -v /tmp/owanalytics-certs:/owanalytics-data/certs:ro \
             -e TEMPLATE_CONFIG=true \
-            -e RUN_CHOWN=true \
+            -e RUN_CHOWN=false \
             -e SECURITY_RESTAPI_DISABLE=false \
             -e KAFKA_ENABLE=false \
             -e CI_FAKE_EXTERNAL_SERVICES=1 \
@@ -297,7 +311,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Run Python integration tests with fake OWSEC and OWPROV
         env:
-          OWANALYTICS_TEST_URL: http://127.0.0.1:16009
+          OWANALYTICS_TEST_URL: https://127.0.0.1:16009
           OWANALYTICS_TEST_VALID_TOKEN: root-token
 
           OWANALYTICS_TEST_DB_DSN: >-

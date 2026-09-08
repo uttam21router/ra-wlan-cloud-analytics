@@ -7,7 +7,7 @@ endpoints through CI_FAKE_EXTERNAL_SERVICES.
 
 Required environment:
   OWANALYTICS_TEST_URL
-      Base URL of the Analytics service, for example http://127.0.0.1:16009.
+      Base URL of the Analytics service, for example https://127.0.0.1:16009.
 
   OWANALYTICS_TEST_DB_DSN
       PostgreSQL DSN for tests that seed board/timepoint data.
@@ -45,6 +45,9 @@ import pytest
 pytestmark = pytest.mark.integration
 
 DEFAULT_ROUTER_ID = "60cf84f22290"
+UNKNOWN_ROUTER_ID = "60cf84f22291"
+UNAUTHORIZED_ROUTER_ID = "60cf84f22292"
+INVALID_RESPONSE_ROUTER_ID = "60cf84f22293"
 DEFAULT_BOARD_ID = "board-test-01"
 DEFAULT_VENUE_ID = "venue-test-01"
 OLD_BOARD_ID = "old-board"
@@ -477,6 +480,13 @@ def test_memory_summary_missing_auth_rejects_before_query_validation() -> None:
     assert result.body["error"] == "unauthorized"
 
 
+def test_memory_summary_invalid_token_rejects_via_fake_owsec() -> None:
+    result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="1"), "bad-token")
+
+    assert result.status == 401
+    assert result.body["error"] == "unauthorized"
+
+
 def test_memory_summary_invalid_query_rejects_after_auth() -> None:
     token = valid_token()
     result = http_json(memory_summary_path(timestamp_till=recent_timestamp(), lookback_hours="1", extra_query="unexpected=true"), token)
@@ -841,6 +851,48 @@ def test_memory_summary_without_analytics_board_mapping_returns_not_found() -> N
 
     assert result.status == 404
     assert result.body["error"] == "not_found"
+
+
+def test_memory_summary_unknown_router_from_owprov_returns_not_found(seeded_board) -> None:
+    result = http_json(
+        memory_summary_path(
+            timestamp_till=recent_timestamp(),
+            lookback_hours="1",
+            router_id=UNKNOWN_ROUTER_ID,
+        ),
+        valid_token(),
+    )
+
+    assert result.status == 404
+    assert result.body["error"] == "not_found"
+
+
+def test_memory_summary_forbidden_router_from_owprov_returns_not_found(seeded_board) -> None:
+    result = http_json(
+        memory_summary_path(
+            timestamp_till=recent_timestamp(),
+            lookback_hours="1",
+            router_id=UNAUTHORIZED_ROUTER_ID,
+        ),
+        valid_token(),
+    )
+
+    assert result.status == 404
+    assert result.body["error"] == "not_found"
+
+
+def test_memory_summary_invalid_owprov_response_returns_bad_gateway() -> None:
+    result = http_json(
+        memory_summary_path(
+            timestamp_till=recent_timestamp(),
+            lookback_hours="1",
+            router_id=INVALID_RESPONSE_ROUTER_ID,
+        ),
+        valid_token(),
+    )
+
+    assert result.status == 502
+    assert result.body["error"] == "owprov_invalid_response"
 
 
 def test_memory_summary_timepoint_storage_failure_returns_memory_specific_error() -> None:

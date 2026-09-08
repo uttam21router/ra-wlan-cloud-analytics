@@ -67,7 +67,46 @@ namespace OpenWifi {
 		if (venueId.empty())
 			return true;
 
-		return GetRecords(0, 100, boards, "venueId='" + ORM::Escape(venueId) + "'");
+		try {
+			Poco::Data::Session Session = Pool_.get();
+			Poco::Data::Statement Select(Session);
+			std::vector<BoardDBRecordType> Records;
+			auto VenueId = venueId;
+
+			Select << ConvertParams("select id,name,description,notes,created,modified,"
+									"venueid,venuename,venuedescription,retention,"
+									"interval,monitorsubvenues from boards where venueid=? "
+									"limit 100"),
+				Poco::Data::Keywords::use(VenueId),
+				Poco::Data::Keywords::into(Records);
+			Select.execute();
+
+			for (const auto &Record : Records) {
+				AnalyticsObjects::BoardInfo Board;
+				Board.info.id = Record.get<0>();
+				Board.info.name = Record.get<1>();
+				Board.info.description = Record.get<2>();
+				Board.info.notes =
+					RESTAPI_utils::to_object_array<SecurityObjects::NoteInfo>(Record.get<3>());
+				Board.info.created = Record.get<4>();
+				Board.info.modified = Record.get<5>();
+				if (!Record.get<6>().empty()) {
+					AnalyticsObjects::VenueInfo Venue;
+					Venue.id = Record.get<6>();
+					Venue.name = Record.get<7>();
+					Venue.description = Record.get<8>();
+					Venue.retention = Record.get<9>();
+					Venue.interval = Record.get<10>();
+					Venue.monitorSubVenues = Record.get<11>();
+					Board.venueList.emplace_back(Venue);
+				}
+				boards.emplace_back(Board);
+			}
+			return true;
+		} catch (const Poco::Exception &E) {
+			Logger_.log(E);
+		}
+		return false;
 	}
 } // namespace OpenWifi
 

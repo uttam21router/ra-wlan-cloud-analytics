@@ -9,6 +9,9 @@ from urllib.parse import unquote, urlparse
 
 
 DEFAULT_VENUE_ID = "venue-test-01"
+DEFAULT_ROUTER_ID = "60cf84f22290"
+UNAUTHORIZED_ROUTER_ID = "60cf84f22292"
+INVALID_RESPONSE_ROUTER_ID = "60cf84f22293"
 
 
 def json_bytes(payload):
@@ -21,6 +24,10 @@ def valid_tokens():
         "memory-summary-valid-token",
         os.environ.get("OWANALYTICS_TEST_VALID_TOKEN", "root-token"),
     }
+
+
+def log(message):
+    print(message, flush=True)
 
 
 def inventory_payload(serial_number):
@@ -59,6 +66,10 @@ def inventory_payload(serial_number):
         "connected": 0,
         "platform": "AP",
     }
+
+
+def known_router_id():
+    return os.environ.get("OWANALYTICS_TEST_ROUTER_ID", DEFAULT_ROUTER_ID)
 
 
 def venue_payload(venue):
@@ -113,14 +124,32 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith(prefix):
             authorization = self.headers.get("Authorization", "")
             if authorization.removeprefix("Bearer ") not in valid_tokens():
-                self.send_json(404, {"error": "not_found"})
+                log("inventory auth=invalid status=401")
+                self.send_json(401, {"error": "unauthorized"})
                 return
 
             serial_number = unquote(parsed.path[len(prefix):])
             if not serial_number:
+                log("inventory serial=missing status=404")
                 self.send_json(404, {"error": "not_found"})
                 return
 
+            if serial_number == UNAUTHORIZED_ROUTER_ID:
+                log(f"inventory serial={serial_number} auth=valid status=403")
+                self.send_json(403, {"error": "forbidden"})
+                return
+
+            if serial_number == INVALID_RESPONSE_ROUTER_ID:
+                log(f"inventory serial={serial_number} auth=valid status=200-invalid")
+                self.send_json(200, {"imported": "invalid-integer"})
+                return
+
+            if serial_number != known_router_id():
+                log(f"inventory serial={serial_number} auth=valid status=404")
+                self.send_json(404, {"error": "not_found"})
+                return
+
+            log(f"inventory serial={serial_number} auth=valid status=200")
             self.send_json(200, inventory_payload(serial_number))
             return
 
@@ -128,12 +157,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith(venue_prefix):
             venue = unquote(parsed.path[len(venue_prefix):])
             if not venue:
+                log("venue id=missing status=404")
                 self.send_json(404, {"error": "not_found"})
                 return
 
+            log(f"venue id={venue} status=200")
             self.send_json(200, venue_payload(venue))
             return
 
+        log(f"{parsed.path} status=404")
         self.send_json(404, {"error": "not_found"})
 
 
