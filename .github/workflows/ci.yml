@@ -10,252 +10,421 @@ on:
       - 'release/*'
     tags:
       - 'v*'
+
   pull_request:
     branches:
       - main
+      - 'release/*'
 
 defaults:
   run:
     shell: bash
 
 jobs:
+
+  # ---------------------------------------------------------------------------
+  # Build and publish OWAnalytics Docker image
+  # ---------------------------------------------------------------------------
   docker:
     runs-on: ubuntu-latest
+
     env:
       DOCKER_REGISTRY_URL: tip-tip-wlan-cloud-ucentral.jfrog.io
       DOCKER_REGISTRY_USERNAME: ucentral
+
     steps:
-    - name: Checkout actions repo
-      uses: actions/checkout@v3
-      with:
-        repository: Telecominfraproject/.github
-        path: github
+      - name: Checkout actions repo
+        uses: actions/checkout@v3
+        with:
+          repository: Telecominfraproject/.github
+          path: github
 
-    - name: Build and push Docker image
-      uses: ./github/composite-actions/docker-image-build
-      with:
-        image_name: owanalytics
-        registry: tip-tip-wlan-cloud-ucentral.jfrog.io
-        registry_user: ucentral
-        registry_password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+      - name: Build and push Docker image
+        uses: ./github/composite-actions/docker-image-build
+        with:
+          image_name: owanalytics
+          registry: tip-tip-wlan-cloud-ucentral.jfrog.io
+          registry_user: ucentral
+          registry_password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
 
-    - name: Notify on failure via Slack
-      if: failure() && github.ref == 'refs/heads/main'
-      uses: rtCamp/action-slack-notify@v2
-      env:
-        SLACK_USERNAME: GitHub Actions failure notifier
-        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        SLACK_COLOR: "${{ job.status }}"
-        SLACK_ICON: https://raw.githubusercontent.com/quintessence/slack-icons/master/images/github-logo-slack-icon.png
-        SLACK_TITLE: Docker build failed for OWAnalytics service
+      - name: Notify on failure via Slack
+        if: failure() && github.ref == 'refs/heads/main'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_USERNAME: GitHub Actions failure notifier
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: "${{ job.status }}"
+          SLACK_ICON: https://raw.githubusercontent.com/quintessence/slack-icons/master/images/github-logo-slack-icon.png
+          SLACK_TITLE: Docker build failed for OWAnalytics service
 
+
+  # ---------------------------------------------------------------------------
+  # MCP Memory Summary Integration Tests
+  # ---------------------------------------------------------------------------
   memory-summary-tests:
     runs-on: ubuntu-latest
+
     env:
       OWANALYTICS_TEST_IMAGE: owanalytics-ci:test
       OWANALYTICS_TEST_BUILD_IMAGE: owanalytics-build-ci:test
+
     services:
       postgres:
         image: postgres:13
+
         env:
           POSTGRES_DB: owanalytics
           POSTGRES_USER: owanalytics
           POSTGRES_PASSWORD: owanalytics
+
         ports:
           - 5432:5432
+
         options: >-
           --health-cmd "pg_isready -U owanalytics -d owanalytics"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Prepare CI Dockerfile with apt retries
-      run: |
-        perl -0pe 's#RUN apt-get update && apt-get install --no-install-recommends -y \\\n((?:    .*\n)+?)\n#($pkgs=$1)=~s/\n\s*$/; \\\n/s; "RUN install_ok=0; for attempt in 1 2 3 4 5; do \\\n    if apt-get update && apt-get install --fix-missing --no-install-recommends -y \\\n" . $pkgs . "    then install_ok=1; break; fi; \\\n    apt-get clean; rm -rf /var/lib/apt/lists/*; apt-get update; apt-get -y --fix-broken install || true; sleep 5; \\\ndone; test \"\$install_ok\" = 1\n"#ge' \
-          Dockerfile > /tmp/Dockerfile.owanalytics-ci
 
-    - name: Build Analytics service and C++ test targets
-      run: |
-        docker build --pull --no-cache \
-          -f /tmp/Dockerfile.owanalytics-ci \
-          --build-arg DEBIAN_VERSION=12-slim \
-          --target owanalytics-build \
-          --tag "$OWANALYTICS_TEST_BUILD_IMAGE" .
+      # -----------------------------------------------------------------------
+      # Build C++ build/test image
+      #
+      # IMPORTANT:
+      # Build the real Dockerfile directly.
+      # Do not dynamically rewrite apt commands from CI.
+      # -----------------------------------------------------------------------
+      - name: Build Analytics C++ test image
+        run: |
+          docker build \
+            --pull \
+            --build-arg DEBIAN_VERSION=12-slim \
+            --target owanalytics-build \
+            --tag "$OWANALYTICS_TEST_BUILD_IMAGE" \
+            .
 
-#    - name: Run C++ unit tests
-#      run: |
-#        docker run --rm "$OWANALYTICS_TEST_BUILD_IMAGE" \
-#          ctest --test-dir /owanalytics/cmake-build -N
-#        docker run --rm "$OWANALYTICS_TEST_BUILD_IMAGE" \
-#          ctest --test-dir /owanalytics/cmake-build -N | grep -q test_mcp_memory_summary
-#        docker run --rm "$OWANALYTICS_TEST_BUILD_IMAGE" \
-#          ctest --test-dir /owanalytics/cmake-build --output-on-failure
 
-    - name: Build Analytics runtime image for integration tests
-      run: |
-        docker build --pull --no-cache \
-          -f /tmp/Dockerfile.owanalytics-ci \
-          --build-arg DEBIAN_VERSION=12-slim \
-          --tag "$OWANALYTICS_TEST_IMAGE" .
+      # Enable this once all C++ test targets in the image are expected to run.
+      #
+      # - name: Run C++ unit tests
+      #   run: |
+      #     docker run --rm "$OWANALYTICS_TEST_BUILD_IMAGE" \
+      #       ctest \
+      #       --test-dir /owanalytics/cmake-build \
+      #       --output-on-failure
 
-    - name: Install Python integration test dependencies
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
 
-    - name: Install pytest dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install pytest psycopg2-binary
+      # -----------------------------------------------------------------------
+      # Build runtime image used by the API integration tests
+      # -----------------------------------------------------------------------
+      - name: Build Analytics runtime image
+        run: |
+          docker build \
+            --pull \
+            --build-arg DEBIAN_VERSION=12-slim \
+            --tag "$OWANALYTICS_TEST_IMAGE" \
+            .
 
-    - name: Start Kafka-compatible broker for fake OWSEC registration
-      run: |
-        docker network create owanalytics-ci
-        docker run -d --name redpanda --network owanalytics-ci \
-          -p 9092:9092 \
-          docker.redpanda.com/redpanda/redpanda:v23.3.18 \
-          redpanda start \
-            --overprovisioned \
-            --smp 1 \
-            --memory 1G \
-            --reserve-memory 0M \
-            --node-id 0 \
-            --check=false \
-            --kafka-addr PLAINTEXT://0.0.0.0:9092 \
-            --advertise-kafka-addr PLAINTEXT://redpanda:9092
-        for i in $(seq 1 30); do
-          if docker exec redpanda rpk cluster health --brokers redpanda:9092 | grep -q Healthy; then
-            docker exec redpanda rpk topic create service_events --brokers redpanda:9092 || true
-            exit 0
-          fi
-          sleep 2
-        done
-        docker logs redpanda
-        exit 1
 
-    - name: Generate test certificates
-      run: |
-        mkdir -p /tmp/owanalytics-certs
-        openssl genrsa -aes256 -passout pass:mypassword \
-          -out /tmp/owanalytics-certs/restapi-key.pem 2048
-        openssl req -new -x509 \
-          -key /tmp/owanalytics-certs/restapi-key.pem \
-          -passin pass:mypassword \
-          -out /tmp/owanalytics-certs/restapi-cert.pem \
-          -days 1 \
-          -subj "/CN=localhost"
-        cp /tmp/owanalytics-certs/restapi-cert.pem /tmp/owanalytics-certs/restapi-ca.pem
+      # -----------------------------------------------------------------------
+      # Python dependencies
+      # -----------------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Start Analytics service
-      run: |
-        docker run -d --name owanalytics-ci \
-          --network owanalytics-ci \
-          --add-host=host.docker.internal:host-gateway \
-          -p 16009:16009 \
-          -p 16109:16109 \
-          -v /tmp/owanalytics-certs:/owanalytics-data/certs:ro \
-          -e TEMPLATE_CONFIG=true \
-          -e RUN_CHOWN=true \
-          -e SECURITY_RESTAPI_DISABLE=true \
-          -e KAFKA_ENABLE=true \
-          -e KAFKA_BROKERLIST=redpanda:9092 \
-          -e STORAGE_TYPE=postgresql \
-          -e STORAGE_TYPE_POSTGRESQL_HOST=host.docker.internal \
-          -e STORAGE_TYPE_POSTGRESQL_PORT=5432 \
-          -e STORAGE_TYPE_POSTGRESQL_DATABASE=owanalytics \
-          -e STORAGE_TYPE_POSTGRESQL_USERNAME=owanalytics \
-          -e STORAGE_TYPE_POSTGRESQL_PASSWORD=owanalytics \
-          "$OWANALYTICS_TEST_IMAGE"
-        for i in $(seq 1 60); do
-          if curl -fsS http://127.0.0.1:16109/ >/dev/null; then
-            exit 0
-          fi
-          if ! docker ps --format '{{.Names}}' | grep -q '^owanalytics-ci$'; then
-            docker logs owanalytics-ci
-            exit 1
-          fi
-          sleep 2
-        done
-        docker logs owanalytics-ci
-        exit 1
+      - name: Install pytest dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pytest \
+            psycopg2-binary
 
-    - name: Run Python integration tests with mocked OWSEC
-      env:
-        OWANALYTICS_TEST_URL: http://127.0.0.1:16009
-        OWANALYTICS_TEST_DB_DSN: host=127.0.0.1 port=5432 dbname=owanalytics user=owanalytics password=owanalytics
-        OWANALYTICS_TEST_FAKE_OWSEC_HOST: 0.0.0.0
-        OWANALYTICS_TEST_FAKE_OWSEC_PORT: 18080
-        OWANALYTICS_TEST_FAKE_OWSEC_PUBLIC_URL: http://host.docker.internal:18080
-        OWANALYTICS_TEST_SERVICE_EVENT_COMMAND: docker exec -i redpanda rpk topic produce service_events --brokers redpanda:9092
-        OWANALYTICS_TEST_SERVICE_EVENT_WAIT: 3
-      run: |
-        test -f tests/integration/test_memory_summary_api.py
-        pytest tests/integration -v
 
-    - name: Print integration diagnostics
-      if: failure()
-      run: |
-        docker ps -a
-        docker logs redpanda || true
-        docker logs owanalytics-ci || true
+      # -----------------------------------------------------------------------
+      # Docker network used by OWAnalytics + Redpanda
+      # -----------------------------------------------------------------------
+      - name: Create integration test network
+        run: |
+          docker network create owanalytics-ci
 
-    - name: Cleanup integration services
-      if: always()
-      run: |
-        docker rm -f owanalytics-ci redpanda || true
-        docker network rm owanalytics-ci || true
 
+      # -----------------------------------------------------------------------
+      # Kafka-compatible broker
+      # -----------------------------------------------------------------------
+      - name: Start Kafka-compatible broker
+        run: |
+          docker run -d \
+            --name redpanda \
+            --network owanalytics-ci \
+            -p 9092:9092 \
+            docker.redpanda.com/redpanda/redpanda:v23.3.18 \
+            redpanda start \
+              --overprovisioned \
+              --smp 1 \
+              --memory 1G \
+              --reserve-memory 0M \
+              --node-id 0 \
+              --check=false \
+              --kafka-addr PLAINTEXT://0.0.0.0:9092 \
+              --advertise-kafka-addr PLAINTEXT://redpanda:9092
+
+          for i in $(seq 1 30); do
+            if docker exec redpanda \
+              rpk cluster health \
+              --brokers redpanda:9092 | grep -q Healthy; then
+
+              docker exec redpanda \
+                rpk topic create service_events \
+                --brokers redpanda:9092 || true
+
+              echo "Redpanda is ready"
+              exit 0
+            fi
+
+            echo "Waiting for Redpanda..."
+            sleep 2
+          done
+
+          echo "Redpanda failed to become healthy"
+          docker logs redpanda
+          exit 1
+
+
+      # -----------------------------------------------------------------------
+      # Certificates required by OWAnalytics
+      # -----------------------------------------------------------------------
+      - name: Generate test certificates
+        run: |
+          rm -rf /tmp/owanalytics-certs
+          mkdir -p /tmp/owanalytics-certs
+
+          openssl genrsa \
+            -aes256 \
+            -passout pass:mypassword \
+            -out /tmp/owanalytics-certs/restapi-key.pem \
+            2048
+
+          openssl req \
+            -new \
+            -x509 \
+            -key /tmp/owanalytics-certs/restapi-key.pem \
+            -passin pass:mypassword \
+            -out /tmp/owanalytics-certs/restapi-cert.pem \
+            -days 1 \
+            -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+
+          cp \
+            /tmp/owanalytics-certs/restapi-cert.pem \
+            /tmp/owanalytics-certs/restapi-ca.pem
+
+          chmod 644 /tmp/owanalytics-certs/*.pem
+
+          ls -l /tmp/owanalytics-certs
+
+
+      # -----------------------------------------------------------------------
+      # Start OWAnalytics
+      #
+      # PostgreSQL is a GitHub Actions service container and exposes port 5432
+      # on the runner. host.docker.internal is mapped to the runner using
+      # host-gateway so OWAnalytics can connect to it.
+      # -----------------------------------------------------------------------
+      - name: Start Analytics service
+        run: |
+          docker run -d \
+            --name owanalytics-ci \
+            --network owanalytics-ci \
+            --add-host=host.docker.internal:host-gateway \
+            -p 16009:16009 \
+            -p 16109:16109 \
+            -v /tmp/owanalytics-certs:/owanalytics-data/certs:ro \
+            -e TEMPLATE_CONFIG=true \
+            -e RUN_CHOWN=true \
+            -e SECURITY_RESTAPI_DISABLE=true \
+            -e KAFKA_ENABLE=true \
+            -e KAFKA_BROKERLIST=redpanda:9092 \
+            -e STORAGE_TYPE=postgresql \
+            -e STORAGE_TYPE_POSTGRESQL_HOST=host.docker.internal \
+            -e STORAGE_TYPE_POSTGRESQL_PORT=5432 \
+            -e STORAGE_TYPE_POSTGRESQL_DATABASE=owanalytics \
+            -e STORAGE_TYPE_POSTGRESQL_USERNAME=owanalytics \
+            -e STORAGE_TYPE_POSTGRESQL_PASSWORD=owanalytics \
+            "$OWANALYTICS_TEST_IMAGE"
+
+          for i in $(seq 1 60); do
+
+            if curl -fsS \
+              http://127.0.0.1:16109/ \
+              >/dev/null; then
+
+              echo "OWAnalytics is ready"
+              exit 0
+            fi
+
+            if ! docker inspect \
+              -f '{{.State.Running}}' \
+              owanalytics-ci 2>/dev/null | grep -q true; then
+
+              echo "OWAnalytics container exited unexpectedly"
+              docker logs owanalytics-ci || true
+              exit 1
+            fi
+
+            echo "Waiting for OWAnalytics..."
+            sleep 2
+          done
+
+          echo "OWAnalytics failed to become ready"
+          docker logs owanalytics-ci || true
+          exit 1
+
+
+      # -----------------------------------------------------------------------
+      # Memory Summary integration tests
+      # -----------------------------------------------------------------------
+      - name: Run Python integration tests with mocked OWSEC
+        env:
+          OWANALYTICS_TEST_URL: http://127.0.0.1:16009
+
+          OWANALYTICS_TEST_DB_DSN: >-
+            host=127.0.0.1
+            port=5432
+            dbname=owanalytics
+            user=owanalytics
+            password=owanalytics
+
+          OWANALYTICS_TEST_FAKE_OWSEC_HOST: 0.0.0.0
+          OWANALYTICS_TEST_FAKE_OWSEC_PORT: 18080
+
+          OWANALYTICS_TEST_FAKE_OWSEC_PUBLIC_URL: >-
+            http://host.docker.internal:18080
+
+          OWANALYTICS_TEST_SERVICE_EVENT_COMMAND: >-
+            docker exec -i redpanda
+            rpk topic produce service_events
+            --brokers redpanda:9092
+
+          OWANALYTICS_TEST_SERVICE_EVENT_WAIT: 3
+
+        run: |
+          test -f tests/integration/test_memory_summary_api.py
+
+          pytest \
+            tests/integration \
+            -v
+
+
+      # -----------------------------------------------------------------------
+      # Diagnostics
+      # -----------------------------------------------------------------------
+      - name: Print integration diagnostics
+        if: failure()
+        run: |
+          echo "================ Docker containers ================"
+          docker ps -a
+
+          echo "================ Redpanda logs ===================="
+          docker logs redpanda || true
+
+          echo "================ OWAnalytics logs ================="
+          docker logs owanalytics-ci || true
+
+
+      # -----------------------------------------------------------------------
+      # Cleanup
+      # -----------------------------------------------------------------------
+      - name: Cleanup integration services
+        if: always()
+        run: |
+          docker rm -f owanalytics-ci || true
+          docker rm -f redpanda || true
+          docker network rm owanalytics-ci || true
+
+
+  # ---------------------------------------------------------------------------
+  # Trigger OpenWiFi docker-compose testing
+  #
+  # Run only after BOTH:
+  #   1. image build succeeds
+  #   2. Analytics integration tests succeed
+  # ---------------------------------------------------------------------------
   trigger-testing:
     if: startsWith(github.ref, 'refs/pull/')
     runs-on: ubuntu-latest
-    needs: docker
-    steps:
-    - name: Get base branch name and set as output
-      id: get_base_branch
-      run: |
-        echo "branch=$(echo ${GITHUB_BASE_REF##*/})" >> $GITHUB_OUTPUT
-        echo "owgw_branch=$(echo ${GITHUB_BASE_REF##*/} | sed 's/main/master/g')" >> $GITHUB_OUTPUT
 
-    - name: Checkout actions repo
-      uses: actions/checkout@v3
-      with:
-        repository: Telecominfraproject/.github
-        path: github
-
-    - name: Trigger testing of OpenWifi Docker Compose deployment and wait for result
-      uses: ./github/composite-actions/trigger-workflow-and-wait
-      env:
-        BASE_BRANCH: ${{ steps.get_base_branch.outputs.branch }}
-        OWGW_BASE_BRANCH: ${{ steps.get_base_branch.outputs.owgw_branch }}
-      with:
-        owner: Telecominfraproject
-        repo: wlan-testing
-        workflow: ow_docker-compose.yml
-        token: ${{ secrets.WLAN_TESTING_PAT }}
-        ref: master
-        inputs: '{"deployment_version": "${{ env.BASE_BRANCH }}", "owgw_version": "${{ env.OWGW_BASE_BRANCH }}", "owsec_version": "${{ env.BASE_BRANCH }}", "owfms_version": "${{ env.BASE_BRANCH }}", "owprov_version": "${{ env.BASE_BRANCH }}", "owanalytics_version": "${{ github.sha }}", "owsub_version": "${{ env.BASE_BRANCH }}", "microservice": "all"}'
-
-  trigger-deploy-to-dev:
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     needs:
       - docker
-    steps:
-    - name: Checkout actions repo
-      uses: actions/checkout@v3
-      with:
-        repository: Telecominfraproject/.github
-        path: github
+      - memory-summary-tests
 
-    - name: Trigger deployment of the latest version to dev instance and wait for result
-      uses: ./github/composite-actions/trigger-workflow-and-wait
-      with:
-        owner: Telecominfraproject
-        repo: wlan-testing
-        workflow: ucentralgw-dev-deployment.yaml
-        token: ${{ secrets.WLAN_TESTING_PAT }}
-        ref: master
-        inputs: '{"force_latest": "true"}'
+    steps:
+      - name: Get base branch name and set as output
+        id: get_base_branch
+        run: |
+          echo "branch=${GITHUB_BASE_REF##*/}" >> "$GITHUB_OUTPUT"
+          echo "owgw_branch=$(echo "${GITHUB_BASE_REF##*/}" | sed 's/main/master/g')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout actions repo
+        uses: actions/checkout@v3
+        with:
+          repository: Telecominfraproject/.github
+          path: github
+
+      - name: Trigger testing of OpenWifi Docker Compose deployment and wait for result
+        uses: ./github/composite-actions/trigger-workflow-and-wait
+        env:
+          BASE_BRANCH: ${{ steps.get_base_branch.outputs.branch }}
+          OWGW_BASE_BRANCH: ${{ steps.get_base_branch.outputs.owgw_branch }}
+        with:
+          owner: Telecominfraproject
+          repo: wlan-testing
+          workflow: ow_docker-compose.yml
+          token: ${{ secrets.WLAN_TESTING_PAT }}
+          ref: master
+          inputs: >-
+            {
+              "deployment_version": "${{ env.BASE_BRANCH }}",
+              "owgw_version": "${{ env.OWGW_BASE_BRANCH }}",
+              "owsec_version": "${{ env.BASE_BRANCH }}",
+              "owfms_version": "${{ env.BASE_BRANCH }}",
+              "owprov_version": "${{ env.BASE_BRANCH }}",
+              "owanalytics_version": "${{ github.sha }}",
+              "owsub_version": "${{ env.BASE_BRANCH }}",
+              "microservice": "all"
+            }
+
+
+  # ---------------------------------------------------------------------------
+  # Deploy to development after main is successfully tested
+  # ---------------------------------------------------------------------------
+  trigger-deploy-to-dev:
+    runs-on: ubuntu-latest
+
+    if: github.ref == 'refs/heads/main'
+
+    needs:
+      - docker
+      - memory-summary-tests
+
+    steps:
+      - name: Checkout actions repo
+        uses: actions/checkout@v3
+        with:
+          repository: Telecominfraproject/.github
+          path: github
+
+      - name: Trigger deployment of the latest version to dev instance and wait for result
+        uses: ./github/composite-actions/trigger-workflow-and-wait
+        with:
+          owner: Telecominfraproject
+          repo: wlan-testing
+          workflow: ucentralgw-dev-deployment.yaml
+          token: ${{ secrets.WLAN_TESTING_PAT }}
+          ref: master
+          inputs: '{"force_latest": "true"}'
