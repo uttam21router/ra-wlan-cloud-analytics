@@ -52,8 +52,8 @@ jobs:
   memory-summary-tests:
     runs-on: ubuntu-latest
     env:
-      OWANALYTICS_TEST_IMAGE: owanalytics-ci:${{ github.sha }}
-      OWANALYTICS_TEST_BUILD_IMAGE: owanalytics-build-ci:${{ github.sha }}
+      OWANALYTICS_TEST_IMAGE: owanalytics-ci:test
+      OWANALYTICS_TEST_BUILD_IMAGE: owanalytics-build-ci:test
     services:
       postgres:
         image: postgres:13
