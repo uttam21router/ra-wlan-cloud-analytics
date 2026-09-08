@@ -474,12 +474,10 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 	void DeviceTimePoint::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "id", id);
 		field_to_json(Obj, "boardId", boardId);
-		field_to_json(Obj, "venueId", venueId);
 		field_to_json(Obj, "timestamp", timestamp);
 		field_to_json(Obj, "ap_data", ap_data);
 		field_to_json(Obj, "ssid_data", ssid_data);
 		field_to_json(Obj, "radio_data", radio_data);
-		field_to_json(Obj, "resource_data", resource_data);
 		field_to_json(Obj, "device_info", device_info);
 		field_to_json(Obj, "serialNumber", serialNumber);
 	}
