@@ -34,6 +34,14 @@ namespace OpenWifi::AnalyticsObjects {
 			else
 				Obj.set(Field, Poco::Dynamic::Var());
 		}
+
+		void nullable_double_to_json(Poco::JSON::Object &Obj, const char *Field,
+									 const std::optional<double> &Value) {
+			if (Value)
+				field_to_json(Obj, Field, *Value);
+			else
+				Obj.set(Field, Poco::Dynamic::Var());
+		}
 	} // namespace
 
 	void MCPMemorySummaryData::to_json(Poco::JSON::Object &Obj) const {
@@ -49,6 +57,43 @@ namespace OpenWifi::AnalyticsObjects {
 	}
 
 	void MCPGatewayMemorySummary::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "data", data);
+		field_to_json(Obj, "meta", meta);
+	}
+
+	void MCPGatewayWifiTemperatureSummaryData::to_json(Poco::JSON::Object &Obj) const {
+		nullable_double_to_json(Obj, "min_wifi_temp_2.4G", min_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "max_wifi_temp_2.4G", max_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "avg_wifi_temp_2.4G", avg_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "latest_wifi_temp_2.4G", latest_wifi_temp_2_4G);
+		nullable_double_to_json(Obj, "min_wifi_temp_5G", min_wifi_temp_5G);
+		nullable_double_to_json(Obj, "max_wifi_temp_5G", max_wifi_temp_5G);
+		nullable_double_to_json(Obj, "avg_wifi_temp_5G", avg_wifi_temp_5G);
+		nullable_double_to_json(Obj, "latest_wifi_temp_5G", latest_wifi_temp_5G);
+	}
+
+	void MCPGatewayWifiTemperatureSummary::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "data", data);
+		field_to_json(Obj, "meta", meta);
+	}
+
+	void MCPClientUsageItem::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "mac", mac);
+		field_to_json(Obj, "rx_bytes", rx_bytes);
+		field_to_json(Obj, "tx_bytes", tx_bytes);
+		field_to_json(Obj, "total_bytes", total_bytes);
+		field_to_json(Obj, "data_consume_rx", data_consume_rx);
+		field_to_json(Obj, "data_consume_tx", data_consume_tx);
+		field_to_json(Obj, "total_data_usage", total_data_usage);
+	}
+
+	void MCPClientUsageSummaryData::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "items", items);
+		field_to_json(Obj, "totalClients", totalClients);
+		field_to_json(Obj, "truncated", truncated);
+	}
+
+	void MCPDeviceBandwidthConsumptionSummary::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "data", data);
 		field_to_json(Obj, "meta", meta);
 	}

@@ -6,7 +6,9 @@
 #include "RESTAPI/RESTAPI_board_handler.h"
 #include "RESTAPI/RESTAPI_board_list_handler.h"
 #include "RESTAPI/RESTAPI_board_timepoint_handler.h"
+#include "RESTAPI/RESTAPI_device_bandwidth_consumption_handler.h"
 #include "RESTAPI/RESTAPI_device_memory_summary_handler.h"
+#include "RESTAPI/RESTAPI_device_radio_temperature_summary_handler.h"
 #include "RESTAPI/RESTAPI_wificlienthistory_handler.h"
 
 #include "framework/RESTAPI_SystemCommand.h"
@@ -22,6 +24,8 @@ namespace OpenWifi {
 							  RESTAPI_board_timepoint_handler, RESTAPI_board_handler,
 							  RESTAPI_board_list_handler, RESTAPI_wificlienthistory_handler,
 							  RESTAPI_device_memory_summary_handler,
+							  RESTAPI_device_bandwidth_consumption_handler,
+							  RESTAPI_device_radio_temperature_summary_handler,
 							  RESTAPI_webSocketServer>(Path, Bindings, L, S, TransactionId);
 	}
 
@@ -31,7 +35,9 @@ namespace OpenWifi {
 		return RESTAPI_Router_I<RESTAPI_system_command, RESTAPI_system_configuration, RESTAPI_board_devices_handler,
 								RESTAPI_board_timepoint_handler, RESTAPI_board_handler,
 								RESTAPI_board_list_handler, RESTAPI_wificlienthistory_handler,
-								RESTAPI_device_memory_summary_handler>(
+								RESTAPI_device_memory_summary_handler,
+								RESTAPI_device_bandwidth_consumption_handler,
+								RESTAPI_device_radio_temperature_summary_handler>(
 			Path, Bindings, L, S, TransactionId);
 	}
 
