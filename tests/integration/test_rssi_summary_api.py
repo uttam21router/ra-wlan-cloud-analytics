@@ -26,6 +26,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -284,7 +285,6 @@ def test_rssi_summary_aggregates_persisted_rssi_samples(seeded_board) -> None:
     assert result.body["truncated"] is False
     assert len(result.body["items"]) == 2
 
-    # Items sorted by mac ASC
     client_1 = result.body["items"][0]
     client_2 = result.body["items"][1]
     assert client_1["mac"] == "28:39:26:a1:7c:a5"
@@ -316,10 +316,53 @@ def test_rssi_summary_no_samples_returns_empty_success(seeded_board) -> None:
     assert result.body["truncated"] is False
 
 
+def test_rssi_summary_ignores_invalid_and_out_of_range_rssi(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(seconds=30)
+    t_a = end_dt - timedelta(minutes=40)
+
+    ssid_payload = [
+        {
+            "bssid": "aa:bb:cc:dd:ee:ff",
+            "ssid": "main",
+            "band": 5,
+            "associations": [
+                {"station": "11:22:33:44:55:66", "rssi": -50},
+                {"station": "11:22:33:44:55:66", "rssi": 0},
+                {"station": "11:22:33:44:55:66", "rssi": 20},
+                {"station": "11:22:33:44:55:66", "rssi": -128},
+                {"station": "aa:bb:cc:dd:ee:02", "rssi": 0},
+            ],
+        }
+    ]
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload)
+
+    result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
+
+    assert result.status == 200
+    assert result.body["totalClients"] == 1
+    assert len(result.body["items"]) == 1
+    item = result.body["items"][0]
+    assert item["mac"] == "11:22:33:44:55:66"
+    assert item["rssi_total_samples"] == 1
+    assert item["rssi_excellent_pct"] == 100.0
+
+
 def test_rssi_summary_missing_auth_rejects() -> None:
     result = http_json(rssi_summary_path("2026-07-27T12:00:00Z"))
     assert result.status == 401
     assert result.body["error"] == "unauthorized"
+
+
+def test_rssi_summary_invalid_query_parameter_rejects() -> None:
+    result = http_json(
+        rssi_summary_path(format_utc(utc_now() - timedelta(seconds=30)), extra_query="unexpected=true"),
+        valid_token(),
+    )
+    assert result.status == 400
+    assert result.body["error"] == "invalid_query_parameter"
 
 
 def test_rssi_summary_unknown_router_returns_not_found(seeded_board) -> None:
