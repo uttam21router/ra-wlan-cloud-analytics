@@ -42,6 +42,7 @@ INVALID_RESPONSE_ROUTER_ID = "60cf84f22293"
 DEFAULT_BOARD_ID = "board-test-01"
 DEFAULT_VENUE_ID = "venue-test-01"
 OTHER_BOARD_ID = "rssi-other-board"
+OTHER_VENUE_ID = "rssi-other-venue"
 DEFAULT_VALID_TOKEN = "root-token"
 
 
@@ -373,14 +374,14 @@ def test_rssi_summary_gateway_filtering(seeded_board) -> None:
 
     with db_connection() as connection:
         with connection.cursor() as cursor:
-            # Seed secondary board for cross-board test
-            seed_board(cursor, board=OTHER_BOARD_ID, venue=venue_id())
-            # 1. Requested router on requested board
-            insert_timepoint(cursor, format_utc(t_a), ssid_payload_requested, board=board_id(), serial=router_id())
-            # 2. Other router on requested board
-            insert_timepoint(cursor, format_utc(t_a), ssid_payload_other, board=board_id(), serial="rssi-other-router")
-            # 3. Other router on another board
-            insert_timepoint(cursor, format_utc(t_a), ssid_payload_other, board=board=OTHER_BOARD_ID, serial="rssi-other-router")
+            # Seed secondary board with its own venue to preserve RouterIdResolver 1-to-1 venue mapping
+            seed_board(cursor, board=OTHER_BOARD_ID, venue=OTHER_VENUE_ID)
+            # 1. Requested router on requested board & requested venue
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload_requested, board=board_id(), venue=venue_id(), serial=router_id())
+            # 2. Other router on requested board & requested venue
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload_other, board=board_id(), venue=venue_id(), serial="rssi-other-router")
+            # 3. Other router on secondary board & secondary venue
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload_other, board=OTHER_BOARD_ID, venue=OTHER_VENUE_ID, serial="rssi-other-router")
 
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 

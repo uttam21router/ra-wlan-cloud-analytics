@@ -329,8 +329,8 @@ namespace OpenWifi::RESTAPI_utils {
 				try {
 					auto InnerObj = i.extract<Poco::JSON::Object::Ptr>();
 					T NewItem;
-					if (NewItem.from_json(InnerObj))
-						Value.push_back(NewItem);
+					NewItem.from_json(InnerObj);
+					Value.push_back(NewItem);
 				} catch (...) {
 				}
 			}
@@ -498,8 +498,8 @@ namespace OpenWifi::RESTAPI_utils {
 				try {
 					auto InnerObject = i.template extract<Poco::JSON::Object::Ptr>();
 					T Obj;
-					if (Obj.from_json(InnerObject))
-						Result.push_back(Obj);
+					Obj.from_json(InnerObject);
+					Result.push_back(Obj);
 				} catch (...) {
 				}
 			}
