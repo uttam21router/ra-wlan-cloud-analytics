@@ -800,7 +800,9 @@ namespace OpenWifi {
 				uint64_t good = 0;
 				uint64_t fair = 0;
 				uint64_t poor = 0;
-				std::vector<uint64_t> sampleTimestamps;
+				bool hasSample = false;
+				uint64_t observedStart = 0;
+				uint64_t observedEnd = 0;
 			};
 
 			AnalyticsObjects::MCPClientRssiQualitySummary Summary;
@@ -835,7 +837,15 @@ namespace OpenWifi {
 						} else {
 							++Stats.poor;
 						}
-						Stats.sampleTimestamps.push_back(Record.timestamp);
+
+						if (!Stats.hasSample) {
+							Stats.observedStart = Record.timestamp;
+							Stats.observedEnd = Record.timestamp;
+							Stats.hasSample = true;
+						} else {
+							Stats.observedStart = std::min(Stats.observedStart, Record.timestamp);
+							Stats.observedEnd = std::max(Stats.observedEnd, Record.timestamp);
+						}
 					}
 				}
 			}
@@ -881,18 +891,16 @@ namespace OpenWifi {
 
 			for (const auto &Item : Items) {
 				auto it = ClientStatsByMac.find(Item.mac);
-				if (it == ClientStatsByMac.end())
+				if (it == ClientStatsByMac.end() || !it->second.hasSample)
 					continue;
 
-				for (auto Ts : it->second.sampleTimestamps) {
-					if (!HasObservedWindow) {
-						ObservedStart = Ts;
-						ObservedEnd = Ts;
-						HasObservedWindow = true;
-					} else {
-						ObservedStart = std::min(ObservedStart, Ts);
-						ObservedEnd = std::max(ObservedEnd, Ts);
-					}
+				if (!HasObservedWindow) {
+					ObservedStart = it->second.observedStart;
+					ObservedEnd = it->second.observedEnd;
+					HasObservedWindow = true;
+				} else {
+					ObservedStart = std::min(ObservedStart, it->second.observedStart);
+					ObservedEnd = std::max(ObservedEnd, it->second.observedEnd);
 				}
 			}
 

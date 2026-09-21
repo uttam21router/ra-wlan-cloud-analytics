@@ -334,11 +334,34 @@ namespace {
 
 	// TC-RSSI-026: Malformed association entry
 	void TC_RSSI_026_MalformedAssociationEntry() {
-		auto Summary = MCP::CalculateDeviceRssiQualitySummary(
-			{Point(1200, {Assoc("invalid-mac-str", -50), Assoc("aa:bb:cc:dd:ee:01", -60)})},
-			TestWindow());
-		assert(Summary.totalClients == 1);
-		assert(Summary.items[0].mac == "aa:bb:cc:dd:ee:01");
+		// Test persisted JSON string with valid association, corrupt non-object entry, and second valid association
+		std::string ssidJson = R"([
+			{
+				"bssid": "aa:bb:cc:dd:ee:ff",
+				"ssid": "main",
+				"associations": [
+					{"station": "11:22:33:44:55:66", "rssi": -50},
+					"corrupt-entry",
+					{"station": "aa:bb:cc:dd:ee:ff", "rssi": -60}
+				]
+			}
+		])";
+
+		AnalyticsObjects::DeviceTimePoint Point;
+		Point.id = "test-malformed-assoc";
+		Point.timestamp = 1200;
+		Point.ssid_data = RESTAPI_utils::to_object_array<AnalyticsObjects::SSIDTimePoint>(ssidJson);
+
+		assert(Point.ssid_data.size() == 1);
+		// Verify both valid associations (before and after "corrupt-entry") are processed!
+		assert(Point.ssid_data[0].associations.size() == 2);
+		assert(Point.ssid_data[0].associations[0].station == "11:22:33:44:55:66");
+		assert(Point.ssid_data[0].associations[1].station == "aa:bb:cc:dd:ee:ff");
+
+		auto Summary = MCP::CalculateDeviceRssiQualitySummary({Point}, TestWindow());
+		assert(Summary.totalClients == 2);
+		assert(Summary.items[0].mac == "11:22:33:44:55:66");
+		assert(Summary.items[1].mac == "aa:bb:cc:dd:ee:ff");
 	}
 
 	// TC-RSSI-027: RSSI truncation, MAC ordering, and post-limit observedWindow isolation

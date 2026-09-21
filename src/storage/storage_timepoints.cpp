@@ -36,10 +36,13 @@ namespace OpenWifi {
 				Poco::JSON::Parser Parser;
 				auto Array = Parser.parse(Json).extract<Poco::JSON::Array::Ptr>();
 				for (auto const &Item : *Array) {
-					auto Object = Item.extract<Poco::JSON::Object::Ptr>();
-					AnalyticsObjects::RadioTimePoint Radio;
-					if (Radio.from_json(Object))
-						Radios.emplace_back(std::move(Radio));
+					try {
+						auto Object = Item.extract<Poco::JSON::Object::Ptr>();
+						AnalyticsObjects::RadioTimePoint Radio;
+						if (Radio.from_json(Object))
+							Radios.emplace_back(std::move(Radio));
+					} catch (...) {
+					}
 				}
 				return true;
 			} catch (const Poco::Exception &E) {
@@ -49,6 +52,35 @@ namespace OpenWifi {
 				Logger.warning("Skipping malformed radio_data in timepoint id=" + RecordId);
 			}
 			Radios.clear();
+			return false;
+		}
+
+		bool ParseSsidData(const std::string &Json, const std::string &RecordId,
+						   Poco::Logger &Logger,
+						   std::vector<AnalyticsObjects::SSIDTimePoint> &SSIDs) {
+			SSIDs.clear();
+			if (Json.empty())
+				return true;
+			try {
+				Poco::JSON::Parser Parser;
+				auto Array = Parser.parse(Json).extract<Poco::JSON::Array::Ptr>();
+				for (auto const &Item : *Array) {
+					try {
+						auto Object = Item.extract<Poco::JSON::Object::Ptr>();
+						AnalyticsObjects::SSIDTimePoint SSID;
+						if (SSID.from_json(Object))
+							SSIDs.emplace_back(std::move(SSID));
+					} catch (...) {
+					}
+				}
+				return true;
+			} catch (const Poco::Exception &E) {
+				Logger.warning("Skipping malformed ssid_data in timepoint id=" + RecordId +
+							   ": " + E.displayText());
+			} catch (...) {
+				Logger.warning("Skipping malformed ssid_data in timepoint id=" + RecordId);
+			}
+			SSIDs.clear();
 			return false;
 		}
 	} // namespace
@@ -285,6 +317,43 @@ namespace OpenWifi {
 			Point.id = Row.get<0>();
 			Point.timestamp = Row.get<1>();
 			if (!ParseRadioData(Row.get<2>(), Point.id, Logger_, Point.radio_data))
+				continue;
+			Recs.emplace_back(std::move(Point));
+		}
+		return true;
+	}
+
+	bool TimePointDB::SelectSsidRecordsBySerial(
+		const std::string &boardId, const std::string &serialNumber, uint64_t startTime,
+		uint64_t endTime, std::vector<AnalyticsObjects::DeviceTimePoint> &Recs,
+		uint64_t maxRecords, bool *limitExceeded) {
+		if (limitExceeded)
+			*limitExceeded = false;
+		Recs.clear();
+		if (endTime <= startTime)
+			return true;
+
+		auto WhereClause = fmt::format(
+			" boardId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
+			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
+		const auto RangeClause =
+			(maxRecords > 0) ? ComputeRange(0, LimitWithOverflowSentinel(maxRecords)) : "";
+		const auto Sql = fmt::format(
+			"select id, timestamp, ssid_data from {} where {} order by timestamp, id ASC{}",
+			TableName_, WhereClause, RangeClause);
+		std::vector<TimePointSsidDBRecordType> RawRecords;
+		if (!Join(Sql, RawRecords))
+			return false;
+		if (maxRecords > 0 && RawRecords.size() > static_cast<size_t>(maxRecords)) {
+			if (limitExceeded)
+				*limitExceeded = true;
+		}
+		Recs.reserve(RawRecords.size());
+		for (const auto &Row : RawRecords) {
+			AnalyticsObjects::DeviceTimePoint Point;
+			Point.id = Row.get<0>();
+			Point.timestamp = Row.get<1>();
+			if (!ParseSsidData(Row.get<2>(), Point.id, Logger_, Point.ssid_data))
 				continue;
 			Recs.emplace_back(std::move(Point));
 		}

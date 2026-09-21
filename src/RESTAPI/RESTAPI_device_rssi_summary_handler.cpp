@@ -62,7 +62,7 @@ namespace OpenWifi {
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> Records;
 		bool LimitExceeded = false;
-		if (!StorageService()->TimePointsDB().SelectRecordsBySerial(
+		if (!StorageService()->TimePointsDB().SelectSsidRecordsBySerial(
 				Resolved.resolvedBoardId, routerId, Window.startTime, Window.endTime, Records,
 				MaxSamples, &LimitExceeded)) {
 			poco_error(Logger(), "Failed to query timepoints for RSSI summary");

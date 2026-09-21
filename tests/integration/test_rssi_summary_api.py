@@ -350,6 +350,80 @@ def test_rssi_summary_ignores_invalid_and_out_of_range_rssi(seeded_board) -> Non
     assert item["rssi_excellent_pct"] == 100.0
 
 
+def test_rssi_summary_gateway_filtering(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(seconds=30)
+    t_a = end_dt - timedelta(minutes=30)
+
+    ssid_payload_requested = [
+        {
+            "bssid": "aa:bb:cc:dd:ee:ff",
+            "ssid": "main",
+            "band": 5,
+            "associations": [{"station": "11:22:33:44:55:66", "rssi": -50}],
+        }
+    ]
+    ssid_payload_other = [
+        {
+            "bssid": "aa:bb:cc:dd:ee:ff",
+            "ssid": "main",
+            "band": 5,
+            "associations": [{"station": "11:22:33:44:55:66", "rssi": -90}],
+        }
+    ]
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            # Seed secondary board for cross-board test
+            seed_board(cursor, board=OTHER_BOARD_ID, venue=venue_id())
+            # 1. Requested router on requested board
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload_requested, board=board_id(), serial=router_id())
+            # 2. Other router on requested board
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload_other, board=board_id(), serial="rssi-other-router")
+            # 3. Other router on another board
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload_other, board=board=OTHER_BOARD_ID, serial="rssi-other-router")
+
+    result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
+
+    assert result.status == 200
+    assert result.body["totalClients"] == 1
+    assert len(result.body["items"]) == 1
+    client = result.body["items"][0]
+    assert client["mac"] == "11:22:33:44:55:66"
+    assert client["rssi_total_samples"] == 1
+    assert client["rssi_excellent_pct"] == 100.0
+
+
+def test_rssi_summary_malformed_association_entry(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(seconds=30)
+    t_a = end_dt - timedelta(minutes=30)
+
+    # JSON string containing valid association, corrupt non-object element ("corrupt-entry"), and second valid association
+    raw_ssid_json = json.dumps([
+        {
+            "bssid": "aa:bb:cc:dd:ee:ff",
+            "ssid": "main",
+            "band": 5,
+            "associations": [
+                {"station": "11:22:33:44:55:66", "rssi": -50},
+                "corrupt-entry",
+                {"station": "aa:bb:cc:dd:ee:ff", "rssi": -60},
+            ],
+        }
+    ])
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            insert_timepoint(cursor, format_utc(t_a), raw_ssid_json)
+
+    result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
+
+    assert result.status == 200
+    assert result.body["totalClients"] == 2
+    assert len(result.body["items"]) == 2
+    assert result.body["items"][0]["mac"] == "11:22:33:44:55:66"
+    assert result.body["items"][1]["mac"] == "aa:bb:cc:dd:ee:ff"
+
+
 def test_rssi_summary_missing_auth_rejects() -> None:
     result = http_json(rssi_summary_path("2026-07-27T12:00:00Z"))
     assert result.status == 401
