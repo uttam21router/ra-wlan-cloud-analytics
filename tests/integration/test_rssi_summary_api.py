@@ -398,7 +398,7 @@ def test_rssi_summary_malformed_association_entry(seeded_board) -> None:
     end_dt = utc_now() - timedelta(seconds=30)
     t_a = end_dt - timedelta(minutes=30)
 
-    # JSON string containing valid association, corrupt non-object element ("corrupt-entry"), and second valid association
+    # JSON string containing valid association, corrupt non-object element ("corrupt-entry"), malformed object entry, and second valid association
     raw_ssid_json = json.dumps([
         {
             "bssid": "aa:bb:cc:dd:ee:ff",
@@ -407,6 +407,7 @@ def test_rssi_summary_malformed_association_entry(seeded_board) -> None:
             "associations": [
                 {"station": "11:22:33:44:55:66", "rssi": -50},
                 "corrupt-entry",
+                {"station": "22:33:44:55:66:77", "rssi": -45, "tx_duration": "invalid"},
                 {"station": "aa:bb:cc:dd:ee:ff", "rssi": -60},
             ],
         }

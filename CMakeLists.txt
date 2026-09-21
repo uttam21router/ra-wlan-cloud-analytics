@@ -209,7 +209,10 @@ if(BUILD_TESTING)
 
     add_executable(test_mcp_rssi_quality
             tests/test_mcp_rssi_quality.cpp
+            src/RESTObjects/RESTAPI_AnalyticsObjects.cpp
             src/RESTObjects/RESTAPI_MCPAnalyticsObjects.cpp
+            src/RESTObjects/RESTAPI_ProvObjects.cpp
+            src/RESTObjects/RESTAPI_SecurityObjects.cpp
             src/framework/utils.cpp)
     target_include_directories(test_mcp_rssi_quality PRIVATE src)
     target_link_libraries(test_mcp_rssi_quality PUBLIC

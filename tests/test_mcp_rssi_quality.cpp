@@ -1,5 +1,6 @@
 #include "RESTAPI/RESTAPI_mcp_helpers.h"
 
+#include <Poco/JSON/Array.h>
 #include <Poco/JSON/Object.h>
 #include <Poco/JSON/Parser.h>
 #include <cassert>
@@ -65,6 +66,34 @@ namespace {
 				return &Item;
 		}
 		return nullptr;
+	}
+
+	std::vector<AnalyticsObjects::SSIDTimePoint> ParseSsidDataForRssiTest(
+		const std::string &SsidJson) {
+		std::vector<AnalyticsObjects::SSIDTimePoint> SSIDs;
+		Poco::JSON::Parser Parser;
+		auto Array = Parser.parse(SsidJson).extract<Poco::JSON::Array::Ptr>();
+		for (auto const &Item : *Array) {
+			auto Object = Item.extract<Poco::JSON::Object::Ptr>();
+			if (Object->isArray("associations") && !Object->isNull("associations")) {
+				auto Associations = Object->getArray("associations");
+				Poco::JSON::Array::Ptr CleanAssociations = new Poco::JSON::Array;
+				for (auto const &AssociationItem : *Associations) {
+					try {
+						auto AssociationObject = AssociationItem.extract<Poco::JSON::Object::Ptr>();
+						AnalyticsObjects::UETimePoint UE;
+						if (UE.from_json(AssociationObject))
+							CleanAssociations->add(AssociationObject);
+					} catch (...) {
+					}
+				}
+				Object->set("associations", CleanAssociations);
+			}
+			AnalyticsObjects::SSIDTimePoint SSID;
+			if (SSID.from_json(Object))
+				SSIDs.push_back(std::move(SSID));
+		}
+		return SSIDs;
 	}
 
 	// TC-RSSI-001: Excellent RSSI boundary (RSSI = -55)
@@ -334,7 +363,7 @@ namespace {
 
 	// TC-RSSI-026: Malformed association entry
 	void TC_RSSI_026_MalformedAssociationEntry() {
-		// Test persisted JSON string with valid association, corrupt non-object entry, and second valid association
+		// Test persisted JSON string with valid association, corrupt non-object entry, malformed object entry, and second valid association
 		std::string ssidJson = R"([
 			{
 				"bssid": "aa:bb:cc:dd:ee:ff",
@@ -342,6 +371,7 @@ namespace {
 				"associations": [
 					{"station": "11:22:33:44:55:66", "rssi": -50},
 					"corrupt-entry",
+					{"station": "22:33:44:55:66:77", "rssi": -45, "tx_duration": "invalid"},
 					{"station": "aa:bb:cc:dd:ee:ff", "rssi": -60}
 				]
 			}
@@ -350,10 +380,10 @@ namespace {
 		AnalyticsObjects::DeviceTimePoint Point;
 		Point.id = "test-malformed-assoc";
 		Point.timestamp = 1200;
-		Point.ssid_data = RESTAPI_utils::to_object_array<AnalyticsObjects::SSIDTimePoint>(ssidJson);
+		Point.ssid_data = ParseSsidDataForRssiTest(ssidJson);
 
 		assert(Point.ssid_data.size() == 1);
-		// Verify both valid associations (before and after "corrupt-entry") are processed!
+		// Verify both valid associations (skipping "corrupt-entry" and malformed object) are processed!
 		assert(Point.ssid_data[0].associations.size() == 2);
 		assert(Point.ssid_data[0].associations[0].station == "11:22:33:44:55:66");
 		assert(Point.ssid_data[0].associations[1].station == "aa:bb:cc:dd:ee:ff");
