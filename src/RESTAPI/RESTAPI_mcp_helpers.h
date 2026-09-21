@@ -791,6 +791,120 @@ namespace OpenWifi {
 			return Summary;
 		}
 
+		inline AnalyticsObjects::MCPClientRssiQualitySummary
+		CalculateDeviceRssiQualitySummary(
+			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
+			const Window &Requested) {
+			struct RssiClientStats {
+				uint64_t excellent = 0;
+				uint64_t good = 0;
+				uint64_t fair = 0;
+				uint64_t poor = 0;
+				std::vector<uint64_t> sampleTimestamps;
+			};
+
+			AnalyticsObjects::MCPClientRssiQualitySummary Summary;
+			Summary.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+
+			std::map<std::string, RssiClientStats> ClientStatsByMac;
+
+			for (const auto &Record : Records) {
+				if (!TimestampInHalfOpenWindow(Record.timestamp, Requested)) {
+					continue;
+				}
+
+				for (const auto &SSID : Record.ssid_data) {
+					for (const auto &Assoc : SSID.associations) {
+						auto Mac = NormalizeClientMac(Assoc.station);
+						if (!Mac)
+							continue;
+
+						auto Rssi = Assoc.rssi;
+						if (Rssi > -1 || Rssi < -127) {
+							continue;
+						}
+
+						auto &Stats = ClientStatsByMac[*Mac];
+						if (Rssi >= -55) {
+							++Stats.excellent;
+						} else if (Rssi >= -67) {
+							++Stats.good;
+						} else if (Rssi >= -75) {
+							++Stats.fair;
+						} else {
+							++Stats.poor;
+						}
+						Stats.sampleTimestamps.push_back(Record.timestamp);
+					}
+				}
+			}
+
+			auto RoundTwoDecimals = [](double Value) {
+				return std::round(Value * 100.0) / 100.0;
+			};
+
+			std::vector<AnalyticsObjects::MCPClientRssiItem> Items;
+			for (const auto &[Mac, Stats] : ClientStatsByMac) {
+				auto TotalSamples = Stats.excellent + Stats.good + Stats.fair + Stats.poor;
+				if (TotalSamples == 0)
+					continue;
+
+				AnalyticsObjects::MCPClientRssiItem Item;
+				Item.mac = Mac;
+				Item.rssi_excellent_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.excellent) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_good_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.good) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_fair_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.fair) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_poor_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.poor) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_total_samples = TotalSamples;
+				Items.push_back(std::move(Item));
+			}
+
+			std::sort(Items.begin(), Items.end(),
+					  [](const AnalyticsObjects::MCPClientRssiItem &A,
+						 const AnalyticsObjects::MCPClientRssiItem &B) {
+						  return A.mac < B.mac;
+					  });
+
+			Summary.totalClients = Items.size();
+			Summary.truncated = Items.size() > 500;
+			if (Items.size() > 500)
+				Items.resize(500);
+
+			bool HasObservedWindow = false;
+			uint64_t ObservedStart = 0;
+			uint64_t ObservedEnd = 0;
+
+			for (const auto &Item : Items) {
+				auto it = ClientStatsByMac.find(Item.mac);
+				if (it == ClientStatsByMac.end())
+					continue;
+
+				for (auto Ts : it->second.sampleTimestamps) {
+					if (!HasObservedWindow) {
+						ObservedStart = Ts;
+						ObservedEnd = Ts;
+						HasObservedWindow = true;
+					} else {
+						ObservedStart = std::min(ObservedStart, Ts);
+						ObservedEnd = std::max(ObservedEnd, Ts);
+					}
+				}
+			}
+
+			if (HasObservedWindow) {
+				Summary.observedWindow.startTime = FormatTimestamp(ObservedStart);
+				Summary.observedWindow.endTime = FormatTimestamp(ObservedEnd);
+			}
+
+			Summary.items = std::move(Items);
+			return Summary;
+		}
+
 		void SendError(RESTAPIHandler &Handler, const Error &E);
 		bool AuthenticateBearerToken(RESTAPIHandler &Handler, Error &E);
 

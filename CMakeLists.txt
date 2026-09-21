@@ -130,6 +130,7 @@ add_executable(owanalytics
         src/RESTAPI/RESTAPI_device_memory_summary_handler.cpp src/RESTAPI/RESTAPI_device_memory_summary_handler.h
         src/RESTAPI/RESTAPI_device_radio_temperature_summary_handler.cpp src/RESTAPI/RESTAPI_device_radio_temperature_summary_handler.h
         src/RESTAPI/RESTAPI_device_bandwidth_consumption_handler.cpp src/RESTAPI/RESTAPI_device_bandwidth_consumption_handler.h
+        src/RESTAPI/RESTAPI_device_rssi_summary_handler.cpp src/RESTAPI/RESTAPI_device_rssi_summary_handler.h
         src/RouterIdResolver.cpp src/RouterIdResolver.h
         src/RESTObjects/RESTAPI_SubObjects.cpp src/RESTObjects/RESTAPI_SubObjects.h
         src/RESTAPI/RESTAPI_routers.cpp
@@ -205,4 +206,16 @@ if(BUILD_TESTING)
             fmt::fmt
             resolv)
     add_test(NAME test_mcp_bandwidth_consumption COMMAND test_mcp_bandwidth_consumption)
+
+    add_executable(test_mcp_rssi_quality
+            tests/test_mcp_rssi_quality.cpp
+            src/RESTObjects/RESTAPI_MCPAnalyticsObjects.cpp
+            src/framework/utils.cpp)
+    target_include_directories(test_mcp_rssi_quality PRIVATE src)
+    target_link_libraries(test_mcp_rssi_quality PUBLIC
+            ${Poco_LIBRARIES}
+            ${ZLIB_LIBRARIES}
+            fmt::fmt
+            resolv)
+    add_test(NAME test_mcp_rssi_quality COMMAND test_mcp_rssi_quality)
 endif()

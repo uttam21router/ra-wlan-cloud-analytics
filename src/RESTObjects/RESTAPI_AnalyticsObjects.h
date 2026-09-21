@@ -447,6 +447,27 @@ namespace OpenWifi {
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
 
+		struct MCPClientRssiItem {
+			std::string mac;
+			double rssi_excellent_pct = 0.0;
+			double rssi_good_pct = 0.0;
+			double rssi_fair_pct = 0.0;
+			double rssi_poor_pct = 0.0;
+			uint64_t rssi_total_samples = 0;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPClientRssiQualitySummary {
+			MCPRequestedWindow requestedWindow;
+			MCPObservedWindow observedWindow;
+			std::vector<MCPClientRssiItem> items;
+			uint64_t totalClients = 0;
+			bool truncated = false;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
 	} // namespace AnalyticsObjects
 
 } // namespace OpenWifi
