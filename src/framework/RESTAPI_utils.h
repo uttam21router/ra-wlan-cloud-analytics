@@ -326,10 +326,14 @@ namespace OpenWifi::RESTAPI_utils {
 		if (Obj->isArray(Field) && !Obj->isNull(Field)) {
 			Poco::JSON::Array::Ptr Arr = Obj->getArray(Field);
 			for (auto &i : *Arr) {
-				auto InnerObj = i.extract<Poco::JSON::Object::Ptr>();
-				T NewItem;
-				NewItem.from_json(InnerObj);
-				Value.push_back(NewItem);
+				try {
+					auto InnerObj = i.extract<Poco::JSON::Object::Ptr>();
+					T NewItem;
+					if (NewItem.from_json(InnerObj)) {
+						Value.push_back(std::move(NewItem));
+					}
+				} catch (...) {
+				}
 			}
 		}
 	}
@@ -492,10 +496,14 @@ namespace OpenWifi::RESTAPI_utils {
 			Poco::JSON::Parser P;
 			auto Object = P.parse(ObjectString).template extract<Poco::JSON::Array::Ptr>();
 			for (auto const &i : *Object) {
-				auto InnerObject = i.template extract<Poco::JSON::Object::Ptr>();
-				T Obj;
-				Obj.from_json(InnerObject);
-				Result.push_back(Obj);
+				try {
+					auto InnerObject = i.template extract<Poco::JSON::Object::Ptr>();
+					T Obj;
+					if (Obj.from_json(InnerObject)) {
+						Result.push_back(std::move(Obj));
+					}
+				} catch (...) {
+				}
 			}
 		} catch (...) {
 		}
@@ -515,10 +523,14 @@ namespace OpenWifi::RESTAPI_utils {
 				auto InnerArray = P2.parse(i).template extract<Poco::JSON::Array::Ptr>();
 				std::vector<T> InnerVector;
 				for (auto const &j : *InnerArray) {
-					auto Object = j.template extract<Poco::JSON::Object::Ptr>();
-					T Obj;
-					Obj.from_json(Object);
-					InnerVector.push_back(Obj);
+					try {
+						auto Object = j.template extract<Poco::JSON::Object::Ptr>();
+						T Obj;
+						if (Obj.from_json(Object)) {
+							InnerVector.push_back(std::move(Obj));
+						}
+					} catch (...) {
+					}
 				}
 				Result.push_back(InnerVector);
 			}
