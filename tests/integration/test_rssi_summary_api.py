@@ -273,21 +273,21 @@ def test_rssi_summary_aggregates_persisted_rssi_samples(seeded_board) -> None:
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 
     assert result.status == 200
-    assert set(result.body) == {"requestedWindow", "observedWindow", "items", "totalClients", "truncated"}
-    assert result.body["requestedWindow"] == {
+    assert set(result.body) == {"meta", "data"}
+    assert result.body["meta"]["requestWindow"] == {
         "startTime": format_utc(start_dt),
         "endTime": format_utc(end_dt),
     }
-    assert result.body["observedWindow"] == {
+    assert result.body["meta"]["observedWindow"] == {
         "startTime": format_utc(t_a),
         "endTime": format_utc(t_b),
     }
-    assert result.body["totalClients"] == 2
-    assert result.body["truncated"] is False
-    assert len(result.body["items"]) == 2
+    assert result.body["data"]["totalClients"] == 2
+    assert result.body["data"]["truncated"] is False
+    assert len(result.body["data"]["items"]) == 2
 
-    client_1 = result.body["items"][0]
-    client_2 = result.body["items"][1]
+    client_1 = result.body["data"]["items"][0]
+    client_2 = result.body["data"]["items"][1]
     assert client_1["mac"] == "28:39:26:a1:7c:a5"
     assert client_2["mac"] == "e2:51:95:ed:0f:28"
 
@@ -307,14 +307,14 @@ def test_rssi_summary_no_samples_returns_empty_success(seeded_board) -> None:
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 
     assert result.status == 200
-    assert result.body["requestedWindow"] == {
+    assert result.body["meta"]["requestWindow"] == {
         "startTime": format_utc(start_dt),
         "endTime": format_utc(end_dt),
     }
-    assert result.body["observedWindow"] == {"startTime": None, "endTime": None}
-    assert result.body["items"] == []
-    assert result.body["totalClients"] == 0
-    assert result.body["truncated"] is False
+    assert result.body["meta"]["observedWindow"] == {"startTime": None, "endTime": None}
+    assert result.body["data"]["items"] == []
+    assert result.body["data"]["totalClients"] == 0
+    assert result.body["data"]["truncated"] is False
 
 
 def test_rssi_summary_ignores_invalid_and_out_of_range_rssi(seeded_board) -> None:
@@ -343,9 +343,9 @@ def test_rssi_summary_ignores_invalid_and_out_of_range_rssi(seeded_board) -> Non
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 
     assert result.status == 200
-    assert result.body["totalClients"] == 1
-    assert len(result.body["items"]) == 1
-    item = result.body["items"][0]
+    assert result.body["data"]["totalClients"] == 1
+    assert len(result.body["data"]["items"]) == 1
+    item = result.body["data"]["items"][0]
     assert item["mac"] == "11:22:33:44:55:66"
     assert item["rssi_total_samples"] == 1
     assert item["rssi_excellent_pct"] == 100.0
@@ -386,9 +386,9 @@ def test_rssi_summary_gateway_filtering(seeded_board) -> None:
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 
     assert result.status == 200
-    assert result.body["totalClients"] == 1
-    assert len(result.body["items"]) == 1
-    client = result.body["items"][0]
+    assert result.body["data"]["totalClients"] == 1
+    assert len(result.body["data"]["items"]) == 1
+    client = result.body["data"]["items"][0]
     assert client["mac"] == "11:22:33:44:55:66"
     assert client["rssi_total_samples"] == 1
     assert client["rssi_excellent_pct"] == 100.0
@@ -420,10 +420,10 @@ def test_rssi_summary_malformed_association_entry(seeded_board) -> None:
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 
     assert result.status == 200
-    assert result.body["totalClients"] == 2
-    assert len(result.body["items"]) == 2
-    assert result.body["items"][0]["mac"] == "11:22:33:44:55:66"
-    assert result.body["items"][1]["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert result.body["data"]["totalClients"] == 2
+    assert len(result.body["data"]["items"]) == 2
+    assert result.body["data"]["items"][0]["mac"] == "11:22:33:44:55:66"
+    assert result.body["data"]["items"][1]["mac"] == "aa:bb:cc:dd:ee:ff"
 
 
 def test_rssi_summary_missing_auth_rejects() -> None:

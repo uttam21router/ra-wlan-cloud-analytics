@@ -405,13 +405,21 @@ namespace {
 		Poco::JSON::Parser parser;
 		auto ParsedObj = parser.parse(ss).extract<Poco::JSON::Object::Ptr>();
 
-		assert(ParsedObj->has("requestedWindow"));
-		assert(ParsedObj->has("observedWindow"));
-		assert(ParsedObj->has("items"));
-		assert(ParsedObj->has("totalClients"));
-		assert(ParsedObj->has("truncated"));
+		assert(ParsedObj->has("meta"));
+		assert(ParsedObj->has("data"));
+		assert(!ParsedObj->has("requestedWindow"));
+		assert(!ParsedObj->has("observedWindow"));
 
-		auto Items = ParsedObj->getArray("items");
+		auto MetaObj = ParsedObj->getObject("meta");
+		assert(MetaObj->has("requestWindow"));
+		assert(MetaObj->has("observedWindow"));
+
+		auto DataObj = ParsedObj->getObject("data");
+		assert(DataObj->has("items"));
+		assert(DataObj->has("totalClients"));
+		assert(DataObj->has("truncated"));
+
+		auto Items = DataObj->getArray("items");
 		assert(Items->size() == 1);
 		auto Item = Items->getObject(0);
 		assert(Item->has("mac"));
