@@ -558,24 +558,63 @@ namespace OpenWifi {
 		}
 
 		inline std::optional<std::string> NormalizeClientMac(const std::string &RawMac) {
-			std::string Clean;
-			for (auto c : RawMac) {
-				if (std::isxdigit(static_cast<unsigned char>(c))) {
-					Clean += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-				} else if (c != ':' && c != '-' && c != '.') {
-					return std::nullopt;
+			auto IsHex = [](char c) {
+				return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+			};
+			auto LowerHex = [](char c) {
+				return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			};
+			auto AppendHex = [&](std::string &Clean, char c) {
+				Clean += LowerHex(c);
+			};
+			auto Format = [](const std::string &Clean) {
+				std::string Formatted;
+				for (size_t i = 0; i < Clean.size(); i += 2) {
+					if (!Formatted.empty())
+						Formatted += ":";
+					Formatted += Clean.substr(i, 2);
 				}
-			}
-			if (Clean.size() != 12)
-				return std::nullopt;
+				return Formatted;
+			};
 
-			std::string Formatted;
-			for (size_t i = 0; i < Clean.size(); i += 2) {
-				if (!Formatted.empty())
-					Formatted += ":";
-				Formatted += Clean.substr(i, 2);
+			std::string Clean;
+			if (RawMac.size() == 17 && (RawMac[2] == ':' || RawMac[2] == '-')) {
+				const char Separator = RawMac[2];
+				for (size_t i = 0; i < RawMac.size(); ++i) {
+					if ((i + 1) % 3 == 0) {
+						if (RawMac[i] != Separator)
+							return std::nullopt;
+					} else if (IsHex(RawMac[i])) {
+						AppendHex(Clean, RawMac[i]);
+					} else {
+						return std::nullopt;
+					}
+				}
+				return Format(Clean);
 			}
-			return Formatted;
+
+			if (RawMac.size() == 14 && RawMac[4] == '.' && RawMac[9] == '.') {
+				for (size_t i = 0; i < RawMac.size(); ++i) {
+					if (i == 4 || i == 9) {
+						continue;
+					}
+					if (!IsHex(RawMac[i]))
+						return std::nullopt;
+					AppendHex(Clean, RawMac[i]);
+				}
+				return Format(Clean);
+			}
+
+			if (RawMac.size() == 12) {
+				for (auto c : RawMac) {
+					if (!IsHex(c))
+						return std::nullopt;
+					AppendHex(Clean, c);
+				}
+				return Format(Clean);
+			}
+
+			return std::nullopt;
 		}
 
 		inline std::string FormatDecimalMB(uint64_t Bytes) {

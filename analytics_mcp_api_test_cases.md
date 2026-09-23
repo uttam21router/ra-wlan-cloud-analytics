@@ -4524,6 +4524,45 @@ NULL
 
 ---
 
+## TC-RSSI-020A: Supported MAC input formats normalize to one client
+
+### Test data
+
+```text
+AA:BB:CC:DD:EE:FF
+aa-bb-cc-dd-ee-ff
+aabb.ccdd.eeff
+aabbccddeeff
+```
+
+### Expected result
+
+* All supported representations normalize to `aa:bb:cc:dd:ee:ff`.
+* Samples are aggregated into one response row.
+
+---
+
+## TC-RSSI-020B: Malformed station MAC addresses are rejected before normalization
+
+### Test data
+
+```text
+aa::bb::cc::dd::ee::ff
+aa:bbcc:ddee:ff
+aa-bb:cc-dd:ee-ff
+aabb.cc:dd.eeff
+aa:bb:cc:dd:ee
+gg:bb:cc:dd:ee:ff
+```
+
+### Expected result
+
+* Malformed MAC values are ignored.
+* Separator stripping must not repair malformed values into valid clients.
+* Malformed MAC samples do not contribute to `totalClients`, `rssi_total_samples`, RSSI percentages, or `observedWindow`.
+
+---
+
 ## TC-RSSI-021: Client moves between BSSIDs
 
 ### Expected result

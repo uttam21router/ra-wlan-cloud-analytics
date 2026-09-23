@@ -1457,10 +1457,13 @@ components:
         Per-client RSSI quality percentages calculated from valid RSSI samples only. RSSI
         categories use dBm thresholds: excellent is RSSI >= -55, good is -67 <= RSSI < -55,
         fair is -75 <= RSSI < -67, and poor is RSSI < -75. RSSI values of 0, positive RSSI
-        values, values below -127, and missing RSSI values are excluded. Clients with no
-        valid RSSI samples are omitted. Percentages use valid samples as the denominator and
-        are independently rounded to two decimal places, so they may sum to slightly above
-        or below 100 because of rounding.
+        values, values below -127, missing RSSI values, and malformed station MAC addresses
+        are excluded. Supported station MAC inputs are colon-separated, hyphen-separated,
+        Cisco-style dotted, or unseparated 12-digit hexadecimal strings; malformed or mixed
+        separator representations are ignored. Clients with no valid RSSI samples are
+        omitted. Percentages use valid samples as the denominator and are independently
+        rounded to two decimal places, so they may sum to slightly above or below 100 because
+        of rounding.
       required:
         - mac
         - rssi_excellent_pct

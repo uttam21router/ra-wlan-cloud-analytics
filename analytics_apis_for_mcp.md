@@ -1607,7 +1607,14 @@ RSSI = 0
 RSSI > 0
 RSSI < -127
 NULL
+invalid station MAC
 ```
+
+Supported station MAC representations are colon-separated (`aa:bb:cc:dd:ee:ff`),
+hyphen-separated (`aa-bb-cc-dd-ee-ff`), Cisco-style dotted
+(`aabb.ccdd.eeff`), and unseparated 12-digit hexadecimal strings
+(`aabbccddeeff`). Malformed or mixed-separator representations are ignored
+instead of being repaired during normalization.
 
 ### Per-Client Calculation
 

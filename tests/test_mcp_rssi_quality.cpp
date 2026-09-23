@@ -283,6 +283,65 @@ namespace {
 		assert(Summary.items[0].rssi_total_samples == 2);
 	}
 
+	void TestRssiMacNormalizationValidFormats() {
+		assert(MCP::NormalizeClientMac("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff");
+		assert(MCP::NormalizeClientMac("AA-BB-CC-DD-EE-FF") == "aa:bb:cc:dd:ee:ff");
+		assert(MCP::NormalizeClientMac("AABB.CCDD.EEFF") == "aa:bb:cc:dd:ee:ff");
+		assert(MCP::NormalizeClientMac("AABBCCDDEEFF") == "aa:bb:cc:dd:ee:ff");
+
+		auto Summary = MCP::CalculateDeviceRssiQualitySummary(
+			{Point(1200,
+				   {Assoc("AA:BB:CC:DD:EE:FF", -50),
+					Assoc("aa-bb-cc-dd-ee-ff", -60),
+					Assoc("aabb.ccdd.eeff", -70),
+					Assoc("aabbccddeeff", -80)})},
+			TestWindow());
+		assert(Summary.totalClients == 1);
+		assert(Summary.items[0].mac == "aa:bb:cc:dd:ee:ff");
+		assert(Summary.items[0].rssi_total_samples == 4);
+	}
+
+	void TestRssiMacNormalizationRejectsMalformedFormats() {
+		std::vector<std::string> InvalidMacs = {
+			"aa::bb::cc::dd::ee::ff",
+			"aa:bbcc:ddee:ff",
+			"aa-bb:cc-dd:ee-ff",
+			"aabb.cc:dd.eeff",
+			"aa:bb:cc:dd:ee",
+			"gg:bb:cc:dd:ee:ff",
+			"aa:bb:cc:dd:ee:ff ",
+		};
+		for (const auto &Mac : InvalidMacs) {
+			assert(!MCP::NormalizeClientMac(Mac));
+		}
+
+		auto Summary = MCP::CalculateDeviceRssiQualitySummary(
+			{Point(1200,
+				   {Assoc("aa::bb::cc::dd::ee::ff", -50),
+					Assoc("aa:bbcc:ddee:ff", -50),
+					Assoc("aa-bb:cc-dd:ee-ff", -50),
+					Assoc("aabb.cc:dd.eeff", -50),
+					Assoc("aa:bb:cc:dd:ee", -50),
+					Assoc("gg:bb:cc:dd:ee:ff", -50)})},
+			TestWindow());
+		assert(Summary.totalClients == 0);
+		assert(Summary.items.empty());
+	}
+
+	void TestMalformedMacDoesNotMergeIntoValidClient() {
+		auto Summary = MCP::CalculateDeviceRssiQualitySummary(
+			{Point(1200,
+				   {Assoc("aa:bb:cc:dd:ee:ff", -50),
+					Assoc("aa::bb::cc::dd::ee::ff", -80)})},
+			TestWindow());
+		assert(Summary.totalClients == 1);
+		assert(Summary.items.size() == 1);
+		assert(Summary.items[0].mac == "aa:bb:cc:dd:ee:ff");
+		assert(Summary.items[0].rssi_total_samples == 1);
+		assert(Summary.items[0].rssi_excellent_pct == 100.0);
+		assert(Summary.items[0].rssi_poor_pct == 0.0);
+	}
+
 	// TC-RSSI-021: Client moves between BSSIDs
 	void TC_RSSI_021_ClientMovesBetweenBssids() {
 		auto Summary = MCP::CalculateDeviceRssiQualitySummary(
@@ -464,6 +523,9 @@ int main() {
 	TC_RSSI_018_ValidAndInvalidSamplesMixed();
 	TC_RSSI_019_MultipleClients();
 	TC_RSSI_020_SameMacWithDifferentCase();
+	TestRssiMacNormalizationValidFormats();
+	TestRssiMacNormalizationRejectsMalformedFormats();
+	TestMalformedMacDoesNotMergeIntoValidClient();
 	TC_RSSI_021_ClientMovesBetweenBssids();
 	TC_RSSI_022_NoClients();
 	TC_RSSI_023_ClientHasOnlyInvalidSamples();

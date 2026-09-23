@@ -351,6 +351,40 @@ def test_rssi_summary_ignores_invalid_and_out_of_range_rssi(seeded_board) -> Non
     assert item["rssi_excellent_pct"] == 100.0
 
 
+def test_rssi_summary_ignores_malformed_station_mac_addresses(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(seconds=30)
+    t_a = end_dt - timedelta(minutes=40)
+
+    ssid_payload = [
+        {
+            "bssid": "aa:bb:cc:dd:ee:ff",
+            "ssid": "main",
+            "band": 5,
+            "associations": [
+                {"station": "11:22:33:44:55:66", "rssi": -50},
+                {"station": "11::22::33::44::55::66", "rssi": -80},
+                {"station": "11-22:33-44:55-66", "rssi": -70},
+            ],
+        }
+    ]
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            insert_timepoint(cursor, format_utc(t_a), ssid_payload)
+
+    result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
+
+    assert result.status == 200
+    assert result.body["data"]["totalClients"] == 1
+    assert len(result.body["data"]["items"]) == 1
+    item = result.body["data"]["items"][0]
+    assert item["mac"] == "11:22:33:44:55:66"
+    assert item["rssi_total_samples"] == 1
+    assert item["rssi_excellent_pct"] == 100.0
+    assert item["rssi_fair_pct"] == 0.0
+    assert item["rssi_poor_pct"] == 0.0
+
+
 def test_rssi_summary_gateway_filtering(seeded_board) -> None:
     end_dt = utc_now() - timedelta(seconds=30)
     t_a = end_dt - timedelta(minutes=30)
