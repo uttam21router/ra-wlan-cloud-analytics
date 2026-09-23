@@ -394,6 +394,16 @@ namespace {
 		assert(Summary.observedWindow.endTime == "1970-01-01T00:25:00Z");
 	}
 
+	void TestRssiSsidRecordLimitSentinel() {
+		bool LimitExceeded = true;
+		assert(!Storage::RssiSsidRecordCountExceedsLimit(10, 10, &LimitExceeded));
+		assert(!LimitExceeded);
+
+		LimitExceeded = false;
+		assert(Storage::RssiSsidRecordCountExceedsLimit(11, 10, &LimitExceeded));
+		assert(LimitExceeded);
+	}
+
 	void TestSerializationShape() {
 		auto Summary = MCP::CalculateDeviceRssiQualitySummary(
 			{Point(1200, {Assoc("aa:bb:cc:dd:ee:06", -50)})}, TestWindow());
@@ -461,6 +471,7 @@ int main() {
 	TC_RSSI_025_GatewayFiltering();
 	TC_RSSI_026_MalformedAssociationEntry();
 	TC_RSSI_027_RssiTruncationMacOrderingObservedWindowIsolation();
+	TestRssiSsidRecordLimitSentinel();
 	TestSerializationShape();
 
 	std::cout << "test_mcp_rssi_quality passed (TC-RSSI-001 to TC-RSSI-027 verified)\n";

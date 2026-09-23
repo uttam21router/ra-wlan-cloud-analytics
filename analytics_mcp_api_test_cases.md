@@ -4618,6 +4618,23 @@ The same client MAC appears on two gateways.
 
 ---
 
+## TC-RSSI-028: Actual persisted row count exceeds mcp.max_samples
+
+### Test data
+
+* Configure `mcp.max_samples = N`.
+* Use a requested window whose estimated sample count from the configured reporting interval is less than or equal to `N`.
+* Persist `N + 1` matching `timepoints` rows for the resolved `boardId`, requested router `serialNumber`, and half-open requested timestamp range.
+
+### Expected result
+
+* HTTP `400 Bad Request`.
+* Error is `exceeds_max_samples`.
+* Message is `Requested query window exceeds maximum allowed telemetry sample count`.
+* The response is rejected by the storage query overflow sentinel even though the interval-based expected sample estimate passed.
+
+---
+
 # 9. Cross-API Consistency Test Cases
 
 ## TC-CROSS-001: Same time range across all APIs

@@ -426,6 +426,43 @@ def test_rssi_summary_malformed_association_entry(seeded_board) -> None:
     assert result.body["data"]["items"][1]["mac"] == "aa:bb:cc:dd:ee:ff"
 
 
+def test_rssi_summary_exceeds_max_samples_from_actual_rows(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(seconds=30)
+    t_base = end_dt - timedelta(minutes=50)
+    base_ts = utc_epoch(format_utc(t_base))
+
+    # Estimated sample count for a 1h window at the board's 60s interval is 60,
+    # but the actual persisted row count exceeds the default mcp.max_samples=10,000.
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                insert into timepoints (
+                    id, boardid, timestamp, ap_data, ssid_data, radio_data,
+                    device_info, serialnumber, resource_data, venueid
+                )
+                select
+                    'rssi-exceed-' || s,
+                    %s,
+                    %s + mod(s, 3000),
+                    '{}',
+                    '[{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"main","band":5,"associations":[{"station":"11:22:33:44:55:66","rssi":-50}]}]',
+                    '[]',
+                    '{}',
+                    %s,
+                    '{}',
+                    %s
+                from generate_series(1, 10001) as s
+                """,
+                (board_id(), base_ts, router_id(), venue_id()),
+            )
+
+    result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
+    assert result.status == 400
+    assert result.body["error"] == "exceeds_max_samples"
+    assert result.body["message"] == "Requested query window exceeds maximum allowed telemetry sample count"
+
+
 def test_rssi_summary_missing_auth_rejects() -> None:
     result = http_json(rssi_summary_path("2026-07-27T12:00:00Z"))
     assert result.status == 401

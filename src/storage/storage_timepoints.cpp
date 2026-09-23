@@ -314,9 +314,10 @@ namespace OpenWifi {
 		std::vector<TimePointSsidDBRecordType> RawRecords;
 		if (!Join(Sql, RawRecords))
 			return false;
-		if (maxRecords > 0 && RawRecords.size() > static_cast<size_t>(maxRecords)) {
-			if (limitExceeded)
-				*limitExceeded = true;
+		if (Storage::RssiSsidRecordCountExceedsLimit(RawRecords.size(), maxRecords,
+													 limitExceeded)) {
+			Recs.clear();
+			return true;
 		}
 		Recs.reserve(RawRecords.size());
 		for (const auto &Row : RawRecords) {

@@ -6,6 +6,15 @@
 #include <utility>
 
 namespace OpenWifi::Storage {
+	bool RssiSsidRecordCountExceedsLimit(std::size_t RawRecordCount, uint64_t MaxRecords,
+										 bool *LimitExceeded) {
+		const bool Exceeded =
+			MaxRecords > 0 && RawRecordCount > static_cast<std::size_t>(MaxRecords);
+		if (LimitExceeded)
+			*LimitExceeded = Exceeded;
+		return Exceeded;
+	}
+
 	bool ParseSsidDataForRssi(const std::string &Json, const std::string &RecordId,
 							  Poco::Logger &Logger,
 							  std::vector<AnalyticsObjects::SSIDTimePoint> &SSIDs) {
