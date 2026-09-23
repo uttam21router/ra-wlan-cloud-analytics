@@ -274,7 +274,7 @@ def test_rssi_summary_aggregates_persisted_rssi_samples(seeded_board) -> None:
 
     assert result.status == 200
     assert set(result.body) == {"meta", "data"}
-    assert result.body["meta"]["requestWindow"] == {
+    assert result.body["meta"]["requestedWindow"] == {
         "startTime": format_utc(start_dt),
         "endTime": format_utc(end_dt),
     }
@@ -307,7 +307,7 @@ def test_rssi_summary_no_samples_returns_empty_success(seeded_board) -> None:
     result = http_json(rssi_summary_path(format_utc(end_dt)), valid_token())
 
     assert result.status == 200
-    assert result.body["meta"]["requestWindow"] == {
+    assert result.body["meta"]["requestedWindow"] == {
         "startTime": format_utc(start_dt),
         "endTime": format_utc(end_dt),
     }

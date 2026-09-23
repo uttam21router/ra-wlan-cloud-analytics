@@ -4539,17 +4539,21 @@ NULL
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "items": [],
-  "totalClients": 0,
-  "truncated": false
+  "data": {
+    "items": [],
+    "totalClients": 0,
+    "truncated": false
+  }
 }
 ```
 
@@ -4606,11 +4610,11 @@ The same client MAC appears on two gateways.
 
 ### Expected result
 
-* Maximum 500 client items are returned in the `items[]` response array.
-* `totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
-* `truncated = true`.
-* Returned items in `items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
-* `observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `observedWindow.endTime` (which reports `10:45:00Z`).
+* Maximum 500 client items are returned in the `data.items[]` response array.
+* `data.totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
+* `data.truncated = true`.
+* Returned items in `data.items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
+* `meta.observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `data.items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `meta.observedWindow.endTime` (which reports `10:45:00Z`).
 
 ---
 

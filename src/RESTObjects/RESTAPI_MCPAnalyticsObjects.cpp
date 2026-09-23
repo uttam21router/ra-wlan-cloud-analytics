@@ -109,7 +109,7 @@ namespace OpenWifi::AnalyticsObjects {
 
 	void MCPClientRssiQualitySummary::to_json(Poco::JSON::Object &Obj) const {
 		Poco::JSON::Object Meta;
-		field_to_json(Meta, "requestWindow", requestedWindow);
+		field_to_json(Meta, "requestedWindow", requestedWindow);
 		field_to_json(Meta, "observedWindow", observedWindow);
 
 		Poco::JSON::Object Data;

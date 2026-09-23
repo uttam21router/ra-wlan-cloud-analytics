@@ -1474,8 +1474,8 @@ Aggregate stream-level deltas by station MAC (including only clients with in-win
     ↓
 Convert bytes to decimal megabytes
     ↓
-Return wrapped response with requestedWindow, observedWindow, items,
-totalClients, and truncated
+Return wrapped response with meta.requestedWindow, meta.observedWindow,
+data.items, data.totalClients, and data.truncated
 ```
 
 ---
@@ -1517,63 +1517,71 @@ None
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
-  },
-  "observedWindow": {
-    "startTime": "2026-07-26T12:01:00Z",
-    "endTime": "2026-07-27T11:58:00Z"
-  },
-  "items": [
-    {
-      "mac": "e2:51:95:ed:0f:28",
-      "rssi_excellent_pct": 41.67,
-      "rssi_good_pct": 50.0,
-      "rssi_fair_pct": 1.67,
-      "rssi_poor_pct": 6.67,
-      "rssi_total_samples": 60
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
     },
-    {
-      "mac": "28:39:26:a1:7c:a5",
-      "rssi_excellent_pct": 92.73,
-      "rssi_good_pct": 7.27,
-      "rssi_fair_pct": 0.0,
-      "rssi_poor_pct": 0.0,
-      "rssi_total_samples": 110
+    "observedWindow": {
+      "startTime": "2026-07-26T12:01:00Z",
+      "endTime": "2026-07-27T11:58:00Z"
     }
-  ],
-  "totalClients": 2,
-  "truncated": false
+  },
+  "data": {
+    "items": [
+      {
+        "mac": "e2:51:95:ed:0f:28",
+        "rssi_excellent_pct": 41.67,
+        "rssi_good_pct": 50.0,
+        "rssi_fair_pct": 1.67,
+        "rssi_poor_pct": 6.67,
+        "rssi_total_samples": 60
+      },
+      {
+        "mac": "28:39:26:a1:7c:a5",
+        "rssi_excellent_pct": 92.73,
+        "rssi_good_pct": 7.27,
+        "rssi_fair_pct": 0.0,
+        "rssi_poor_pct": 0.0,
+        "rssi_total_samples": 110
+      }
+    ],
+    "totalClients": 2,
+    "truncated": false
+  }
 }
 ```
 
-`observedWindow` for RSSI is scoped to returned `items[]` after applying the
+`meta.observedWindow` for RSSI is scoped to returned `data.items[]` after applying the
 500-client response limit:
 
 ```text
 startTime =
-  earliest valid RSSI sample contributing to items[]
+  earliest valid RSSI sample contributing to data.items[]
 
 endTime =
-  latest valid RSSI sample contributing to items[]
+  latest valid RSSI sample contributing to data.items[]
 ```
 
 For empty RSSI results:
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "items": [],
-  "totalClients": 0,
-  "truncated": false
+  "data": {
+    "items": [],
+    "totalClients": 0,
+    "truncated": false
+  }
 }
 ```
 

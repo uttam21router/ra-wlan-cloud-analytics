@@ -411,7 +411,7 @@ namespace {
 		assert(!ParsedObj->has("observedWindow"));
 
 		auto MetaObj = ParsedObj->getObject("meta");
-		assert(MetaObj->has("requestWindow"));
+		assert(MetaObj->has("requestedWindow"));
 		assert(MetaObj->has("observedWindow"));
 
 		auto DataObj = ParsedObj->getObject("data");

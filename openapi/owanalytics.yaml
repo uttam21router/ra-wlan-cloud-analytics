@@ -1530,7 +1530,7 @@ components:
     ClientRssiQualityResponse:
       type: object
       description: >
-        Wrapped RSSI quality summary. requestWindow is the requested interval
+        Wrapped RSSI quality summary. requestedWindow is the requested interval
         returned in meta. observedWindow is derived from the earliest/latest valid
         persisted RSSI samples contributing to returned items after applying the
         500-client response limit. When no clients are returned, data.items is
@@ -1543,10 +1543,10 @@ components:
         meta:
           type: object
           required:
-            - requestWindow
+            - requestedWindow
             - observedWindow
           properties:
-            requestWindow:
+            requestedWindow:
               $ref: '#/components/schemas/RequestedWindow'
             observedWindow:
               $ref: '#/components/schemas/ObservedWindow'
@@ -2147,7 +2147,7 @@ paths:
                 withClients:
                   value:
                     meta:
-                      requestWindow:
+                      requestedWindow:
                         startTime: "2026-07-26T12:00:00Z"
                         endTime: "2026-07-27T12:00:00Z"
                       observedWindow:
@@ -2166,7 +2166,7 @@ paths:
                 noResults:
                   value:
                     meta:
-                      requestWindow:
+                      requestedWindow:
                         startTime: "2026-07-26T12:00:00Z"
                         endTime: "2026-07-27T12:00:00Z"
                       observedWindow:
