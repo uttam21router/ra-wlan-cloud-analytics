@@ -3,16 +3,21 @@
 #include "RESTObjects/RESTAPI_AnalyticsObjects.h"
 #include <Poco/Net/HTTPResponse.h>
 #include <Poco/URI.h>
+#include <fmt/format.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <iomanip>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -27,6 +32,9 @@ namespace OpenWifi {
 			"alphanumeric characters, hyphens, or underscores)";
 		constexpr const char *UnauthorizedMessage =
 			"Missing, invalid, or expired bearer token";
+		constexpr uint64_t DefaultMaxSamples = 10000;
+		constexpr uint64_t MinMaxSamples = 1;
+		constexpr uint64_t MaxMaxSamples = 100000;
 
 		struct Error {
 			Poco::Net::HTTPResponse::HTTPStatus status =
@@ -182,6 +190,64 @@ namespace OpenWifi {
 			return true;
 		}
 
+		inline bool ParseRFC3339Timestamp(const std::string &Value, uint64_t &EpochSeconds) {
+			if (Value.size() != 20 && Value.size() != 25)
+				return false;
+			if (Value[4] != '-' || Value[7] != '-' || Value[10] != 'T' ||
+				Value[13] != ':' || Value[16] != ':' ||
+				!DigitsAt(Value, 0, 4) || !DigitsAt(Value, 5, 2) ||
+				!DigitsAt(Value, 8, 2) || !DigitsAt(Value, 11, 2) ||
+				!DigitsAt(Value, 14, 2) || !DigitsAt(Value, 17, 2)) {
+				return false;
+			}
+
+			int OffsetSeconds = 0;
+			if (Value.size() == 20) {
+				if (Value[19] != 'Z')
+					return false;
+			} else {
+				if ((Value[19] != '+' && Value[19] != '-') || Value[22] != ':' ||
+					!DigitsAt(Value, 20, 2) || !DigitsAt(Value, 23, 2)) {
+					return false;
+				}
+				auto OffsetHours = ToInt(Value, 20, 2);
+				auto OffsetMinutes = ToInt(Value, 23, 2);
+				if (OffsetHours > 23 || OffsetMinutes > 59)
+					return false;
+				OffsetSeconds = (OffsetHours * 3600) + (OffsetMinutes * 60);
+				if (Value[19] == '-')
+					OffsetSeconds = -OffsetSeconds;
+			}
+
+			auto Year = ToInt(Value, 0, 4);
+			auto Month = ToInt(Value, 5, 2);
+			auto Day = ToInt(Value, 8, 2);
+			auto Hour = ToInt(Value, 11, 2);
+			auto Minute = ToInt(Value, 14, 2);
+			auto Second = ToInt(Value, 17, 2);
+			if (Month < 1 || Month > 12 || Day < 1 || Day > DaysInMonth(Year, Month) ||
+				Hour > 23 || Minute > 59 || Second > 59) {
+				return false;
+			}
+
+			std::tm Tm{};
+			Tm.tm_year = Year - 1900;
+			Tm.tm_mon = Month - 1;
+			Tm.tm_mday = Day;
+			Tm.tm_hour = Hour;
+			Tm.tm_min = Minute;
+			Tm.tm_sec = Second;
+			Tm.tm_isdst = 0;
+			auto LocalEpoch = timegm(&Tm);
+			if (LocalEpoch < 0)
+				return false;
+			auto UtcEpoch = static_cast<int64_t>(LocalEpoch) - OffsetSeconds;
+			if (UtcEpoch < 0)
+				return false;
+			EpochSeconds = static_cast<uint64_t>(UtcEpoch);
+			return true;
+		}
+
 		inline std::string FormatTimestamp(uint64_t EpochSeconds) {
 			std::time_t Time = static_cast<std::time_t>(EpochSeconds);
 			std::tm Tm{};
@@ -248,10 +314,10 @@ namespace OpenWifi {
 						 "lookbackHours must be a positive whole number");
 				return false;
 			}
-			if (Parsed.lookbackHours >
-				std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(3600)) {
+			constexpr uint64_t MaxApiLookbackHours = 87600; // 10 years maximum API limit
+			if (Parsed.lookbackHours > MaxApiLookbackHours) {
 				SetError(E, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST, "invalid_lookback_hours",
-						 "lookbackHours is too large");
+						 "lookbackHours exceeds maximum API limit of 87600 hours");
 				return false;
 			}
 			auto LookbackSeconds = Parsed.lookbackHours * static_cast<uint64_t>(3600);
@@ -286,6 +352,47 @@ namespace OpenWifi {
 						 "Requested range is outside the configured monitoring retention window");
 				return false;
 			}
+			return true;
+		}
+
+		inline uint64_t EstimateExpectedSampleCount(const Window &Requested,
+													uint64_t IntervalSeconds) {
+			uint64_t EffectiveInterval = (IntervalSeconds > 0) ? IntervalSeconds : 60;
+			uint64_t WindowDuration = Requested.endTime > Requested.startTime
+										  ? (Requested.endTime - Requested.startTime)
+										  : 0;
+			uint64_t EstimatedSamples = 0;
+			if (WindowDuration > 0) {
+				EstimatedSamples = (WindowDuration / EffectiveInterval) +
+								   ((WindowDuration % EffectiveInterval) != 0 ? 1 : 0);
+			}
+			return EstimatedSamples;
+		}
+
+		inline bool ValidateExpectedSampleCount(const Window &Requested, uint64_t IntervalSeconds,
+												uint64_t MaxAllowedSamples, Error &E) {
+			if (MaxAllowedSamples == 0)
+				return true;
+			uint64_t EstimatedSamples = EstimateExpectedSampleCount(Requested, IntervalSeconds);
+
+			if (EstimatedSamples > MaxAllowedSamples) {
+				SetError(E, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST, "exceeds_max_samples",
+						 "Requested query window exceeds maximum allowed telemetry sample count");
+				return false;
+			}
+			return true;
+		}
+
+		inline bool ValidateConfiguredMaxSamples(uint64_t ConfiguredMaxSamples,
+												 uint64_t &MaxSamples, Error &E) {
+			if (ConfiguredMaxSamples < MinMaxSamples || ConfiguredMaxSamples > MaxMaxSamples) {
+				SetError(E, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
+						 "invalid_configuration",
+						 "mcp.max_samples must be between 1 and 100000");
+				return false;
+			}
+
+			MaxSamples = ConfiguredMaxSamples;
 			return true;
 		}
 
@@ -354,6 +461,494 @@ namespace OpenWifi {
 				else
 					Summary.data.avg_memfree = static_cast<uint64_t>(Average);
 			}
+			return Summary;
+		}
+
+		inline AnalyticsObjects::MCPGatewayWifiTemperatureSummary
+		CalculateRadioTemperatureSummary(
+			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
+			const Window &Requested) {
+			struct BandStats {
+				std::optional<double> min;
+				std::optional<double> max;
+				std::optional<double> latest;
+				uint64_t latestTimestamp = 0;
+				long double sum = 0;
+				uint64_t count = 0;
+			};
+
+			auto AddSample = [](BandStats &Stats, double Value, uint64_t Timestamp) {
+				if (!Stats.min || Value < *Stats.min)
+					Stats.min = Value;
+				if (!Stats.max || Value > *Stats.max)
+					Stats.max = Value;
+				if (!Stats.latest || Timestamp >= Stats.latestTimestamp) {
+					Stats.latest = Value;
+					Stats.latestTimestamp = Timestamp;
+				}
+				Stats.sum += static_cast<long double>(Value);
+				++Stats.count;
+			};
+
+			AnalyticsObjects::MCPGatewayWifiTemperatureSummary Summary;
+			Summary.meta.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.meta.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+
+			BandStats Band2G;
+			BandStats Band5G;
+			bool AnyValidSample = false;
+			uint64_t ObservedStartTimestamp = 0;
+			uint64_t ObservedEndTimestamp = 0;
+
+			for (const auto &Record : Records) {
+				if (!TimestampInHalfOpenWindow(Record.timestamp, Requested)) {
+					continue;
+				}
+
+				bool RecordContributed = false;
+				for (const auto &Radio : Record.radio_data) {
+					if (Radio.band != 2 && Radio.band != 5)
+						continue;
+					if (!Radio.temperature || !std::isfinite(*Radio.temperature))
+						continue;
+					auto Value = *Radio.temperature;
+					if (Value < -40.0 || Value > 125.0)
+						continue;
+
+					if (Radio.band == 2)
+						AddSample(Band2G, Value, Record.timestamp);
+					else
+						AddSample(Band5G, Value, Record.timestamp);
+					RecordContributed = true;
+				}
+
+				if (RecordContributed) {
+					if (!AnyValidSample) {
+						ObservedStartTimestamp = Record.timestamp;
+						ObservedEndTimestamp = Record.timestamp;
+						AnyValidSample = true;
+					} else {
+						ObservedStartTimestamp = std::min(ObservedStartTimestamp, Record.timestamp);
+						ObservedEndTimestamp = std::max(ObservedEndTimestamp, Record.timestamp);
+					}
+				}
+			}
+
+			if (AnyValidSample) {
+				Summary.meta.observedWindow.startTime = FormatTimestamp(ObservedStartTimestamp);
+				Summary.meta.observedWindow.endTime = FormatTimestamp(ObservedEndTimestamp);
+			}
+
+			if (Band2G.count > 0) {
+				Summary.data.min_wifi_temp_2_4G = Band2G.min;
+				Summary.data.max_wifi_temp_2_4G = Band2G.max;
+				Summary.data.avg_wifi_temp_2_4G =
+					static_cast<double>(Band2G.sum / static_cast<long double>(Band2G.count));
+				Summary.data.latest_wifi_temp_2_4G = Band2G.latest;
+			}
+			if (Band5G.count > 0) {
+				Summary.data.min_wifi_temp_5G = Band5G.min;
+				Summary.data.max_wifi_temp_5G = Band5G.max;
+				Summary.data.avg_wifi_temp_5G =
+					static_cast<double>(Band5G.sum / static_cast<long double>(Band5G.count));
+				Summary.data.latest_wifi_temp_5G = Band5G.latest;
+			}
+
+			return Summary;
+		}
+
+		inline std::optional<std::string> NormalizeClientMac(const std::string &RawMac) {
+			auto IsHex = [](char c) {
+				return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+			};
+			auto LowerHex = [](char c) {
+				return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			};
+			auto AppendHex = [&](std::string &Clean, char c) {
+				Clean += LowerHex(c);
+			};
+			auto Format = [](const std::string &Clean) {
+				std::string Formatted;
+				for (size_t i = 0; i < Clean.size(); i += 2) {
+					if (!Formatted.empty())
+						Formatted += ":";
+					Formatted += Clean.substr(i, 2);
+				}
+				return Formatted;
+			};
+
+			std::string Clean;
+			if (RawMac.size() == 17 && (RawMac[2] == ':' || RawMac[2] == '-')) {
+				const char Separator = RawMac[2];
+				for (size_t i = 0; i < RawMac.size(); ++i) {
+					if ((i + 1) % 3 == 0) {
+						if (RawMac[i] != Separator)
+							return std::nullopt;
+					} else if (IsHex(RawMac[i])) {
+						AppendHex(Clean, RawMac[i]);
+					} else {
+						return std::nullopt;
+					}
+				}
+				return Format(Clean);
+			}
+
+			if (RawMac.size() == 14 && RawMac[4] == '.' && RawMac[9] == '.') {
+				for (size_t i = 0; i < RawMac.size(); ++i) {
+					if (i == 4 || i == 9) {
+						continue;
+					}
+					if (!IsHex(RawMac[i]))
+						return std::nullopt;
+					AppendHex(Clean, RawMac[i]);
+				}
+				return Format(Clean);
+			}
+
+			if (RawMac.size() == 12) {
+				for (auto c : RawMac) {
+					if (!IsHex(c))
+						return std::nullopt;
+					AppendHex(Clean, c);
+				}
+				return Format(Clean);
+			}
+
+			return std::nullopt;
+		}
+
+		inline std::string FormatDecimalMB(uint64_t Bytes) {
+			return fmt::format(
+				"{:.2f} MB",
+				static_cast<double>(Bytes) / 1000000.0);
+		}
+
+		inline uint64_t SaturatingAdd(uint64_t Left, uint64_t Right) {
+			if (std::numeric_limits<uint64_t>::max() - Left < Right)
+				return std::numeric_limits<uint64_t>::max();
+			return Left + Right;
+		}
+
+		inline AnalyticsObjects::MCPDeviceBandwidthConsumptionSummary
+		CalculateBandwidthConsumptionSummary(
+			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
+			const Window &Requested) {
+			struct Sample {
+				uint64_t timestamp = 0;
+				std::optional<uint64_t> rx;
+				std::optional<uint64_t> tx;
+				std::string id;
+				bool inWindow = false;
+			};
+
+			struct CounterSample {
+				uint64_t timestamp = 0;
+				uint64_t value = 0;
+				bool inWindow = false;
+			};
+
+			struct StreamKey {
+				std::string mac;
+				std::string bssid;
+				std::string ssid;
+				uint64_t band = 0;
+
+				bool operator<(const StreamKey &Other) const {
+					return std::tie(mac, bssid, ssid, band) <
+						   std::tie(Other.mac, Other.bssid, Other.ssid, Other.band);
+				}
+			};
+
+			struct ClientTotals {
+				uint64_t rx = 0;
+				uint64_t tx = 0;
+				bool hasInWindowObservation = false;
+				bool hasCalculableSegment = false;
+				uint64_t observedStart = 0;
+				uint64_t observedEnd = 0;
+			};
+
+			AnalyticsObjects::MCPDeviceBandwidthConsumptionSummary Summary;
+			Summary.meta.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.meta.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+
+			std::map<StreamKey, std::vector<Sample>> Streams;
+			for (const auto &Record : Records) {
+				for (const auto &SSID : Record.ssid_data) {
+					for (const auto &Assoc : SSID.associations) {
+						auto Mac = NormalizeClientMac(Assoc.station);
+						if (!Mac)
+							continue;
+
+						StreamKey Key;
+						Key.mac = *Mac;
+						Key.bssid = SSID.bssid;
+						Key.ssid = SSID.ssid;
+						Key.band = SSID.band;
+
+						Sample S;
+						S.timestamp = Record.timestamp;
+						if (Assoc.rx_bytes_present)
+							S.rx = Assoc.rx_bytes;
+						if (Assoc.tx_bytes_present)
+							S.tx = Assoc.tx_bytes;
+						S.id = Record.id;
+						S.inWindow = TimestampInHalfOpenWindow(Record.timestamp, Requested);
+						Streams[Key].push_back(std::move(S));
+					}
+				}
+			}
+
+			std::map<std::string, ClientTotals> TotalsByMac;
+			for (auto &[Key, Samples] : Streams) {
+				std::sort(Samples.begin(), Samples.end(),
+						  [](const Sample &A, const Sample &B) {
+							  return std::tie(A.timestamp, A.id, A.rx, A.tx) <
+									 std::tie(B.timestamp, B.id, B.rx, B.tx);
+						  });
+
+				std::vector<Sample> Deduped;
+				for (size_t i = 0; i < Samples.size();) {
+					size_t Next = i + 1;
+					bool Conflict = false;
+					while (Next < Samples.size() &&
+						   Samples[Next].timestamp == Samples[i].timestamp) {
+						if (Samples[Next].rx != Samples[i].rx ||
+							Samples[Next].tx != Samples[i].tx) {
+							Conflict = true;
+						}
+						++Next;
+					}
+					if (!Conflict)
+						Deduped.push_back(Samples[i]);
+					i = Next;
+				}
+
+				auto &Totals = TotalsByMac[Key.mac];
+				for (const auto &S : Deduped) {
+					if (S.inWindow)
+						Totals.hasInWindowObservation = true;
+				}
+
+				if (Deduped.size() < 2)
+					continue;
+
+				auto MarkObservedSegment = [&Totals](uint64_t Start, uint64_t End) {
+					if (!Totals.hasCalculableSegment) {
+						Totals.observedStart = Start;
+						Totals.observedEnd = End;
+						Totals.hasCalculableSegment = true;
+					} else {
+						Totals.observedStart = std::min(Totals.observedStart, Start);
+						Totals.observedEnd = std::max(Totals.observedEnd, End);
+					}
+				};
+
+				auto ApplyCounterSample = [&MarkObservedSegment](
+											  std::optional<CounterSample> &Previous,
+											  const Sample &Current,
+											  const std::optional<uint64_t> &CurrentValue,
+											  uint64_t &Total) {
+					if (!CurrentValue)
+						return;
+
+					CounterSample CurrentCounter{Current.timestamp, *CurrentValue,
+												 Current.inWindow};
+					if (!Previous) {
+						Previous = CurrentCounter;
+						return;
+					}
+
+					if ((Previous->inWindow || CurrentCounter.inWindow) &&
+						CurrentCounter.value >= Previous->value) {
+						Total = SaturatingAdd(Total, CurrentCounter.value - Previous->value);
+						MarkObservedSegment(Previous->timestamp, CurrentCounter.timestamp);
+					}
+
+					Previous = CurrentCounter;
+				};
+
+				std::optional<CounterSample> PreviousRx;
+				std::optional<CounterSample> PreviousTx;
+				for (const auto &Current : Deduped) {
+					ApplyCounterSample(PreviousRx, Current, Current.rx, Totals.rx);
+					ApplyCounterSample(PreviousTx, Current, Current.tx, Totals.tx);
+				}
+			}
+
+			std::vector<AnalyticsObjects::MCPClientUsageItem> Items;
+			for (const auto &[Mac, Totals] : TotalsByMac) {
+				if (!Totals.hasInWindowObservation)
+					continue;
+
+				AnalyticsObjects::MCPClientUsageItem Item;
+				Item.mac = Mac;
+				Item.rx_bytes = Totals.rx;
+				Item.tx_bytes = Totals.tx;
+				Item.total_bytes = SaturatingAdd(Totals.rx, Totals.tx);
+				Item.data_consume_rx = FormatDecimalMB(Item.rx_bytes);
+				Item.data_consume_tx = FormatDecimalMB(Item.tx_bytes);
+				Item.total_data_usage = FormatDecimalMB(Item.total_bytes);
+				Items.push_back(std::move(Item));
+			}
+
+			std::sort(Items.begin(), Items.end(),
+					  [](const AnalyticsObjects::MCPClientUsageItem &A,
+						 const AnalyticsObjects::MCPClientUsageItem &B) {
+						  if (A.total_bytes != B.total_bytes)
+							  return A.total_bytes > B.total_bytes;
+						  return A.mac < B.mac;
+					  });
+
+			Summary.data.totalClients = Items.size();
+			Summary.data.truncated = Items.size() > 500;
+			if (Items.size() > 500)
+				Items.resize(500);
+
+			bool HasObservedWindow = false;
+			uint64_t ObservedStart = 0;
+			uint64_t ObservedEnd = 0;
+			for (const auto &Item : Items) {
+				const auto Totals = TotalsByMac.find(Item.mac);
+				if (Totals == TotalsByMac.end() || !Totals->second.hasCalculableSegment)
+					continue;
+
+				if (!HasObservedWindow) {
+					ObservedStart = Totals->second.observedStart;
+					ObservedEnd = Totals->second.observedEnd;
+					HasObservedWindow = true;
+				} else {
+					ObservedStart = std::min(ObservedStart, Totals->second.observedStart);
+					ObservedEnd = std::max(ObservedEnd, Totals->second.observedEnd);
+				}
+			}
+			if (HasObservedWindow) {
+				Summary.meta.observedWindow.startTime = FormatTimestamp(ObservedStart);
+				Summary.meta.observedWindow.endTime = FormatTimestamp(ObservedEnd);
+			}
+			Summary.data.items = std::move(Items);
+			return Summary;
+		}
+
+		inline AnalyticsObjects::MCPClientRssiQualitySummary
+		CalculateDeviceRssiQualitySummary(
+			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
+			const Window &Requested) {
+			struct RssiClientStats {
+				uint64_t excellent = 0;
+				uint64_t good = 0;
+				uint64_t fair = 0;
+				uint64_t poor = 0;
+				bool hasSample = false;
+				uint64_t observedStart = 0;
+				uint64_t observedEnd = 0;
+			};
+
+			AnalyticsObjects::MCPClientRssiQualitySummary Summary;
+			Summary.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+
+			std::map<std::string, RssiClientStats> ClientStatsByMac;
+
+			for (const auto &Record : Records) {
+				if (!TimestampInHalfOpenWindow(Record.timestamp, Requested)) {
+					continue;
+				}
+
+				for (const auto &SSID : Record.ssid_data) {
+					for (const auto &Assoc : SSID.associations) {
+						auto Mac = NormalizeClientMac(Assoc.station);
+						if (!Mac)
+							continue;
+
+						auto Rssi = Assoc.rssi;
+						if (Rssi > -1 || Rssi < -127) {
+							continue;
+						}
+
+						auto &Stats = ClientStatsByMac[*Mac];
+						if (Rssi >= -55) {
+							++Stats.excellent;
+						} else if (Rssi >= -67) {
+							++Stats.good;
+						} else if (Rssi >= -75) {
+							++Stats.fair;
+						} else {
+							++Stats.poor;
+						}
+
+						if (!Stats.hasSample) {
+							Stats.observedStart = Record.timestamp;
+							Stats.observedEnd = Record.timestamp;
+							Stats.hasSample = true;
+						} else {
+							Stats.observedStart = std::min(Stats.observedStart, Record.timestamp);
+							Stats.observedEnd = std::max(Stats.observedEnd, Record.timestamp);
+						}
+					}
+				}
+			}
+
+			auto RoundTwoDecimals = [](double Value) {
+				return std::round(Value * 100.0) / 100.0;
+			};
+
+			std::vector<AnalyticsObjects::MCPClientRssiItem> Items;
+			for (const auto &[Mac, Stats] : ClientStatsByMac) {
+				auto TotalSamples = Stats.excellent + Stats.good + Stats.fair + Stats.poor;
+				if (TotalSamples == 0)
+					continue;
+
+				AnalyticsObjects::MCPClientRssiItem Item;
+				Item.mac = Mac;
+				Item.rssi_excellent_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.excellent) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_good_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.good) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_fair_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.fair) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_poor_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.poor) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_total_samples = TotalSamples;
+				Items.push_back(std::move(Item));
+			}
+
+			std::sort(Items.begin(), Items.end(),
+					  [](const AnalyticsObjects::MCPClientRssiItem &A,
+						 const AnalyticsObjects::MCPClientRssiItem &B) {
+						  return A.mac < B.mac;
+					  });
+
+			Summary.totalClients = Items.size();
+			Summary.truncated = Items.size() > 500;
+			if (Items.size() > 500)
+				Items.resize(500);
+
+			bool HasObservedWindow = false;
+			uint64_t ObservedStart = 0;
+			uint64_t ObservedEnd = 0;
+
+			for (const auto &Item : Items) {
+				auto it = ClientStatsByMac.find(Item.mac);
+				if (it == ClientStatsByMac.end() || !it->second.hasSample)
+					continue;
+
+				if (!HasObservedWindow) {
+					ObservedStart = it->second.observedStart;
+					ObservedEnd = it->second.observedEnd;
+					HasObservedWindow = true;
+				} else {
+					ObservedStart = std::min(ObservedStart, it->second.observedStart);
+					ObservedEnd = std::max(ObservedEnd, it->second.observedEnd);
+				}
+			}
+
+			if (HasObservedWindow) {
+				Summary.observedWindow.startTime = FormatTimestamp(ObservedStart);
+				Summary.observedWindow.endTime = FormatTimestamp(ObservedEnd);
+			}
+
+			Summary.items = std::move(Items);
 			return Summary;
 		}
 
