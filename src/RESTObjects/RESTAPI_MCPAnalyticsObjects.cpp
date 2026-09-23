@@ -121,4 +121,21 @@ namespace OpenWifi::AnalyticsObjects {
 		Obj.set("data", Data);
 	}
 
+	void MCPGatewayAvailabilityData::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "gw_uuid", gw_uuid);
+		field_to_json(Obj, "fetch_status", fetch_status);
+		field_to_json(Obj, "offline_count", offline_count);
+	}
+
+	void MCPGatewayAvailabilityMeta::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "requestedWindow", requestedWindow);
+		field_to_json(Obj, "observedWindow", observedWindow);
+		field_to_json(Obj, "offlineEventCount", offlineEventCount);
+	}
+
+	void MCPGatewayAvailabilitySummary::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "meta", meta);
+		field_to_json(Obj, "data", data);
+	}
+
 } // namespace OpenWifi::AnalyticsObjects
