@@ -4524,6 +4524,45 @@ NULL
 
 ---
 
+## TC-RSSI-020A: Supported MAC input formats normalize to one client
+
+### Test data
+
+```text
+AA:BB:CC:DD:EE:FF
+aa-bb-cc-dd-ee-ff
+aabb.ccdd.eeff
+aabbccddeeff
+```
+
+### Expected result
+
+* All supported representations normalize to `aa:bb:cc:dd:ee:ff`.
+* Samples are aggregated into one response row.
+
+---
+
+## TC-RSSI-020B: Malformed station MAC addresses are rejected before normalization
+
+### Test data
+
+```text
+aa::bb::cc::dd::ee::ff
+aa:bbcc:ddee:ff
+aa-bb:cc-dd:ee-ff
+aabb.cc:dd.eeff
+aa:bb:cc:dd:ee
+gg:bb:cc:dd:ee:ff
+```
+
+### Expected result
+
+* Malformed MAC values are ignored.
+* Separator stripping must not repair malformed values into valid clients.
+* Malformed MAC samples do not contribute to `totalClients`, `rssi_total_samples`, RSSI percentages, or `observedWindow`.
+
+---
+
 ## TC-RSSI-021: Client moves between BSSIDs
 
 ### Expected result
@@ -4539,17 +4578,21 @@ NULL
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "items": [],
-  "totalClients": 0,
-  "truncated": false
+  "data": {
+    "items": [],
+    "totalClients": 0,
+    "truncated": false
+  }
 }
 ```
 
@@ -4606,11 +4649,28 @@ The same client MAC appears on two gateways.
 
 ### Expected result
 
-* Maximum 500 client items are returned in the `items[]` response array.
-* `totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
-* `truncated = true`.
-* Returned items in `items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
-* `observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `observedWindow.endTime` (which reports `10:45:00Z`).
+* Maximum 500 client items are returned in the `data.items[]` response array.
+* `data.totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
+* `data.truncated = true`.
+* Returned items in `data.items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
+* `meta.observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `data.items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `meta.observedWindow.endTime` (which reports `10:45:00Z`).
+
+---
+
+## TC-RSSI-028: Actual persisted row count exceeds mcp.max_samples
+
+### Test data
+
+* Configure `mcp.max_samples = N`.
+* Use a requested window whose estimated sample count from the configured reporting interval is less than or equal to `N`.
+* Persist `N + 1` matching `timepoints` rows for the resolved `boardId`, requested router `serialNumber`, and half-open requested timestamp range.
+
+### Expected result
+
+* HTTP `400 Bad Request`.
+* Error is `exceeds_max_samples`.
+* Message is `Requested query window exceeds maximum allowed telemetry sample count`.
+* The response is rejected by the storage query overflow sentinel even though the interval-based expected sample estimate passed.
 
 ---
 

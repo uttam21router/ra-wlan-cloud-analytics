@@ -3,6 +3,7 @@
 //
 
 #include "storage_timepoints.h"
+#include "storage_rssi_parser.h"
 #include "fmt/format.h"
 #include "framework/OpenWifiTypes.h"
 #include "framework/RESTAPI_utils.h"
@@ -51,6 +52,7 @@ namespace OpenWifi {
 			Radios.clear();
 			return false;
 		}
+
 	} // namespace
 
 	static ORM::FieldVec TimePoint_Fields{// object info
@@ -285,6 +287,44 @@ namespace OpenWifi {
 			Point.id = Row.get<0>();
 			Point.timestamp = Row.get<1>();
 			if (!ParseRadioData(Row.get<2>(), Point.id, Logger_, Point.radio_data))
+				continue;
+			Recs.emplace_back(std::move(Point));
+		}
+		return true;
+	}
+
+	bool TimePointDB::SelectSsidRecordsBySerial(
+		const std::string &boardId, const std::string &serialNumber, uint64_t startTime,
+		uint64_t endTime, std::vector<AnalyticsObjects::DeviceTimePoint> &Recs,
+		uint64_t maxRecords, bool *limitExceeded) {
+		if (limitExceeded)
+			*limitExceeded = false;
+		Recs.clear();
+		if (endTime <= startTime)
+			return true;
+
+		auto WhereClause = fmt::format(
+			" boardId='{}' and serialNumber='{}' and (timestamp >= {}) and (timestamp < {}) ",
+			ORM::Escape(boardId), ORM::Escape(serialNumber), startTime, endTime);
+		const auto RangeClause =
+			(maxRecords > 0) ? ComputeRange(0, LimitWithOverflowSentinel(maxRecords)) : "";
+		const auto Sql = fmt::format(
+			"select id, timestamp, ssid_data from {} where {} order by timestamp, id ASC{}",
+			TableName_, WhereClause, RangeClause);
+		std::vector<TimePointSsidDBRecordType> RawRecords;
+		if (!Join(Sql, RawRecords))
+			return false;
+		if (Storage::RssiSsidRecordCountExceedsLimit(RawRecords.size(), maxRecords,
+													 limitExceeded)) {
+			Recs.clear();
+			return true;
+		}
+		Recs.reserve(RawRecords.size());
+		for (const auto &Row : RawRecords) {
+			AnalyticsObjects::DeviceTimePoint Point;
+			Point.id = Row.get<0>();
+			Point.timestamp = Row.get<1>();
+			if (!Storage::ParseSsidDataForRssi(Row.get<2>(), Point.id, Logger_, Point.ssid_data))
 				continue;
 			Recs.emplace_back(std::move(Point));
 		}

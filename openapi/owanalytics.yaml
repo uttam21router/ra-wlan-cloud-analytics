@@ -1457,10 +1457,13 @@ components:
         Per-client RSSI quality percentages calculated from valid RSSI samples only. RSSI
         categories use dBm thresholds: excellent is RSSI >= -55, good is -67 <= RSSI < -55,
         fair is -75 <= RSSI < -67, and poor is RSSI < -75. RSSI values of 0, positive RSSI
-        values, values below -127, and missing RSSI values are excluded. Clients with no
-        valid RSSI samples are omitted. Percentages use valid samples as the denominator and
-        are independently rounded to two decimal places, so they may sum to slightly above
-        or below 100 because of rounding.
+        values, values below -127, missing RSSI values, and malformed station MAC addresses
+        are excluded. Supported station MAC inputs are colon-separated, hyphen-separated,
+        Cisco-style dotted, or unseparated 12-digit hexadecimal strings; malformed or mixed
+        separator representations are ignored. Clients with no valid RSSI samples are
+        omitted. Percentages use valid samples as the denominator and are independently
+        rounded to two decimal places, so they may sum to slightly above or below 100 because
+        of rounding.
       required:
         - mac
         - rssi_excellent_pct
@@ -1501,24 +1504,16 @@ components:
           minimum: 1
           description: Number of valid RSSI samples used as the denominator for the percentage fields.
 
-    ClientRssiQualityResponse:
+    ClientRssiQualityData:
       type: object
       description: >
-        Wrapped RSSI quality summary. requestedWindow is the requested interval. observedWindow is
-        derived from the earliest/latest valid persisted RSSI samples contributing to returned
-        items after applying the 500-client response limit. When no clients are returned, items is
-        empty, totalClients is 0, truncated is false, and observedWindow is null/null.
+        Wi-Fi RSSI quality summary data calculated from persisted samples currently
+        available to Analytics.
       required:
-        - requestedWindow
-        - observedWindow
         - items
         - totalClients
         - truncated
       properties:
-        requestedWindow:
-          $ref: '#/components/schemas/RequestedWindow'
-        observedWindow:
-          $ref: '#/components/schemas/ObservedWindow'
         items:
           type: array
           maxItems: 500
@@ -1534,6 +1529,32 @@ components:
         truncated:
           type: boolean
           description: True when totalClients is greater than the number of returned items.
+
+    ClientRssiQualityResponse:
+      type: object
+      description: >
+        Wrapped RSSI quality summary. requestedWindow is the requested interval
+        returned in meta. observedWindow is derived from the earliest/latest valid
+        persisted RSSI samples contributing to returned items after applying the
+        500-client response limit. When no clients are returned, data.items is
+        empty, data.totalClients is 0, data.truncated is false, and
+        meta.observedWindow is null/null.
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          type: object
+          required:
+            - requestedWindow
+            - observedWindow
+          properties:
+            requestedWindow:
+              $ref: '#/components/schemas/RequestedWindow'
+            observedWindow:
+              $ref: '#/components/schemas/ObservedWindow'
+        data:
+          $ref: '#/components/schemas/ClientRssiQualityData'
 
     GatewayAvailabilityMeta:
       type: object
@@ -2128,32 +2149,36 @@ paths:
               examples:
                 withClients:
                   value:
-                    requestedWindow:
-                      startTime: "2026-07-26T12:00:00Z"
-                      endTime: "2026-07-27T12:00:00Z"
-                    observedWindow:
-                      startTime: "2026-07-26T12:01:00Z"
-                      endTime: "2026-07-27T11:58:00Z"
-                    items:
-                      - mac: "e2:51:95:ed:0f:28"
-                        rssi_excellent_pct: 41.67
-                        rssi_good_pct: 50.0
-                        rssi_fair_pct: 1.67
-                        rssi_poor_pct: 6.67
-                        rssi_total_samples: 60
-                    totalClients: 1
-                    truncated: false
+                    meta:
+                      requestedWindow:
+                        startTime: "2026-07-26T12:00:00Z"
+                        endTime: "2026-07-27T12:00:00Z"
+                      observedWindow:
+                        startTime: "2026-07-26T12:01:00Z"
+                        endTime: "2026-07-27T11:58:00Z"
+                    data:
+                      items:
+                        - mac: "e2:51:95:ed:0f:28"
+                          rssi_excellent_pct: 41.67
+                          rssi_good_pct: 50.0
+                          rssi_fair_pct: 1.67
+                          rssi_poor_pct: 6.67
+                          rssi_total_samples: 60
+                      totalClients: 1
+                      truncated: false
                 noResults:
                   value:
-                    requestedWindow:
-                      startTime: "2026-07-26T12:00:00Z"
-                      endTime: "2026-07-27T12:00:00Z"
-                    observedWindow:
-                      startTime: null
-                      endTime: null
-                    items: []
-                    totalClients: 0
-                    truncated: false
+                    meta:
+                      requestedWindow:
+                        startTime: "2026-07-26T12:00:00Z"
+                        endTime: "2026-07-27T12:00:00Z"
+                      observedWindow:
+                        startTime: null
+                        endTime: null
+                    data:
+                      items: []
+                      totalClients: 0
+                      truncated: false
         400:
           $ref: '#/components/responses/CommonAnalyticsBadRequest'
         401:

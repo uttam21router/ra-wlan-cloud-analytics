@@ -558,24 +558,63 @@ namespace OpenWifi {
 		}
 
 		inline std::optional<std::string> NormalizeClientMac(const std::string &RawMac) {
-			std::string Clean;
-			for (auto c : RawMac) {
-				if (std::isxdigit(static_cast<unsigned char>(c))) {
-					Clean += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-				} else if (c != ':' && c != '-' && c != '.') {
-					return std::nullopt;
+			auto IsHex = [](char c) {
+				return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+			};
+			auto LowerHex = [](char c) {
+				return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			};
+			auto AppendHex = [&](std::string &Clean, char c) {
+				Clean += LowerHex(c);
+			};
+			auto Format = [](const std::string &Clean) {
+				std::string Formatted;
+				for (size_t i = 0; i < Clean.size(); i += 2) {
+					if (!Formatted.empty())
+						Formatted += ":";
+					Formatted += Clean.substr(i, 2);
 				}
-			}
-			if (Clean.size() != 12)
-				return std::nullopt;
+				return Formatted;
+			};
 
-			std::string Formatted;
-			for (size_t i = 0; i < Clean.size(); i += 2) {
-				if (!Formatted.empty())
-					Formatted += ":";
-				Formatted += Clean.substr(i, 2);
+			std::string Clean;
+			if (RawMac.size() == 17 && (RawMac[2] == ':' || RawMac[2] == '-')) {
+				const char Separator = RawMac[2];
+				for (size_t i = 0; i < RawMac.size(); ++i) {
+					if ((i + 1) % 3 == 0) {
+						if (RawMac[i] != Separator)
+							return std::nullopt;
+					} else if (IsHex(RawMac[i])) {
+						AppendHex(Clean, RawMac[i]);
+					} else {
+						return std::nullopt;
+					}
+				}
+				return Format(Clean);
 			}
-			return Formatted;
+
+			if (RawMac.size() == 14 && RawMac[4] == '.' && RawMac[9] == '.') {
+				for (size_t i = 0; i < RawMac.size(); ++i) {
+					if (i == 4 || i == 9) {
+						continue;
+					}
+					if (!IsHex(RawMac[i]))
+						return std::nullopt;
+					AppendHex(Clean, RawMac[i]);
+				}
+				return Format(Clean);
+			}
+
+			if (RawMac.size() == 12) {
+				for (auto c : RawMac) {
+					if (!IsHex(c))
+						return std::nullopt;
+					AppendHex(Clean, c);
+				}
+				return Format(Clean);
+			}
+
+			return std::nullopt;
 		}
 
 		inline std::string FormatDecimalMB(uint64_t Bytes) {
@@ -788,6 +827,128 @@ namespace OpenWifi {
 				Summary.meta.observedWindow.endTime = FormatTimestamp(ObservedEnd);
 			}
 			Summary.data.items = std::move(Items);
+			return Summary;
+		}
+
+		inline AnalyticsObjects::MCPClientRssiQualitySummary
+		CalculateDeviceRssiQualitySummary(
+			const std::vector<AnalyticsObjects::DeviceTimePoint> &Records,
+			const Window &Requested) {
+			struct RssiClientStats {
+				uint64_t excellent = 0;
+				uint64_t good = 0;
+				uint64_t fair = 0;
+				uint64_t poor = 0;
+				bool hasSample = false;
+				uint64_t observedStart = 0;
+				uint64_t observedEnd = 0;
+			};
+
+			AnalyticsObjects::MCPClientRssiQualitySummary Summary;
+			Summary.requestedWindow.startTime = FormatTimestamp(Requested.startTime);
+			Summary.requestedWindow.endTime = FormatTimestamp(Requested.endTime);
+
+			std::map<std::string, RssiClientStats> ClientStatsByMac;
+
+			for (const auto &Record : Records) {
+				if (!TimestampInHalfOpenWindow(Record.timestamp, Requested)) {
+					continue;
+				}
+
+				for (const auto &SSID : Record.ssid_data) {
+					for (const auto &Assoc : SSID.associations) {
+						auto Mac = NormalizeClientMac(Assoc.station);
+						if (!Mac)
+							continue;
+
+						auto Rssi = Assoc.rssi;
+						if (Rssi > -1 || Rssi < -127) {
+							continue;
+						}
+
+						auto &Stats = ClientStatsByMac[*Mac];
+						if (Rssi >= -55) {
+							++Stats.excellent;
+						} else if (Rssi >= -67) {
+							++Stats.good;
+						} else if (Rssi >= -75) {
+							++Stats.fair;
+						} else {
+							++Stats.poor;
+						}
+
+						if (!Stats.hasSample) {
+							Stats.observedStart = Record.timestamp;
+							Stats.observedEnd = Record.timestamp;
+							Stats.hasSample = true;
+						} else {
+							Stats.observedStart = std::min(Stats.observedStart, Record.timestamp);
+							Stats.observedEnd = std::max(Stats.observedEnd, Record.timestamp);
+						}
+					}
+				}
+			}
+
+			auto RoundTwoDecimals = [](double Value) {
+				return std::round(Value * 100.0) / 100.0;
+			};
+
+			std::vector<AnalyticsObjects::MCPClientRssiItem> Items;
+			for (const auto &[Mac, Stats] : ClientStatsByMac) {
+				auto TotalSamples = Stats.excellent + Stats.good + Stats.fair + Stats.poor;
+				if (TotalSamples == 0)
+					continue;
+
+				AnalyticsObjects::MCPClientRssiItem Item;
+				Item.mac = Mac;
+				Item.rssi_excellent_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.excellent) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_good_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.good) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_fair_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.fair) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_poor_pct = RoundTwoDecimals(
+					static_cast<double>(Stats.poor) * 100.0 / static_cast<double>(TotalSamples));
+				Item.rssi_total_samples = TotalSamples;
+				Items.push_back(std::move(Item));
+			}
+
+			std::sort(Items.begin(), Items.end(),
+					  [](const AnalyticsObjects::MCPClientRssiItem &A,
+						 const AnalyticsObjects::MCPClientRssiItem &B) {
+						  return A.mac < B.mac;
+					  });
+
+			Summary.totalClients = Items.size();
+			Summary.truncated = Items.size() > 500;
+			if (Items.size() > 500)
+				Items.resize(500);
+
+			bool HasObservedWindow = false;
+			uint64_t ObservedStart = 0;
+			uint64_t ObservedEnd = 0;
+
+			for (const auto &Item : Items) {
+				auto it = ClientStatsByMac.find(Item.mac);
+				if (it == ClientStatsByMac.end() || !it->second.hasSample)
+					continue;
+
+				if (!HasObservedWindow) {
+					ObservedStart = it->second.observedStart;
+					ObservedEnd = it->second.observedEnd;
+					HasObservedWindow = true;
+				} else {
+					ObservedStart = std::min(ObservedStart, it->second.observedStart);
+					ObservedEnd = std::max(ObservedEnd, it->second.observedEnd);
+				}
+			}
+
+			if (HasObservedWindow) {
+				Summary.observedWindow.startTime = FormatTimestamp(ObservedStart);
+				Summary.observedWindow.endTime = FormatTimestamp(ObservedEnd);
+			}
+
+			Summary.items = std::move(Items);
 			return Summary;
 		}
 

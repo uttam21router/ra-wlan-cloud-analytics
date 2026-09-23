@@ -15,6 +15,7 @@ namespace OpenWifi {
 		TimePointDBRecordType;
 	typedef Poco::Tuple<std::string, uint64_t, std::string> TimePointResourceDBRecordType;
 	typedef Poco::Tuple<std::string, uint64_t, std::string> TimePointRadioDBRecordType;
+	typedef Poco::Tuple<std::string, uint64_t, std::string> TimePointSsidDBRecordType;
 
 	class TimePointDB : public ORM::DB<TimePointDBRecordType, AnalyticsObjects::DeviceTimePoint> {
 	  public:
@@ -43,6 +44,10 @@ namespace OpenWifi {
 										const std::string &serialNumber, uint64_t startTime,
 										uint64_t endTime, DB::RecordVec &Recs,
 										uint64_t maxRecords = 0, bool *limitExceeded = nullptr);
+		bool SelectSsidRecordsBySerial(const std::string &boardId,
+									   const std::string &serialNumber, uint64_t startTime,
+									   uint64_t endTime, DB::RecordVec &Recs,
+									   uint64_t maxRecords = 0, bool *limitExceeded = nullptr);
 		bool DeleteBoard(const std::string &boardId);
 		bool DeleteTimeLine(const std::string &boardId, uint64_t fromDate, uint64_t endDate);
 		bool GetRecordsPerDevice(const std::string &boardId, uint64_t FromDate, uint64_t LastDate,
