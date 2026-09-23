@@ -1,5 +1,5 @@
 #include "RESTAPI/RESTAPI_mcp_helpers.h"
-#include "framework/RESTAPI_utils.h"
+#include "storage/storage_rssi_parser.h"
 
 #include <Poco/JSON/Array.h>
 #include <Poco/JSON/Object.h>
@@ -353,7 +353,8 @@ namespace {
 		AnalyticsObjects::DeviceTimePoint Point;
 		Point.id = "test-malformed-assoc";
 		Point.timestamp = 1200;
-		Point.ssid_data = RESTAPI_utils::to_object_array<AnalyticsObjects::SSIDTimePoint>(ssidJson);
+		assert(Storage::ParseSsidDataForRssi(
+			ssidJson, Point.id, Poco::Logger::get("test_mcp_rssi_quality"), Point.ssid_data));
 
 		assert(Point.ssid_data.size() == 1);
 		// Verify both valid associations (skipping "corrupt-entry" and malformed object) are processed!

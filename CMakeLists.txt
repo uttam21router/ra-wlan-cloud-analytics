@@ -131,6 +131,7 @@ add_executable(owanalytics
         src/RESTAPI/RESTAPI_device_radio_temperature_summary_handler.cpp src/RESTAPI/RESTAPI_device_radio_temperature_summary_handler.h
         src/RESTAPI/RESTAPI_device_bandwidth_consumption_handler.cpp src/RESTAPI/RESTAPI_device_bandwidth_consumption_handler.h
         src/RESTAPI/RESTAPI_device_rssi_summary_handler.cpp src/RESTAPI/RESTAPI_device_rssi_summary_handler.h
+        src/storage/storage_rssi_parser.cpp src/storage/storage_rssi_parser.h
         src/RouterIdResolver.cpp src/RouterIdResolver.h
         src/RESTObjects/RESTAPI_SubObjects.cpp src/RESTObjects/RESTAPI_SubObjects.h
         src/RESTAPI/RESTAPI_routers.cpp
@@ -213,6 +214,7 @@ if(BUILD_TESTING)
             src/RESTObjects/RESTAPI_MCPAnalyticsObjects.cpp
             src/RESTObjects/RESTAPI_ProvObjects.cpp
             src/RESTObjects/RESTAPI_SecurityObjects.cpp
+            src/storage/storage_rssi_parser.cpp
             src/framework/utils.cpp)
     target_include_directories(test_mcp_rssi_quality PRIVATE src)
     target_link_libraries(test_mcp_rssi_quality PUBLIC
