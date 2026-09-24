@@ -166,7 +166,7 @@ def cleanup_test_rows(cursor) -> None:
     )
 
 
-def seed_board(cursor, *, board: str | None = None, venue: str | None = None, retention: int = 7200) -> None:
+def seed_board(cursor, *, board: str | None = None, venue: str | None = None, retention: int = 86400) -> None:
     board = board or board_id()
     venue = venue or venue_id()
     now = int(time.time())
