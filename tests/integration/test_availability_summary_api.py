@@ -439,6 +439,39 @@ def test_availability_summary_clamps_query_start_to_availability_valid_from(seed
     }
 
 
+def test_availability_summary_entirely_before_availability_valid_from_returns_zero(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(hours=3)
+    start_dt = end_dt - timedelta(hours=1)
+    valid_from_dt = end_dt + timedelta(hours=1)
+    event_dt = start_dt + timedelta(minutes=15)
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            insert_availability_event(
+                cursor, format_utc(event_dt), reason="unsupported-window"
+            )
+
+    with temporary_availability_valid_from(format_utc(valid_from_dt)):
+        result = http_json(
+            availability_summary_path(format_utc(end_dt), lookback_hours="1"),
+            valid_token(),
+        )
+
+    assert result.status == 200
+    assert result.body["meta"] == {
+        "requestedWindow": {
+            "startTime": format_utc(start_dt),
+            "endTime": format_utc(end_dt),
+        },
+        "observedWindow": {"startTime": None, "endTime": None},
+    }
+    assert result.body["data"] == {
+        "gw_uuid": router_id(),
+        "fetch_status": "success",
+        "offlineEventCount": 0,
+    }
+
+
 def test_availability_summary_queries_history_by_serial_not_current_board(seeded_board) -> None:
     end_dt = utc_now() - timedelta(seconds=30)
     old_board_event_dt = end_dt - timedelta(minutes=45)
