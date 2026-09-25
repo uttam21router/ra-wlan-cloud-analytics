@@ -22,6 +22,8 @@ namespace OpenWifi {
 										std::optional<uint64_t> &observedStartTime,
 										std::optional<uint64_t> &observedEndTime);
 
+		bool CreateEventIfAbsent(const AnalyticsObjects::DeviceAvailabilityEvent &Event);
+
 	  private:
 		bool Upgrade(uint32_t from, uint32_t &to) override;
 	};

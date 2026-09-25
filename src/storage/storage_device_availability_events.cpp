@@ -39,6 +39,17 @@ namespace OpenWifi {
 						  "ON device_availability_events(idempotency_key)"});
 	}
 
+	bool DeviceAvailabilityEventsDB::CreateEventIfAbsent(
+		const AnalyticsObjects::DeviceAvailabilityEvent &Event) {
+		if (Event.idempotency_key.empty())
+			return false;
+		if (Exists("idempotency_key", Event.idempotency_key))
+			return true;
+		if (CreateRecord(Event))
+			return true;
+		return Exists("idempotency_key", Event.idempotency_key);
+	}
+
 	bool DeviceAvailabilityEventsDB::CountOfflineEventsBySerial(
 		const std::string &serialNumber, uint64_t startTime, uint64_t endTime,
 		uint64_t &offlineCount, std::optional<uint64_t> &observedStartTime,
