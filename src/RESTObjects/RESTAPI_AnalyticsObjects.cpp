@@ -36,6 +36,20 @@ namespace OpenWifi::AnalyticsObjects {
 			}
 			return Parsed;
 		}
+
+		std::optional<double> OptionalDoubleFromJson(const Poco::JSON::Object::Ptr &Obj,
+													 const char *Field) {
+			try {
+				if (!Obj->has(Field) || Obj->isNull(Field))
+					return std::nullopt;
+				auto Value = Obj->get(Field);
+				if (!Value.isNumeric() || Value.isBoolean())
+					return std::nullopt;
+				return Value.convert<double>();
+			} catch (...) {
+			}
+			return std::nullopt;
+		}
 	} // namespace
 
 	void Report::reset() {}
@@ -85,6 +99,7 @@ namespace OpenWifi::AnalyticsObjects {
 		field_to_json(Obj, "type", type);
 		field_to_json(Obj, "serialNumber", serialNumber);
 		field_to_json(Obj, "deviceType", deviceType);
+		field_to_json(Obj, "platform", platform);
 		field_to_json(Obj, "lastContact", lastContact);
 		field_to_json(Obj, "lastPing", lastPing);
 		field_to_json(Obj, "lastState", lastState);
@@ -112,6 +127,7 @@ namespace OpenWifi::AnalyticsObjects {
 			field_from_json(Obj, "type", type);
 			field_from_json(Obj, "serialNumber", serialNumber);
 			field_from_json(Obj, "deviceType", deviceType);
+			field_from_json(Obj, "platform", platform);
 			field_from_json(Obj, "lastContact", lastContact);
 			field_from_json(Obj, "lastPing", lastPing);
 			field_from_json(Obj, "lastState", lastState);
@@ -198,8 +214,10 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 	void UETimePoint::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "station", station);
 		field_to_json(Obj, "rssi", rssi);
-		field_to_json(Obj, "tx_bytes", tx_bytes);
-		field_to_json(Obj, "rx_bytes", rx_bytes);
+		if (tx_bytes_present)
+			field_to_json(Obj, "tx_bytes", tx_bytes);
+		if (rx_bytes_present)
+			field_to_json(Obj, "rx_bytes", rx_bytes);
 		field_to_json(Obj, "tx_duration", tx_duration);
 		field_to_json(Obj, "rx_packets", rx_packets);
 		field_to_json(Obj, "tx_packets", tx_packets);
@@ -233,8 +251,12 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		try {
 			field_from_json(Obj, "station", station);
 			field_from_json(Obj, "rssi", rssi);
-			field_from_json(Obj, "tx_bytes", tx_bytes);
-			field_from_json(Obj, "rx_bytes", rx_bytes);
+			auto TxBytes = OptionalUint64FromJson(Obj, "tx_bytes");
+			tx_bytes_present = TxBytes.has_value();
+			tx_bytes = TxBytes.value_or(0);
+			auto RxBytes = OptionalUint64FromJson(Obj, "rx_bytes");
+			rx_bytes_present = RxBytes.has_value();
+			rx_bytes = RxBytes.value_or(0);
 			field_from_json(Obj, "tx_duration", tx_duration);
 			field_from_json(Obj, "rx_packets", rx_packets);
 		field_from_json(Obj, "tx_packets", tx_packets);
@@ -364,7 +386,10 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 		field_to_json(Obj, "transmit_ms", transmit_ms);
 		field_to_json(Obj, "tx_power", tx_power);
 		field_to_json(Obj, "channel", channel);
-		field_to_json(Obj, "temperature", temperature);
+		if (temperature)
+			field_to_json(Obj, "temperature", *temperature);
+		else
+			Obj.set("temperature", Poco::Dynamic::Var());
 		field_to_json(Obj, "noise", noise);
 		field_to_json(Obj, "active_pct", active_pct);
 		field_to_json(Obj, "busy_pct", busy_pct);
@@ -382,7 +407,7 @@ bool Fingerprint::from_json(const Poco::JSON::Object::Ptr &Obj) {
 			field_from_json(Obj, "transmit_ms", transmit_ms);
 			field_from_json(Obj, "tx_power", tx_power);
 			field_from_json(Obj, "channel", channel);
-			field_from_json(Obj, "temperature", temperature);
+			temperature = OptionalDoubleFromJson(Obj, "temperature");
 			field_from_json(Obj, "noise", noise);
 			field_from_json(Obj, "active_pct", active_pct);
 			field_from_json(Obj, "busy_pct", busy_pct);
