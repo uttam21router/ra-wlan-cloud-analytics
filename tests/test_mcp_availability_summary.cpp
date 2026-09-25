@@ -31,10 +31,9 @@ namespace {
 		assert(Summary.meta.requestedWindow.endTime == "1970-01-01T01:16:40Z");
 		assert(Summary.meta.observedWindow.startTime == "1970-01-01T00:26:40Z");
 		assert(Summary.meta.observedWindow.endTime == "1970-01-01T01:11:40Z");
-		assert(Summary.meta.offlineEventCount == 2);
 		assert(Summary.data.gw_uuid == "60cf84f22290");
 		assert(Summary.data.fetch_status == "success");
-		assert(Summary.data.offline_count == 2);
+		assert(Summary.data.offlineEventCount == 2);
 	}
 
 	void TestAvailabilitySummaryWithNoEvents() {
@@ -43,8 +42,7 @@ namespace {
 
 		assert(!Summary.meta.observedWindow.startTime);
 		assert(!Summary.meta.observedWindow.endTime);
-		assert(Summary.meta.offlineEventCount == 0);
-		assert(Summary.data.offline_count == 0);
+		assert(Summary.data.offlineEventCount == 0);
 	}
 
 	void TestContractSerialization() {
@@ -64,10 +62,13 @@ namespace {
 		auto DataObj = Obj.get("data").extract<Poco::JSON::Object>();
 		assert(MetaObj.has("requestedWindow"));
 		assert(MetaObj.has("observedWindow"));
-		assert(MetaObj.getValue<uint64_t>("offlineEventCount") == 1);
+		assert(MetaObj.size() == 2);
+		assert(DataObj.size() == 3);
+		assert(!MetaObj.has("offlineEventCount"));
 		assert(DataObj.getValue<std::string>("gw_uuid") == "60cf84f22290");
 		assert(DataObj.getValue<std::string>("fetch_status") == "success");
-		assert(DataObj.getValue<uint64_t>("offline_count") == 1);
+		assert(!DataObj.has("offline_count"));
+		assert(DataObj.getValue<uint64_t>("offlineEventCount") == 1);
 	}
 
 	void TestNullObservedWindowSerialization() {

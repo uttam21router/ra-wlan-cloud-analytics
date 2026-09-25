@@ -11,6 +11,7 @@
 #include "framework/StorageClass.h"
 #include "storage/storage_boards.h"
 #include "storage/storage_device_availability_events.h"
+#include "storage/storage_system_properties.h"
 #include "storage/storage_timepoints.h"
 #include "storage/storage_wificlients.h"
 
@@ -32,6 +33,7 @@ namespace OpenWifi {
 		auto &TimePointsDB() { return *TimePointsDB_; };
 		auto &WifiClientHistoryDB() { return *WifiClientHistoryDB_; };
 		auto &DeviceAvailabilityEventsDB() { return *DeviceAvailabilityEventsDB_; };
+		auto &SystemPropertiesDB() { return *SystemPropertiesDB_; };
 		auto &BoardCreateMutex() { return BoardCreateMutex_; };
 		void onTimer(Poco::Timer &timer);
 
@@ -40,6 +42,7 @@ namespace OpenWifi {
 		std::unique_ptr<OpenWifi::TimePointDB> TimePointsDB_;
 		std::unique_ptr<OpenWifi::WifiClientHistoryDB> WifiClientHistoryDB_;
 		std::unique_ptr<OpenWifi::DeviceAvailabilityEventsDB> DeviceAvailabilityEventsDB_;
+		std::unique_ptr<OpenWifi::SystemPropertiesDB> SystemPropertiesDB_;
 		std::mutex BoardCreateMutex_;
 		Poco::Thread Updater_;
 		std::atomic_bool Running_ = false;

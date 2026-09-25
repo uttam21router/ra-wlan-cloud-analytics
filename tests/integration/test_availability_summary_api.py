@@ -141,6 +141,50 @@ def db_connection():
         connection.close()
 
 
+@contextmanager
+def temporary_availability_valid_from(timestamp: str):
+    connection = connect_db(env_or_skip("OWANALYTICS_TEST_DB_DSN"))
+    original_value = None
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "select property_value from system_properties where property_key = %s",
+                ("availability_valid_from",),
+            )
+            row = cursor.fetchone()
+            original_value = row[0] if row else None
+            cursor.execute(
+                """
+                insert into system_properties (property_key, property_value, created, modified)
+                values (%s, %s, %s, %s)
+                on conflict (property_key) do update
+                set property_value = excluded.property_value,
+                    modified = excluded.modified
+                """,
+                ("availability_valid_from", timestamp, int(time.time()), int(time.time())),
+            )
+        connection.commit()
+        yield
+    finally:
+        with connection.cursor() as cursor:
+            if original_value is None:
+                cursor.execute(
+                    "delete from system_properties where property_key = %s",
+                    ("availability_valid_from",),
+                )
+            else:
+                cursor.execute(
+                    """
+                    update system_properties
+                    set property_value = %s, modified = %s
+                    where property_key = %s
+                    """,
+                    (original_value, int(time.time()), "availability_valid_from"),
+                )
+        connection.commit()
+        connection.close()
+
+
 def cleanup_test_rows(cursor) -> None:
     cursor.execute(
         """
@@ -248,12 +292,11 @@ def assert_zero_availability(body: dict[str, Any], expected_start: str, expected
             "endTime": expected_end,
         },
         "observedWindow": {"startTime": None, "endTime": None},
-        "offlineEventCount": 0,
     }
     assert body["data"] == {
         "gw_uuid": router_id(),
         "fetch_status": "success",
-        "offline_count": 0,
+        "offlineEventCount": 0,
     }
 
 
@@ -349,11 +392,50 @@ def test_availability_summary_counts_half_open_offline_events_only(seeded_board)
         "startTime": format_utc(start_event_dt),
         "endTime": format_utc(inside_dt),
     }
-    assert result.body["meta"]["offlineEventCount"] == 2
     assert result.body["data"] == {
         "gw_uuid": router_id(),
         "fetch_status": "success",
-        "offline_count": 2,
+        "offlineEventCount": 2,
+    }
+
+
+def test_availability_summary_clamps_query_start_to_availability_valid_from(seeded_board) -> None:
+    end_dt = utc_now() - timedelta(seconds=30)
+    start_dt = end_dt - timedelta(hours=4)
+    valid_from_dt = end_dt - timedelta(hours=2)
+    pre_cutover_event_dt = valid_from_dt - timedelta(minutes=15)
+    post_cutover_event_dt = valid_from_dt + timedelta(minutes=15)
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            insert_availability_event(
+                cursor, format_utc(pre_cutover_event_dt), reason="pre-cutover"
+            )
+            insert_availability_event(
+                cursor, format_utc(post_cutover_event_dt), reason="post-cutover"
+            )
+
+    with temporary_availability_valid_from(format_utc(valid_from_dt)):
+        result = http_json(
+            availability_summary_path(format_utc(end_dt), lookback_hours="4"),
+            valid_token(),
+        )
+
+    assert result.status == 200
+    assert result.body["meta"] == {
+        "requestedWindow": {
+            "startTime": format_utc(start_dt),
+            "endTime": format_utc(end_dt),
+        },
+        "observedWindow": {
+            "startTime": format_utc(post_cutover_event_dt),
+            "endTime": format_utc(post_cutover_event_dt),
+        },
+    }
+    assert result.body["data"] == {
+        "gw_uuid": router_id(),
+        "fetch_status": "success",
+        "offlineEventCount": 1,
     }
 
 
@@ -376,8 +458,7 @@ def test_availability_summary_queries_history_by_serial_not_current_board(seeded
     )
 
     assert result.status == 200
-    assert result.body["data"]["offline_count"] == 1
-    assert result.body["meta"]["offlineEventCount"] == 1
+    assert result.body["data"]["offlineEventCount"] == 1
     assert result.body["meta"]["observedWindow"] == {
         "startTime": format_utc(old_board_event_dt),
         "endTime": format_utc(old_board_event_dt),

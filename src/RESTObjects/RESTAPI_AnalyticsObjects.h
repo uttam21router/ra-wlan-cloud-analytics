@@ -484,7 +484,7 @@ namespace OpenWifi {
 		struct MCPGatewayAvailabilityData {
 			std::string gw_uuid;
 			std::string fetch_status = "success";
-			uint64_t offline_count = 0;
+			uint64_t offlineEventCount = 0;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
@@ -492,7 +492,6 @@ namespace OpenWifi {
 		struct MCPGatewayAvailabilityMeta {
 			MCPRequestedWindow requestedWindow;
 			MCPObservedWindow observedWindow;
-			uint64_t offlineEventCount = 0;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};

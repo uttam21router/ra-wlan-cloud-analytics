@@ -5,7 +5,8 @@
 #include "StorageService.h"
 #include "framework/MicroServiceFuncs.h"
 #include "framework/utils.h"
-#include <cstdlib>
+
+#include <algorithm>
 
 namespace OpenWifi {
 
@@ -16,30 +17,6 @@ namespace OpenWifi {
 			E.error = ResolverError.error;
 			E.message = ResolverError.message;
 			return E;
-		}
-
-		bool GetConfiguredAvailabilityValidFrom(uint64_t &ValidFrom, MCP::Error &E) {
-			ValidFrom = 0;
-			std::string RawValue;
-			if (const auto *EnvValue = std::getenv("ANALYTICS_AVAILABILITY_VALID_FROM")) {
-				RawValue = EnvValue;
-			}
-			if (RawValue.empty())
-				RawValue = MicroServiceConfigGetString("availability_valid_from", "");
-			if (RawValue.empty())
-				RawValue = MicroServiceConfigGetString("availability.valid_from", "");
-			if (RawValue.empty())
-				RawValue = MicroServiceConfigGetString("availabilityValidFrom", "");
-			if (RawValue.empty())
-				return true;
-
-			if (!MCP::ParseTimestampTill(RawValue, ValidFrom)) {
-				MCP::SetError(E, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
-							  "availability_configuration_invalid",
-							  "availabilityValidFrom is not a valid UTC timestamp");
-				return false;
-			}
-			return true;
 		}
 	} // namespace
 
@@ -77,28 +54,27 @@ namespace OpenWifi {
 			return MCP::SendError(*this, Error);
 
 		uint64_t AvailabilityValidFrom = 0;
-		if (!GetConfiguredAvailabilityValidFrom(AvailabilityValidFrom, Error))
-			return MCP::SendError(*this, Error);
-		if (Window.startTime < AvailabilityValidFrom) {
-			MCP::SetError(
-				Error, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
-				"availability_range_before_cutover",
-				"Availability history is only available for ranges starting at or after "
-				"availabilityValidFrom");
+		if (!StorageService()->SystemPropertiesDB().GetAvailabilityValidFrom(
+				AvailabilityValidFrom)) {
+			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
+						  "availability_configuration_invalid",
+						  "availabilityValidFrom is not initialized");
 			return MCP::SendError(*this, Error);
 		}
-
 		uint64_t OfflineCount = 0;
 		std::optional<uint64_t> ObservedStartTime;
 		std::optional<uint64_t> ObservedEndTime;
-		if (!StorageService()->DeviceAvailabilityEventsDB().CountOfflineEventsBySerial(
-				routerId, Window.startTime, Window.endTime, OfflineCount, ObservedStartTime,
-				ObservedEndTime)) {
-			poco_error(Logger(), "Failed to query availability events for gateway summary");
-			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
-						  "availability_query_failed",
-						  "Unable to retrieve gateway availability history");
-			return MCP::SendError(*this, Error);
+		const auto QueryStart = std::max(Window.startTime, AvailabilityValidFrom);
+		if (QueryStart < Window.endTime) {
+			if (!StorageService()->DeviceAvailabilityEventsDB().CountOfflineEventsBySerial(
+					routerId, QueryStart, Window.endTime, OfflineCount, ObservedStartTime,
+					ObservedEndTime)) {
+				poco_error(Logger(), "Failed to query availability events for gateway summary");
+				MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
+							  "availability_query_failed",
+							  "Unable to retrieve gateway availability history");
+				return MCP::SendError(*this, Error);
+			}
 		}
 
 		auto Summary = MCP::CalculateGatewayAvailabilitySummary(

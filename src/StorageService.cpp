@@ -8,11 +8,38 @@
 
 #include "StorageService.h"
 #include "RESTObjects/RESTAPI_ProvObjects.h"
+#include "RESTAPI/RESTAPI_mcp_helpers.h"
 #include "fmt/format.h"
 #include "framework/MicroServiceFuncs.h"
 #include "framework/utils.h"
+#include <cstdlib>
 
 namespace OpenWifi {
+	namespace {
+		bool GetConfiguredAvailabilityValidFrom(uint64_t &ValidFrom, bool &Configured,
+											Poco::Logger &Logger) {
+			Configured = false;
+			std::string RawValue;
+			if (const auto *EnvValue = std::getenv("ANALYTICS_AVAILABILITY_VALID_FROM")) {
+				RawValue = EnvValue;
+			}
+			if (RawValue.empty())
+				RawValue = MicroServiceConfigGetString("availability_valid_from", "");
+			if (RawValue.empty())
+				RawValue = MicroServiceConfigGetString("availability.valid_from", "");
+			if (RawValue.empty())
+				RawValue = MicroServiceConfigGetString("availabilityValidFrom", "");
+			if (RawValue.empty())
+				return true;
+
+			Configured = true;
+			if (!MCP::ParseTimestampTill(RawValue, ValidFrom)) {
+				Logger.error("availabilityValidFrom is not a valid UTC timestamp.");
+				return false;
+			}
+			return true;
+		}
+	} // namespace
 
 	int Storage::Start() {
 		poco_notice(Logger(), "Starting...");
@@ -26,11 +53,30 @@ namespace OpenWifi {
 			std::make_unique<OpenWifi::WifiClientHistoryDB>(dbType_, *Pool_, Logger());
 		DeviceAvailabilityEventsDB_ =
 			std::make_unique<OpenWifi::DeviceAvailabilityEventsDB>(dbType_, *Pool_, Logger());
+		SystemPropertiesDB_ =
+			std::make_unique<OpenWifi::SystemPropertiesDB>(dbType_, *Pool_, Logger());
 
+		SystemPropertiesDB_->Create();
 		TimePointsDB_->Create();
 		BoardsDB_->Create();
 		WifiClientHistoryDB_->Create();
 		DeviceAvailabilityEventsDB_->Create();
+
+		uint64_t ConfiguredAvailabilityValidFrom = 0;
+		bool HasConfiguredAvailabilityValidFrom = false;
+		if (!GetConfiguredAvailabilityValidFrom(ConfiguredAvailabilityValidFrom,
+												HasConfiguredAvailabilityValidFrom, Logger())) {
+			std::exit(Poco::Util::Application::EXIT_CONFIG);
+		}
+		auto SeedAvailabilityValidFrom =
+			HasConfiguredAvailabilityValidFrom ? ConfiguredAvailabilityValidFrom : Utils::Now();
+		std::optional<uint64_t> ConfiguredSeed;
+		if (HasConfiguredAvailabilityValidFrom)
+			ConfiguredSeed = ConfiguredAvailabilityValidFrom;
+		if (!SystemPropertiesDB_->InitializeAvailabilityValidFrom(SeedAvailabilityValidFrom,
+														  ConfiguredSeed)) {
+			std::exit(Poco::Util::Application::EXIT_CONFIG);
+		}
 
 		PeriodicCleanup_ = MicroServiceConfigGetInt("storage.cleanup.interval", 6 * 60 * 60);
 		if (PeriodicCleanup_ < 1 * 60 * 60)

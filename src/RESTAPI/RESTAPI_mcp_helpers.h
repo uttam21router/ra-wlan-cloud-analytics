@@ -965,9 +965,8 @@ namespace OpenWifi {
 				Summary.meta.observedWindow.startTime = FormatTimestamp(*observedStartTime);
 			if (observedEndTime)
 				Summary.meta.observedWindow.endTime = FormatTimestamp(*observedEndTime);
-			Summary.meta.offlineEventCount = offlineCount;
 			Summary.data.gw_uuid = routerId;
-			Summary.data.offline_count = offlineCount;
+			Summary.data.offlineEventCount = offlineCount;
 			return Summary;
 		}
 
