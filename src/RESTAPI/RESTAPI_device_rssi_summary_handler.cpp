@@ -1,9 +1,11 @@
-#include "RESTAPI_device_memory_summary_handler.h"
+#include "RESTAPI_device_rssi_summary_handler.h"
 
 #include "RESTAPI_mcp_helpers.h"
 #include "RouterIdResolver.h"
 #include "StorageService.h"
 #include "framework/MicroServiceFuncs.h"
+
+#include <vector>
 
 namespace OpenWifi {
 
@@ -17,7 +19,7 @@ namespace OpenWifi {
 		}
 	} // namespace
 
-	void RESTAPI_device_memory_summary_handler::DoGet() {
+	void RESTAPI_device_rssi_summary_handler::DoGet() {
 		MCP::Error Error;
 		if (!MCP::AuthenticateBearerToken(*this, Error))
 			return MCP::SendError(*this, Error);
@@ -60,13 +62,13 @@ namespace OpenWifi {
 
 		std::vector<AnalyticsObjects::DeviceTimePoint> Records;
 		bool LimitExceeded = false;
-		if (!StorageService()->TimePointsDB().SelectResourceRecordsBySerial(
+		if (!StorageService()->TimePointsDB().SelectSsidRecordsBySerial(
 				Resolved.resolvedBoardId, routerId, Window.startTime, Window.endTime, Records,
 				MaxSamples, &LimitExceeded)) {
-			poco_error(Logger(), "Failed to query timepoints for memory summary");
+			poco_error(Logger(), "Failed to query timepoints for RSSI summary");
 			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
-						  "memory_summary_query_failed",
-						  "Unable to retrieve gateway memory history");
+						  "wifi_client_rssi_query_failed",
+						  "Unable to retrieve Wi-Fi client RSSI history");
 			return MCP::SendError(*this, Error);
 		}
 		if (LimitExceeded) {
@@ -75,7 +77,7 @@ namespace OpenWifi {
 			return MCP::SendError(*this, Error);
 		}
 
-		auto Summary = MCP::CalculateMemorySummary(Records, Window);
+		auto Summary = MCP::CalculateDeviceRssiQualitySummary(Records, Window);
 		return Object(Summary);
 	}
 

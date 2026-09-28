@@ -24,17 +24,129 @@ get_gateway_offline_count
 
 The specification and test suite are modularized into three distinct architectural components:
 1. **Public API Contract Specification**: OpenAPI 3.0 schemas (`openapi/owanalytics.yaml` v2.7.0) defining external REST endpoints, query parameters, HTTP status codes, and response envelopes.
-2. **Persistence & Pipeline Architecture Design**: Backend storage structures (`device_availability_events`, `device_availability_state`), Kafka event consumption semantics, and cutover/migration behavior.
+2. **Persistence & Pipeline Architecture Design**: Backend storage structures (`device_availability_events`, `device_availability_state`), Kafka event consumption semantics, and retention behavior.
 3. **Test Specification & Verification Matrix**: Independent verification matrix (this document) defining assertion criteria for API contracts, integration workflows, white-box database rules, and failure modes.
 
 > [!IMPORTANT]
-> This PR reframes and defines the complete target contract and test specification suite. The specified production architecture changes—including availability persistence tables (`device_availability_events`, `device_availability_state`), Kafka event consumption semantics, cutover migration rules, and OpenAPI v2.7.0 endpoint schemas—constitute a production architecture specification. Approving or merging this test specification PR does NOT bypass separate explicit architecture design sign-off for backend schema additions and production Kafka pipeline changes prior to production deployment.
+> This PR reframes and defines the complete target contract and test specification suite. The specified production architecture changes—including availability persistence tables (`device_availability_events`, `device_availability_state`), Kafka event consumption semantics, retention rules, and OpenAPI v2.7.0 endpoint schemas—constitute a production architecture specification. Approving or merging this test specification PR does NOT bypass separate explicit architecture design sign-off for backend schema additions and production Kafka pipeline changes prior to production deployment.
 
 The test cases cover:
 * API contract tests for request shapes, HTTP status codes, response schemas, parameter validation, filtering, and half-open time-range window semantics `[startTime, endTime)`.
 * Service integration tests for Kafka topic consumption, OWPROV fallback resolution, `VenueCoordinator` maintained ownership map, process-level router resolution cache, and PostgreSQL storage queries.
 * Database/white-box tests for `device_availability_events`, `device_availability_state`, `timepoints`, and `wificlienthistory` table schemas, constraints, and event counting behavior.
 * End-to-end physical device scenarios covering gateway shutdown, power restoration, cable removal, and reconnection flows.
+
+---
+
+# CI/CD Test Execution Flow
+
+The GitHub Actions `CI` workflow runs the MCP Analytics tests in the
+`mcp-analytics-tests` job. The job is designed to exercise the same request path
+used by deployed services while replacing OWSEC and OWPROV with deterministic
+fake services.
+
+## CI Flow
+
+1. Checkout the repository.
+2. Build the C++ test image from the real Dockerfile target:
+
+```text
+docker build --target owanalytics-build --tag owanalytics-build-ci:test .
+```
+
+3. Run C++ unit tests inside the build image:
+
+```text
+ctest --test-dir /owanalytics/cmake-build --output-on-failure
+```
+
+The unit-test phase includes the MCP aggregation tests:
+
+```text
+test_mcp_memory_summary
+test_mcp_radio_temperature_summary
+test_mcp_bandwidth_consumption
+```
+
+4. Build the runtime image used for API integration tests:
+
+```text
+docker build --tag owanalytics-ci:test .
+```
+
+5. Verify runtime shared-library dependencies with `ldd`.
+6. Install Python test dependencies on the runner:
+
+```text
+pytest
+psycopg2-binary
+```
+
+7. Start fake OWSEC on `127.0.0.1:18080`.
+   - `root-token` is accepted as a valid bearer token.
+   - invalid tokens return `401`.
+
+8. Start fake OWPROV on `127.0.0.1:18081`.
+   - `60cf84f22290` resolves to the configured test venue.
+   - `60cf84f22291` returns not found.
+   - `60cf84f22292` returns forbidden, which Analytics exposes as `404 not_found`.
+   - `60cf84f22293` returns malformed inventory data, which Analytics exposes as
+     `502 owprov_invalid_response`.
+
+9. Generate short-lived test TLS certificates for the Analytics REST API.
+10. Start OWAnalytics with host networking and fake-service routing enabled:
+
+```text
+CI_FAKE_EXTERNAL_SERVICES=1
+FAKE_EXTERNAL_SERVICE_OWSEC=http://127.0.0.1:18080
+FAKE_EXTERNAL_SERVICE_OWPROV=http://127.0.0.1:18081
+STORAGE_TYPE=postgresql
+KAFKA_ENABLE=false
+```
+
+11. Run Python integration tests against the live Analytics service:
+
+```text
+OWANALYTICS_TEST_URL=https://127.0.0.1:16009
+OWANALYTICS_TEST_VALID_TOKEN=root-token
+OWANALYTICS_TEST_DB_DSN="host=127.0.0.1 port=5432 dbname=owanalytics user=owanalytics password=owanalytics"
+pytest tests/integration -v
+```
+
+This executes the MCP integration suites:
+
+```text
+tests/integration/test_memory_summary_api.py
+tests/integration/test_radio_temperature_summary_api.py
+tests/integration/test_bandwidth_consumption_api.py
+```
+
+Each integration suite seeds PostgreSQL board and `timepoints` rows directly,
+calls the public HTTPS API with bearer authentication, and verifies the response
+after Analytics resolves router ownership through fake OWPROV.
+
+12. On failure, CI prints:
+    - Docker container status
+    - fake OWSEC logs
+    - fake OWPROV logs
+    - OWAnalytics container logs
+
+13. Cleanup always removes the OWAnalytics container and terminates fake OWSEC
+and fake OWPROV.
+
+## CD Gate
+
+Downstream test and deployment jobs depend on the Docker image build and the
+`mcp-analytics-tests` job:
+
+```text
+docker
+mcp-analytics-tests
+```
+
+For pull requests, the workflow triggers the external OpenWiFi docker-compose
+test workflow only after both dependencies pass. For pushes to `main`, the dev
+deployment trigger also waits for both dependencies.
 
 ---
 
@@ -93,14 +205,14 @@ Local ownership resolution / cache lookup
     ↓
 OWPROV lookup if required
     ↓
-Caller visibility & permission authorization (evaluated against resolved scope)
+OWPROV caller visibility authorization
     ↓
-Retention / cutover validation (availabilityValidFrom)
+Retention validation
     ↓
 Analytics database / query processing
 ```
 
-Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before request/path/query parameter validation, before local ownership/cache resolution, before OWPROV network lookup, before caller scope authorization, and before Analytics datastore queries. Pure request validation occurs before router ownership resolution; caller visibility and permission authorization (`analytics.gateway_metrics.read`) are evaluated against the resolved board/venue/entity scope.
+Bearer-token authentication is a hard gate. Missing, malformed, expired, wrong-scheme, or otherwise invalid authentication must be rejected before request/path/query parameter validation, before local ownership/cache resolution, before OWPROV network lookup, and before Analytics datastore queries. Pure request validation occurs before router ownership resolution; caller router access authorization is evaluated against OWPROV inventory lookup using the caller's token.
 
 Common behavior is tested once with a representative endpoint, usually `memory-summary`. The same behavior applies to all bearer-protected Analytics APIs that share the same OpenAPI response contract. Endpoint-specific tests exist only when the public error contract or behavior is genuinely endpoint-specific.
 
@@ -839,27 +951,22 @@ No `Authorization: Bearer ...` header is supplied.
 
 ---
 
-## TC-COMMON-019: Authenticated caller lacks analytics permission
+## TC-COMMON-019: Router unauthorized or forbidden in OWPROV
 
 ### Preconditions
 
 * Caller has a valid bearer token.
-* Router ownership resolves to a scope visible to the caller.
-* Caller lacks `analytics.gateway_metrics.read` for the requested operation on that resolved router scope.
+* OWPROV returns `401 Unauthorized` or `403 Forbidden` for the caller's token when looking up the requested router.
 
 ### Expected result
 
-* HTTP `403 Forbidden`.
-* Error is `forbidden`.
-* Authentication and authorization are distinguished:
-
-```text
-No valid identity -> 401 unauthorized
-Valid identity but insufficient analytics permission -> 403 forbidden
-```
-
-* Nonexistent routers and routers outside the caller's visible ownership scope are still normalized to `404 not_found` according to the OpenAPI `AnalyticsNotFound` contract.
-* The same authorization behavior applies to the other bearer-protected Analytics APIs.
+* HTTP `404 Not Found`.
+* Error is `not_found`.
+* Response body is `{"error": "not_found", "message": "Router was not found"}`.
+* Routers outside the caller's authorized scope in OWPROV are normalized to `404 Not Found` to prevent router existence disclosure.
+* The endpoint does not return `403 Forbidden`.
+* No Analytics-specific metric permission is required or evaluated.
+* The same authorization behavior applies to all bearer-protected Analytics APIs.
 
 ---
 
@@ -904,20 +1011,6 @@ Use a valid router ID and a lookback window whose calculated `[startTime, endTim
 * HTTP `400 Bad Request`.
 * Error is `lookback_outside_retention`.
 * Metric aggregation is not executed.
-
----
-
-## TC-COMMON-023: Availability range before cutover
-
-### Request
-
-Call `GET /api/v1/devices/{routerId}/availability-summary` with a calculated `startTime` before `availabilityValidFrom`.
-
-### Expected result
-
-* HTTP `400 Bad Request`.
-* Error is `availability_range_before_cutover`.
-* The API does not return `offline_count: 0` for pre-cutover ranges.
 
 ---
 
@@ -974,7 +1067,7 @@ Verify that current server time is captured exactly once per request execution (
 
 ### Expected result
 
-* Internal clock evaluation uses one frozen `capturedNow` reference timestamp throughout parameter validation, clock-skew checks, and cutover validation.
+* Internal clock evaluation uses one frozen `capturedNow` reference timestamp throughout parameter validation and clock-skew checks.
 * Slight execution delays during handler processing do not cause inconsistent clock evaluation for a single request.
 
 ---
@@ -1163,7 +1256,7 @@ OpenAPI also permits `internal_error` in each endpoint-specific 500 schema. Use 
 | Expired bearer token | `TC-COMMON-018C` | 401 | `unauthorized` |
 | Wrong authorization scheme | `TC-COMMON-018D` | 401 | `unauthorized` |
 | API-key-only authentication | `TC-COMMON-018E` | 401 | `unauthorized` |
-| Valid caller lacks analytics permission | `TC-COMMON-019` | 403 | `forbidden` |
+| Router unauthorized or forbidden in OWPROV | `TC-COMMON-019` | 404 | `not_found` |
 | Invalid router ID | `TC-COMMON-005` | 400 | `invalid_router_id` |
 | Repeated `timestampTill` | `TC-COMMON-012A` | 400 | `invalid_timestamp` |
 | Repeated `lookbackHours` | `TC-COMMON-017F` | 400 | `invalid_lookback_hours` |
@@ -1348,8 +1441,8 @@ last_event_time = ping source timestamp
 updated_at >= processing time
 ```
 
-* The availability-summary API uses the documented `meta.requestedWindow`, `meta.observedWindow`, `meta.offlineEventCount`, and `data.offline_count` response shape.
-* A requested window with no persisted offline transition rows returns `data.offline_count = 0`, `meta.offlineEventCount = 0`, and `meta.observedWindow.startTime = meta.observedWindow.endTime = null`.
+* The availability-summary API uses the documented `meta.requestedWindow`, `meta.observedWindow`, and `data.offlineEventCount` response shape.
+* A requested window with no persisted offline transition rows returns `data.offlineEventCount = 0`, and `meta.observedWindow.startTime = meta.observedWindow.endTime = null`.
 
 ---
 
@@ -1389,7 +1482,7 @@ Example messages:
 * No additional `online` event is inserted after the first online state.
 * `last_event_time` is updated to the latest source-newer ping timestamp accepted by the per-serial ordering stage.
 * `current_state` remains `online`.
-* `offline_count` remains `0`.
+* `data.offlineEventCount` remains `0`.
 
 ---
 
@@ -1445,13 +1538,12 @@ event_time = disconnection message timestamp
     "observedWindow": {
       "startTime": "<firstOfflineEventAt>",
       "endTime": "<lastOfflineEventAt>"
-    },
-    "offlineEventCount": 1
+    }
   },
   "data": {
     "gw_uuid": "60cf84f22290",
     "fetch_status": "success",
-    "offline_count": 1
+    "offlineEventCount": 1
   }
 }
 ```
@@ -1487,7 +1579,7 @@ sudo shutdown -h now
 
 * One offline transition is stored.
 * Repeated controller checks while the gateway remains shut down do not create more offline events.
-* `offline_count` increases by exactly `1`.
+* `data.offlineEventCount` increases by exactly `1`.
 
 ---
 
@@ -1514,7 +1606,7 @@ Verify that removing the gateway's Ethernet connection creates one offline trans
 ### Expected result
 
 * One offline event is stored.
-* `offline_count` increases by `1`.
+* `data.offlineEventCount` increases by `1`.
 * Keeping the cable disconnected does not create repeated offline events.
 
 ---
@@ -1542,7 +1634,7 @@ Verify that losing the gateway's Wi-Fi uplink creates an offline transition.
 ### Expected result
 
 * One offline event is stored.
-* `offline_count` increases by exactly `1`.
+* `data.offlineEventCount` increases by exactly `1`.
 
 ---
 
@@ -1570,7 +1662,7 @@ Verify that a powered-on gateway with no cloud connectivity is considered offlin
 * One offline transition is stored.
 * The gateway is considered offline even though it is still powered on.
 * The reason field may indicate network or connection loss when available.
-* `offline_count` increases by `1`.
+* `data.offlineEventCount` increases by `1`.
 
 ---
 
@@ -1626,13 +1718,12 @@ API result:
     "observedWindow": {
       "startTime": "12:10",
       "endTime": "12:10"
-    },
-    "offlineEventCount": 1
+    }
   },
   "data": {
     "gw_uuid": "60cf84f22290",
     "fetch_status": "success",
-    "offline_count": 1
+    "offlineEventCount": 1
   }
 }
 ```
@@ -1719,13 +1810,12 @@ The API returns:
     "observedWindow": {
       "startTime": "<firstOfflineEventAt>",
       "endTime": "<lastOfflineEventAt>"
-    },
-    "offlineEventCount": 3
+    }
   },
   "data": {
     "gw_uuid": "60cf84f22290",
     "fetch_status": "success",
-    "offline_count": 3
+    "offlineEventCount": 3
   }
 }
 ```
@@ -1764,7 +1854,7 @@ Example:
 * Later same-state disconnection messages are ignored.
 * For source-newer repeated disconnection messages accepted by the per-serial ordering stage while `current_state = offline`, `last_event_time` advances.
 * `updated_at` is updated for the latest accepted same-state message.
-* `offline_count` is `1`.
+* `data.offlineEventCount` is `1`.
 
 ---
 
@@ -1792,7 +1882,7 @@ Verify storage-level idempotency when Kafka redelivers the same logical connecti
 * Both deliveries map to the same deterministic `idempotency_key` or source `event_id`.
 * Exactly one transition event row is inserted.
 * The duplicate delivery does not move `current_state`, `last_event_time`, `updated_at`, or transition history.
-* `offline_count` is `1`.
+* `data.offlineEventCount` is `1`.
 
 ---
 
@@ -1876,7 +1966,7 @@ Verify that repeated online messages after an offline-to-online transition do no
 * Exactly one online transition event is inserted.
 * No additional offline event is inserted.
 * The source-newer repeated ping accepted by the per-serial ordering stage updates `last_event_time` and `updated_at`.
-* `offline_count` is unchanged.
+* `data.offlineEventCount` is unchanged.
 
 ---
 
@@ -1940,7 +2030,7 @@ The time window is:
 
 * The `10:00` event is excluded.
 * The `12:00` and `14:00` events are included.
-* `offline_count` is `2`.
+* `data.offlineEventCount` is `2`.
 
 ---
 
@@ -1993,10 +2083,8 @@ transition rows match the requested range.
 
 ### Preconditions
 
-* The requested range starts at or after `availabilityValidFrom`.
-* No `offline` rows exist in `device_availability_events` for the gateway where
-  `event_time >= startTime` and `event_time < endTime`.
-* The cutover behavior for ranges beginning before `availabilityValidFrom` is covered by `TC-COMMON-023`.
+* No `offline` rows exist in `device_availability_events` for the resolved board
+  and gateway where `event_time >= startTime` and `event_time < endTime`.
 
 ### Steps
 
@@ -2006,12 +2094,11 @@ transition rows match the requested range.
 ### Expected result
 
 * The response uses the documented top-level `meta` and `data` shape.
-* `meta.offlineEventCount = 0`.
 * `meta.observedWindow.startTime = null`.
 * `meta.observedWindow.endTime = null`.
 * `data.gw_uuid = "60cf84f22290"`.
 * `data.fetch_status = "success"`.
-* `data.offline_count = 0`.
+* `data.offlineEventCount = 0`.
 
 ```json
 {
@@ -2023,20 +2110,19 @@ transition rows match the requested range.
     "observedWindow": {
       "startTime": null,
       "endTime": null
-    },
-    "offlineEventCount": 0
+    }
   },
   "data": {
     "gw_uuid": "60cf84f22290",
     "fetch_status": "success",
-    "offline_count": 0
+    "offlineEventCount": 0
   }
 }
 ```
 
 The API must not treat an empty observed result as an error. A zero result means
 there are zero matching persisted offline transition rows in Analytics storage
-for the requested post-cutover interval. It is not proof of Kafka ingestion
+for the requested interval. It is not proof of Kafka ingestion
 completeness.
 
 ---
@@ -2057,8 +2143,7 @@ Requested lookback: 24 hours
 ### Expected result
 
 * The old event is excluded by the half-open requested window.
-* `data.offline_count = 0`.
-* `meta.offlineEventCount = 0`.
+* `data.offlineEventCount = 0`.
 * `meta.observedWindow.startTime = null`.
 * `meta.observedWindow.endTime = null`.
 
@@ -2316,7 +2401,7 @@ Verify that first-row creation is concurrency-safe and does not rely on locking 
 * The final state is `current_state = offline`.
 * No offline transition row is inserted because the prior state was unknown.
 * An availability-summary response for a window containing these first observations uses the documented observed-data response shape.
-* When no offline transition row is persisted for the requested interval, `data.offline_count = 0`, `meta.offlineEventCount = 0`, and both observed-window timestamps are `null`.
+* When no offline transition row is persisted for the requested interval, `data.offlineEventCount = 0`, and both observed-window timestamps are `null`.
 
 ---
 
@@ -2402,7 +2487,7 @@ Verify the explicit bootstrap behavior when the first accepted availability
 message for a gateway is `disconnection`.
 
 This contract treats an initial unknown-to-offline observation as state
-initialization, not as a counted offline transition, because `offline_count`
+initialization, not as a counted offline transition, because `data.offlineEventCount`
 counts observed online-to-offline transitions.
 
 ### Preconditions
@@ -2451,7 +2536,7 @@ Verify that transition detection is scoped by `serialNumber`.
 
 ### Objective
 
-Verify that online transition rows do not affect `offline_count`.
+Verify that online transition rows do not affect `data.offlineEventCount`.
 
 ### Steps
 
@@ -2469,8 +2554,7 @@ Verify that online transition rows do not affect `offline_count`.
 
 * The API counts only the two stored `offline` rows.
 * Stored `online` rows are ignored by the offline count.
-* `meta.offlineEventCount = 2`.
-* `offline_count` is `2`.
+* `data.offlineEventCount` is `2`.
 * `meta.observedWindow` is bounded by the two offline rows (`12:10` and `12:30`); the `12:15` online row must not extend `observedWindow`.
 
 ---
@@ -2530,48 +2614,15 @@ Ethernet reconnected        → online event
     "observedWindow": {
       "startTime": "<firstOfflineEventAt>",
       "endTime": "<lastOfflineEventAt>"
-    },
-    "offlineEventCount": 2
+    }
   },
   "data": {
     "gw_uuid": "60cf84f22290",
     "fetch_status": "success",
-    "offline_count": 2
+    "offlineEventCount": 2
   }
 }
 ```
-
----
-
-## TC-AVAIL-034: Multi-replica and process restart availabilityValidFrom consistency against persisted system_properties
-
-### Objective
-
-Verify that `availabilityValidFrom` is initialized once in `system_properties` (`availability_valid_from`) when availability persistence starts, and that any subsequent startup with a conflicting or invalid environment/configuration file value fails fast immediately.
-
-### Preconditions
-
-* Database `system_properties` table exists to persist durable system metadata key-value pairs.
-
-### Steps
-
-1. Start Replica A and Replica B concurrently when availability persistence starts with initial environment/config `availability_valid_from = 2026-07-01T00:00:00Z`.
-2. Inspect `system_properties` in database storage.
-3. Issue a request with `startTime = 2026-06-30T23:00:00Z` (`startTime < availabilityValidFrom`) to both Replica A and Replica B.
-4. Modify the local environment variable or configuration file to a conflicting value (`2026-08-01T00:00:00Z`) or an invalid timestamp format (`invalid-date`).
-5. Attempt to start a process or replica with the conflicting or invalid configuration.
-6. Inspect startup exit code, log diagnostics, and database `system_properties`.
-
-### Expected result
-
-* The cutover value is initialized exactly once in `system_properties.availability_valid_from` (`2026-07-01T00:00:00Z`).
-* Concurrent initialization by Replica A and Replica B converges safely on the same persisted value without race conditions or duplicate property inserts.
-* Both Replica A and Replica B reject requests with `startTime < availabilityValidFrom` with HTTP `400 Bad Request` (`error: "availability_range_before_cutover"`).
-* Startup with a conflicting configuration value (`2026-08-01T00:00:00Z`) or an invalid timestamp MUST fail immediately on process startup with a non-zero exit code (`fail-fast`).
-* Startup emits a clear configuration-mismatch error diagnostic.
-* The persisted `system_properties.availability_valid_from` value in database storage remains unchanged (`2026-07-01T00:00:00Z`).
-* Every service replica exhibits identical fail-fast startup behavior on configuration mismatch.
-* Dynamic process startup timestamps (e.g. `std::chrono::system_clock::now()`) are prohibited.
 
 ---
 
@@ -3021,20 +3072,26 @@ Expected response:
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T11:00:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T11:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T10:55:00Z"
+    }
   },
-  "observedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T10:55:00Z"
-  },
-  "min_wifi_temp_2.4G": 62,
-  "max_wifi_temp_2.4G": 70,
-  "avg_wifi_temp_2.4G": 66.64,
-  "min_wifi_temp_5G": 56,
-  "max_wifi_temp_5G": 65,
-  "avg_wifi_temp_5G": 60.38
+  "data": {
+    "min_wifi_temp_2.4G": 62,
+    "max_wifi_temp_2.4G": 70,
+    "avg_wifi_temp_2.4G": 66.64,
+    "latest_wifi_temp_2.4G": 68,
+    "min_wifi_temp_5G": 56,
+    "max_wifi_temp_5G": 65,
+    "avg_wifi_temp_5G": 60.38,
+    "latest_wifi_temp_5G": 60
+  }
 }
 ```
 
@@ -3053,20 +3110,26 @@ Expected response:
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T10:30:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T10:30:00Z"
+    },
+    "observedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T10:20:00Z"
+    }
   },
-  "observedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T10:20:00Z"
-  },
-  "min_wifi_temp_2.4G": 60,
-  "max_wifi_temp_2.4G": 70,
-  "avg_wifi_temp_2.4G": 65.0,
-  "min_wifi_temp_5G": 50,
-  "max_wifi_temp_5G": 60,
-  "avg_wifi_temp_5G": 55.0
+  "data": {
+    "min_wifi_temp_2.4G": 60,
+    "max_wifi_temp_2.4G": 70,
+    "avg_wifi_temp_2.4G": 65.0,
+    "latest_wifi_temp_2.4G": 70,
+    "min_wifi_temp_5G": 50,
+    "max_wifi_temp_5G": 60,
+    "avg_wifi_temp_5G": 55.0,
+    "latest_wifi_temp_5G": 60
+  }
 }
 ```
 
@@ -3078,20 +3141,26 @@ Expected response:
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T10:30:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T10:30:00Z"
+    },
+    "observedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T10:20:00Z"
+    }
   },
-  "observedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T10:20:00Z"
-  },
-  "min_wifi_temp_2.4G": 60,
-  "max_wifi_temp_2.4G": 70,
-  "avg_wifi_temp_2.4G": 65.0,
-  "min_wifi_temp_5G": null,
-  "max_wifi_temp_5G": null,
-  "avg_wifi_temp_5G": null
+  "data": {
+    "min_wifi_temp_2.4G": 60,
+    "max_wifi_temp_2.4G": 70,
+    "avg_wifi_temp_2.4G": 65.0,
+    "latest_wifi_temp_2.4G": 70,
+    "min_wifi_temp_5G": null,
+    "max_wifi_temp_5G": null,
+    "avg_wifi_temp_5G": null,
+    "latest_wifi_temp_5G": null
+  }
 }
 ```
 
@@ -3112,20 +3181,26 @@ Expected response:
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-29T10:00:00Z",
-    "endTime": "2026-07-29T10:30:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-29T10:00:00Z",
+      "endTime": "2026-07-29T10:30:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "min_wifi_temp_2.4G": null,
-  "max_wifi_temp_2.4G": null,
-  "avg_wifi_temp_2.4G": null,
-  "min_wifi_temp_5G": null,
-  "max_wifi_temp_5G": null,
-  "avg_wifi_temp_5G": null
+  "data": {
+    "min_wifi_temp_2.4G": null,
+    "max_wifi_temp_2.4G": null,
+    "avg_wifi_temp_2.4G": null,
+    "latest_wifi_temp_2.4G": null,
+    "min_wifi_temp_5G": null,
+    "max_wifi_temp_5G": null,
+    "avg_wifi_temp_5G": null,
+    "latest_wifi_temp_5G": null
+  }
 }
 ```
 
@@ -3158,7 +3233,7 @@ Expected response:
 ```json
 {
   "band": 5,
-  "wifi_temp": null
+  "temperature": null
 }
 ```
 
@@ -3168,149 +3243,146 @@ Expected response:
 
 ---
 
-## TC-TEMP-007: Pre-cutover temperature record
+## TC-TEMP-007: Sample before requested window
 
 ### Test data
 
 ```text
-temperatureMigrationCutoverTime = 2026-07-29T10:00:00Z
 API requested startTime = 2026-07-29T10:00:00Z
-Database contains historical row: sample time = 2026-07-29T09:59:59Z, wifi_temp = 62
+Database contains historical row: sample time = 2026-07-29T09:59:59Z, temperature = 62
 ```
 
 ### Expected result
 
-* The pre-cutover database sample is excluded by the database query filter `timestamp >= startTime`.
+* The before-window database sample is excluded by the database query filter `timestamp >= startTime`.
 * It does not affect minimum, maximum or average.
-* Note: If API requested `startTime` were before `temperatureMigrationCutoverTime` (e.g. `09:55:00Z`), the request would return `400 Bad Request` per `TC-TEMP-017`.
 
 ---
 
-## TC-TEMP-008: Zero temperature follows telemetry contract
+## TC-TEMP-008: Zero temperature is valid
 
 ### Preconditions
 
-The post-cutover sample contains:
+Database contains in-window samples:
 
 ```text
-wifi_temp = 0
+0
+10
+20
 ```
 
 ### Expected result
 
-* If the persisted/resolved telemetry contract for that sample has `wifiTempZeroIsUnavailable = true`, the sample is excluded from temperature aggregation and does not contribute to min, max, or average calculations.
-* If the persisted/resolved telemetry contract has `wifiTempZeroIsUnavailable = false` or no contract can be resolved, `0°C` is a valid in-range measurement and contributes to min, max, and average calculations.
+* `0°C` is included as a valid in-range measurement.
+* `min = 0`.
+* `max = 20`.
+* `avg = 10`.
+* The sample count used for aggregation is `3`.
 
 ---
 
-## TC-TEMP-008A: Zero-sentinel resolved at ingestion time remains excluded after contract change
+## TC-TEMP-008A: Latest temperature can be zero
+
+### Test data
+
+```text
+10 at T1
+20 at T2
+0 at T3
+```
+
+### Expected result
+
+* `latest = 0`.
+* The zero value is not converted to `null` or skipped.
+
+---
+
+## TC-TEMP-008B: Ingested zero is persisted as zero
 
 ### Objective
 
-Verify that zero-sentinel interpretation (`wifiTempZeroIsUnavailable = true`) is resolved and persisted at ingestion time so that later telemetry/device contract changes do not reinterpret historical telemetry at query time.
+Verify that a device-state message containing temperature value `0` is stored as numeric `0`.
 
 ### Steps
 
-1. Ingest a telemetry sample containing `wifi_temp = 0` at timestamp `10:00:00Z` while the active producer/device contract has `wifiTempZeroIsUnavailable = true`.
-2. Change the active producer/device telemetry contract to `wifiTempZeroIsUnavailable = false`.
-3. Call the `radio-temperature-summary` API for a time window containing `10:00:00Z`.
+1. Ingest a telemetry sample containing `temperature = 0` at timestamp `10:00:00Z`.
+2. Query the stored timepoint or call the `radio-temperature-summary` API for a time window containing `10:00:00Z`.
 
 ### Expected result
 
-* The 0°C sample ingested at `10:00:00Z` remains excluded from temperature aggregation.
-* Querying historical intervals does not reinterpret stored samples based on the current/new telemetry contract state.
+* The persisted radio temperature value is numeric `0`.
+* The API includes the zero sample in returned aggregates.
 
 ---
 
-## TC-TEMP-008B: Valid zero measurement resolved at ingestion time remains included after contract change
-
-### Objective
-
-Verify that a valid 0°C measurement (`wifiTempZeroIsUnavailable = false`) resolved and persisted at ingestion time remains included in aggregation despite subsequent contract changes.
-
-### Steps
-
-1. Ingest a telemetry sample containing `wifi_temp = 0` at timestamp `10:00:00Z` while the active producer/device contract has `wifiTempZeroIsUnavailable = false`.
-2. Change the active producer/device telemetry contract to `wifiTempZeroIsUnavailable = true`.
-3. Call the `radio-temperature-summary` API for a time window containing `10:00:00Z`.
+## TC-TEMP-009: Missing `temperature`
 
 ### Expected result
 
-* The 0°C sample ingested at `10:00:00Z` remains included in temperature aggregation as a valid `0°C` measurement.
-* Updating the active telemetry contract does not retroactively discard valid historical 0°C samples.
-
----
-
-## TC-TEMP-009: Post-cutover missing `wifi_temp`
-
-### Expected result
-
-* Temperature is excluded when `wifi_temp` is missing or `null`.
+* Temperature is excluded when `temperature` is missing or `null`.
 * No synthetic fallback value is generated.
 
 ---
 
-## TC-TEMP-010: Post-cutover valid numeric `wifi_temp`
+## TC-TEMP-010: Valid numeric `temperature`
 
 ### Preconditions
 
-A post-cutover sample contains a numeric `wifi_temp` value.
+A sample contains a numeric `temperature` value.
 
 ### Expected result
 
-* A post-cutover numeric `wifi_temp` is included only when all of the following hold:
-  * `-40 <= wifi_temp <= 125`
-  * `wifi_temp != 255`
-  * `wifi_temp != 0` only when the persisted/resolved telemetry contract has `wifiTempZeroIsUnavailable = true`
+* A numeric `temperature` is included only when all of the following hold:
+  * `-40 <= temperature <= 125`
+  * `temperature != 255`
 * Explicit boundary values `-40` and `125` are valid inclusive measurements and are included in aggregation.
-* Sentinel and out-of-range values (`255`, `< -40`, and `> 125`) are excluded. `0°C` is excluded only under a telemetry contract that marks zero as unavailable.
+* `0°C` is a valid numeric measurement and is included in aggregation.
+* Sentinel and out-of-range values (`255`, `< -40`, and `> 125`) are excluded.
 
 ---
 
-## TC-TEMP-011: Pre-cutover temperature equal to 20
+## TC-TEMP-011: Temperature equal to 20
 
 ### Preconditions
 
-* `temperatureMigrationCutoverTime = 2026-07-29T10:00:00Z`.
-* API requested `startTime = 2026-07-29T10:00:00Z`.
-* Database contains pre-cutover record timestamp `2026-07-29T09:59:00Z` with `wifi_temp = 20`.
+* API requested window includes the sample timestamp.
+* Database contains a record with `temperature = 20`.
 
 ### Expected result
 
-* The pre-cutover database row is excluded by `timestamp >= startTime` filtering because historical temperature values cannot reliably distinguish measured values from synthetic fallback values.
-* It does not affect minimum, maximum or average.
+* The sample is included.
+* The value `20` is not treated as a synthetic fallback or missing value.
 
 ---
 
-## TC-TEMP-012: Pre-cutover temperature other than 20
+## TC-TEMP-012: Temperature other than 20
 
 ### Test data
 
 ```text
-temperatureMigrationCutoverTime = 2026-07-29T10:00:00Z
-API requested startTime = 2026-07-29T10:00:00Z
-Database contains pre-cutover record timestamp 2026-07-29T09:55:00Z with wifi_temp = 62
-```
-
-### Expected result
-
-* The sample is excluded by `timestamp >= startTime` filtering because all pre-cutover temperature records are ignored.
-
----
-
-## TC-TEMP-013: Post-cutover temperature equal to 20
-
-### Test data
-
-```text
-Record timestamp is at or after temperature_migration_cutover_time
-wifi_temp = 20
+API requested window includes the sample timestamp.
+Database contains record with temperature = 62.
 ```
 
 ### Expected result
 
 * The sample is included.
-* Post-cutover samples are not rejected only because the measured value is `20`.
+
+---
+
+## TC-TEMP-013: Temperature equal to 20 with other valid samples
+
+### Test data
+
+```text
+temperature = 20
+```
+
+### Expected result
+
+* The sample is included.
+* Samples are not rejected only because the measured value is `20`.
 
 ---
 
@@ -3318,16 +3390,15 @@ wifi_temp = 20
 
 ### Test data
 
-`temperatureMigrationCutoverTime` = `2026-07-29T10:00:00Z`
 API requested window: `startTime = 2026-07-29T10:00:00Z`, `endTime = 2026-07-29T10:05:00Z`
 
 ```text
 2.4 GHz database samples:
-09:59:00Z  wifi_temp = 20   (pre-cutover DB row -> excluded by timestamp >= startTime)
-10:01:00Z  wifi_temp = 60   (post-cutover valid sample -> included)
-10:02:00Z  wifi_temp = 65   (post-cutover valid sample -> included)
-10:03:00Z  wifi_temp = null (missing sample -> excluded)
-10:04:00Z  wifi_temp = 70   (post-cutover valid sample -> included)
+09:59:00Z  temperature = 20   (before requested window -> excluded by timestamp >= startTime)
+10:01:00Z  temperature = 60   (valid sample -> included)
+10:02:00Z  temperature = 65   (valid sample -> included)
+10:03:00Z  temperature = null (missing sample -> excluded)
+10:04:00Z  temperature = 70   (valid sample -> included)
 ```
 
 ### Expected result
@@ -3338,7 +3409,7 @@ max = 70
 avg = 65
 ```
 
-Only post-cutover valid samples `60`, `65`, and `70` are included. Pre-cutover DB row (`09:59:00Z`) and `null` are excluded.
+Only valid in-window samples `60`, `65`, and `70` are included. The before-window row (`09:59:00Z`) and `null` are excluded.
 
 ---
 
@@ -3348,7 +3419,7 @@ Only post-cutover valid samples `60`, `65`, and `70` are included. Pre-cutover D
 
 ```text
 band = 6
-wifi_temp = 58
+temperature = 58
 ```
 
 ### Expected result
@@ -3371,24 +3442,20 @@ Two 5 GHz radios publish valid temperatures.
 
 ---
 
-## TC-TEMP-017: Requested range starts before temperature migration cutover
+## TC-TEMP-017: Historical range with only null temperatures
 
 ### Test data
 
-Query requested `startTime` is strictly before `temperatureMigrationCutoverTime` (`startTime < temperatureMigrationCutoverTime`).
+Query requested window contains only records where radio `temperature` is missing or `null`.
 
 ### Expected result
 
-* HTTP `400 Bad Request`.
-* Response JSON envelope:
+* HTTP `200 OK`.
+* The requested window is echoed.
+* `observedWindow.startTime` and `observedWindow.endTime` are `null`.
+* All temperature aggregate fields are `null`.
 
-```json
-{
-  "error": "temperature_range_before_cutover",
-  "message": "The requested summary interval starts before the temperature migration cutover timestamp."
-}
-```
-* No truncated or partial temperature summary is returned for pre-cutover intervals.
+---
 
 ---
 
@@ -3425,84 +3492,16 @@ A timepoint contains invalid JSON in `radio_data`.
 
 ---
 
-## TC-CONFIG-TEMP-001: Valid file configuration starts service
+## TC-CONFIG-TEMP-001: Missing migration is a deployment ordering failure
 
 ### Preconditions
 
-`temperature.migration_cutover_time = "2026-07-01T00:00:00Z"` in configuration file. `TEMPERATURE_MIGRATION_CUTOVER_TIME` environment variable is unset.
+The external Flyway migration from `routerarchitects/mango-cloud-migrations` has not run before deploying this Analytics version.
 
 ### Expected result
 
-* Service initializes successfully.
-* `temperatureMigrationCutoverTime` is set to `2026-07-01T00:00:00Z`.
-
----
-
-## TC-CONFIG-TEMP-002: Valid environment configuration starts service
-
-### Preconditions
-
-`TEMPERATURE_MIGRATION_CUTOVER_TIME = "2026-07-01T00:00:00Z"` in environment. `temperature.migration_cutover_time` configuration file key is unset.
-
-### Expected result
-
-* Service initializes successfully.
-* `temperatureMigrationCutoverTime` is set to `2026-07-01T00:00:00Z`.
-
----
-
-## TC-CONFIG-TEMP-003: Environment configuration takes precedence over file configuration
-
-### Preconditions
-
-* Configuration file: `temperature.migration_cutover_time = "2026-06-01T00:00:00Z"`.
-* Environment variable: `TEMPERATURE_MIGRATION_CUTOVER_TIME = "2026-07-01T00:00:00Z"`.
-
-### Expected result
-
-* Service initializes successfully.
-* `temperatureMigrationCutoverTime` evaluates to `"2026-07-01T00:00:00Z"` (environment variable takes precedence).
-
----
-
-## TC-CONFIG-TEMP-004: Missing configuration causes fatal startup failure
-
-### Preconditions
-
-Both `temperature.migration_cutover_time` file key and `TEMPERATURE_MIGRATION_CUTOVER_TIME` environment variable are absent or empty.
-
-### Expected result
-
-* Service fails startup immediately.
-* Logs a `FATAL` error: `FATAL: Missing required configuration 'temperature.migration_cutover_time'`.
-* Service process terminates with a non-zero exit code.
-
----
-
-## TC-CONFIG-TEMP-005: Malformed timestamp causes fatal startup failure
-
-### Preconditions
-
-`temperature.migration_cutover_time = "invalid-date-string"`.
-
-### Expected result
-
-* Service fails startup immediately.
-* Logs a `FATAL` error: `FATAL: Unparseable configuration 'temperature.migration_cutover_time'`.
-* Service process terminates with a non-zero exit code.
-
----
-
-## TC-CONFIG-TEMP-006: Timezone offset handling
-
-### Preconditions
-
-`temperature.migration_cutover_time = "2026-07-01T05:30:00+05:30"`.
-
-### Expected result
-
-* Timestamp is parsed and normalized to UTC `2026-07-01T00:00:00Z`.
-* Service initializes successfully with canonical UTC timestamp.
+* The deployment is rejected or rolled back by release orchestration.
+* Analytics code is not modified to recreate or bypass the external migration.
 
 ---
 
@@ -3518,27 +3517,31 @@ Expected response:
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "data": {
+    "items": [
+      {
+        "mac": "e2:51:95:ed:0f:28",
+        "rx_bytes": 106487500,
+        "tx_bytes": 3851250,
+        "total_bytes": 110338750,
+        "data_consume_rx": "106.49 MB",
+        "data_consume_tx": "3.85 MB",
+        "total_data_usage": "110.34 MB"
+      }
+    ],
+    "totalClients": 1,
+    "truncated": false
   },
-  "observedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
-  },
-  "items": [
-    {
-      "mac": "e2:51:95:ed:0f:28",
-      "rx_bytes": 106487500,
-      "tx_bytes": 3851250,
-      "total_bytes": 110338750,
-      "data_consume_rx": "106.49 MB",
-      "data_consume_tx": "3.85 MB",
-      "total_data_usage": "110.34 MB"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
     }
-  ],
-  "totalClients": 1,
-  "truncated": false
+  }
 }
 ```
 
@@ -3894,17 +3897,21 @@ total = 0
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "data": {
+    "items": [],
+    "totalClients": 0,
+    "truncated": false
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "items": [],
-  "totalClients": 0,
-  "truncated": false
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
+  }
 }
 ```
 
@@ -4461,6 +4468,45 @@ NULL
 
 ---
 
+## TC-RSSI-020A: Supported MAC input formats normalize to one client
+
+### Test data
+
+```text
+AA:BB:CC:DD:EE:FF
+aa-bb-cc-dd-ee-ff
+aabb.ccdd.eeff
+aabbccddeeff
+```
+
+### Expected result
+
+* All supported representations normalize to `aa:bb:cc:dd:ee:ff`.
+* Samples are aggregated into one response row.
+
+---
+
+## TC-RSSI-020B: Malformed station MAC addresses are rejected before normalization
+
+### Test data
+
+```text
+aa::bb::cc::dd::ee::ff
+aa:bbcc:ddee:ff
+aa-bb:cc-dd:ee-ff
+aabb.cc:dd.eeff
+aa:bb:cc:dd:ee
+gg:bb:cc:dd:ee:ff
+```
+
+### Expected result
+
+* Malformed MAC values are ignored.
+* Separator stripping must not repair malformed values into valid clients.
+* Malformed MAC samples do not contribute to `totalClients`, `rssi_total_samples`, RSSI percentages, or `observedWindow`.
+
+---
+
 ## TC-RSSI-021: Client moves between BSSIDs
 
 ### Expected result
@@ -4476,17 +4522,21 @@ NULL
 
 ```json
 {
-  "requestedWindow": {
-    "startTime": "2026-07-26T12:00:00Z",
-    "endTime": "2026-07-27T12:00:00Z"
+  "meta": {
+    "requestedWindow": {
+      "startTime": "2026-07-26T12:00:00Z",
+      "endTime": "2026-07-27T12:00:00Z"
+    },
+    "observedWindow": {
+      "startTime": null,
+      "endTime": null
+    }
   },
-  "observedWindow": {
-    "startTime": null,
-    "endTime": null
-  },
-  "items": [],
-  "totalClients": 0,
-  "truncated": false
+  "data": {
+    "items": [],
+    "totalClients": 0,
+    "truncated": false
+  }
 }
 ```
 
@@ -4543,11 +4593,28 @@ The same client MAC appears on two gateways.
 
 ### Expected result
 
-* Maximum 500 client items are returned in the `items[]` response array.
-* `totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
-* `truncated = true`.
-* Returned items in `items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
-* `observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `observedWindow.endTime` (which reports `10:45:00Z`).
+* Maximum 500 client items are returned in the `data.items[]` response array.
+* `data.totalClients = 501` (calculated across all matching active clients before applying the 500 limit).
+* `data.truncated = true`.
+* Returned items in `data.items[]` are ordered by normalized station MAC string ascending (`00:11:22:33:44:55` ... `fe:ff:ff:ff:ff:ff`).
+* `meta.observedWindow` (`startTime`, `endTime`) is derived ONLY from the 500 returned items in `data.items[]`. The timestamp `10:59:00Z` present only on the excluded 501st client does NOT extend `meta.observedWindow.endTime` (which reports `10:45:00Z`).
+
+---
+
+## TC-RSSI-028: Actual persisted row count exceeds mcp.max_samples
+
+### Test data
+
+* Configure `mcp.max_samples = N`.
+* Use a requested window whose estimated sample count from the configured reporting interval is less than or equal to `N`.
+* Persist `N + 1` matching `timepoints` rows for the resolved `boardId`, requested router `serialNumber`, and half-open requested timestamp range.
+
+### Expected result
+
+* HTTP `400 Bad Request`.
+* Error is `exceeds_max_samples`.
+* Message is `Requested query window exceeds maximum allowed telemetry sample count`.
+* The response is rejected by the storage query overflow sentinel even though the interval-based expected sample estimate passed.
 
 ---
 
@@ -4568,9 +4635,9 @@ lookbackHours
 ### Expected result
 
 * Every API calculates the same requested `startTime` and `endTime` from `timestampTill` and `lookbackHours`.
-* Memory, usage, and RSSI apply the requested half-open aggregation window: `startTime <= sample_time < endTime`.
-* Temperature requires `startTime >= temperatureMigrationCutoverTime`; if requested `startTime < temperatureMigrationCutoverTime`, the temperature request is rejected with HTTP `400 Bad Request` (`error: "temperature_range_before_cutover"`) matching TC-TEMP-017 rather than clipping the requested range.
-* Availability applies the requested event window only when `startTime >= availabilityValidFrom`; otherwise the availability request is rejected according to the API contract.
+* Memory, usage, RSSI, and temperature apply the requested half-open aggregation window: `startTime <= sample_time < endTime`.
+* Temperature returns `200 OK` with null aggregates when no valid migrated nullable `temperature` samples exist in the requested window.
+* Availability applies the requested half-open event window directly to matching persisted offline transition rows.
 
 ---
 
@@ -4595,14 +4662,13 @@ Five separate MCP metric HTTP requests are made for the same gateway `routerId`.
 ```text
 Memory API:      null summary fields
 Temperature API: null summary fields
-Usage API:       object envelope with items: [], totalClients: 0, truncated: false
-RSSI API:        object envelope with items: [], totalClients: 0, truncated: false
-Availability:    data.fetch_status = success, data.offline_count = 0, meta.offlineEventCount = 0
+Usage API:       data.items = [], data.totalClients = 0, data.truncated = false
+RSSI API:        data.items = [], data.totalClients = 0, data.truncated = false
+Availability:    data.fetch_status = success, data.offlineEventCount = 0
 ```
 
 * All metric responses use HTTP `200 OK` when queries succeed but return no data.
-* Availability returns `data.fetch_status = "success"`, `data.offline_count = 0`, `meta.offlineEventCount = 0`, and `meta.observedWindow` with both timestamps `null` when no persisted offline rows match the requested interval.
-* If `startTime < availabilityValidFrom`, Availability returns `400 Bad Request` with `error: "availability_range_before_cutover"`.
+* Availability returns `data.fetch_status = "success"`, `data.offlineEventCount = 0`, and `meta.observedWindow` with both timestamps `null` when no persisted offline rows match the requested interval.
 
 ---
 
@@ -4613,7 +4679,7 @@ Availability:    data.fetch_status = success, data.offline_count = 0, meta.offli
 * Availability API reports the observed offline transition.
 * Other APIs return data available before shutdown within the requested range.
 * Lack of samples after shutdown does not erase earlier valid data.
-* Missing later samples are not converted into zero memory, zero temperature or zero RSSI.
+* Missing later samples are not converted into zero memory, temperature or RSSI values.
 
 ---
 
@@ -4683,9 +4749,11 @@ observedWindow
 min_wifi_temp_2.4G
 max_wifi_temp_2.4G
 avg_wifi_temp_2.4G
+latest_wifi_temp_2.4G
 min_wifi_temp_5G
 max_wifi_temp_5G
 avg_wifi_temp_5G
+latest_wifi_temp_5G
 ```
 
 All temperature fields are reported in degrees Celsius.
@@ -4737,30 +4805,23 @@ Expected `data` fields:
 ```text
 gw_uuid
 fetch_status
-offline_count
+offlineEventCount
 ```
 
-`offline_count` is a non-negative integer in successful responses.
+`data.offlineEventCount` is a non-negative integer in successful responses.
 
 Expected availability-specific `meta` fields:
 
 ```text
 requestedWindow
 observedWindow
-offlineEventCount
 ```
 
-For availability responses, `offlineEventCount` is the number of persisted
-offline transition rows in `device_availability_events` that contribute to
-`offline_count`:
-
-```text
-offlineEventCount = offline_count
-```
-
+For availability responses, `data.offlineEventCount` is the number of persisted
+offline transition rows in `device_availability_events` that match the request.
 Online recovery transition rows (`event_type = 'online'`) are stored in
 transition history for state tracking, but they do not contribute to
-`observedWindow`, `offlineEventCount`, or `offline_count`.
+`observedWindow` or `data.offlineEventCount`.
 
 ---
 
@@ -4768,8 +4829,10 @@ transition history for state tracking, but they do not contribute to
 
 ### Expected result
 
-* Usage (`GET /api/v1/devices/{routerId}/wifi-clients/usage-summary`) and RSSI (`GET /api/v1/devices/{routerId}/wifi-clients/rssi-summary`) summary responses are object envelopes containing `requestedWindow`, `observedWindow`, `items`, `totalClients`, and `truncated`.
-* When no clients match the requested interval, `items` is an empty array `[]`, `totalClients` is `0`, and `truncated` is `false`.
+* Usage (`GET /api/v1/devices/{routerId}/wifi-clients/usage-summary`) and RSSI (`GET /api/v1/devices/{routerId}/wifi-clients/rssi-summary`) summary responses use the shared MCP `{data, meta}` envelope.
+* `meta` contains `requestedWindow` and `observedWindow`.
+* `data` contains `items`, `totalClients`, and `truncated`.
+* When no clients match the requested interval, `data.items` is an empty array `[]`, `data.totalClients` is `0`, and `data.truncated` is `false`.
 
 ---
 
@@ -4826,7 +4889,7 @@ total_data_usage    formatted string using the documented unit
 
 * RSSI percentages are numeric.
 * RSSI sample count is an integer.
-* Offline count and offlineEventCount are non-negative integers.
+* `data.offlineEventCount` is a non-negative integer.
 
 ---
 
@@ -4836,13 +4899,13 @@ The PR implementation is functionally accepted when:
 
 1. All five endpoints are available in OpenAPI.
 2. Every endpoint uses the gateway serial number as `routerId`.
-3. Router ownership resolves correctly from the maintained local map.
+3. Router ownership resolves correctly via caller-scoped OWPROV device lookup and board venue matching.
 4. Bearer authentication is enforced before parameter validation, router ownership resolution, caller authorization, or Analytics datastore queries.
 5. Missing, malformed, expired, wrong-scheme, and API-key-only authentication failures return `401 unauthorized` and never contact OWPROV.
-6. Valid authenticated callers without `analytics.gateway_metrics.read` on a visible resolved scope receive `403 forbidden`; inaccessible or nonexistent routers remain normalized to `404 not_found`.
-7. OWPROV fallback resolution distinguishes `404`, `409`, `502 owprov_unavailable`, and `502 owprov_invalid_response` outcomes.
-8. Valid usable cached ownership fallback is used only after successful bearer authentication and only when the cache entry is safe to use.
-9. Child-venue gateway resolution works.
+6. OWPROV router access authorization determines visibility; inaccessible (401/403) or nonexistent (404) routers are normalized to `404 not_found`.
+7. OWPROV resolution distinguishes `404 not_found`, `409 multiple_boards`, `502 owprov_unavailable`, and `502 owprov_invalid_response` outcomes.
+8. Authorization checks use the caller's bearer token on OWPROV queries to ensure visibility cannot be bypassed.
+9. Router venue resolution maps InventoryTag.venue to single-venue board records in Analytics storage.
 10. Timestamp, lookback, and query-parameter validation is consistent, including rejection of repeated `timestampTill`, repeated `lookbackHours`, and unknown query parameters before OWPROV or database work.
 11. Memory aggregation ignores missing historical fields instead of treating them as zero.
 12. Temperature aggregation excludes synthetic or invalid fallback values.
@@ -4852,7 +4915,7 @@ The PR implementation is functionally accepted when:
 16. RSSI thresholds and boundary values are classified correctly.
 17. Invalid RSSI values are ignored.
 18. RSSI percentages are calculated per client.
-19. Usage and RSSI client-summary responses use the documented object envelope shape (`requestedWindow`, `observedWindow`, `items`, `totalClients`, `truncated`) matching TC-CONTRACT-006.
+19. Usage and RSSI client-summary responses use the documented shared MCP `{data, meta}` envelope shape matching TC-CONTRACT-006.
 20. Memory and temperature successful responses include `requestedWindow` and `observedWindow` matching their OpenAPI schemas.
 21. Gateway shutdown and network loss create one offline transition each.
 22. Repeated pings and disconnections do not create duplicate transitions.

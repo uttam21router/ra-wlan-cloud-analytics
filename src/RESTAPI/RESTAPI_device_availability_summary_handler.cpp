@@ -1,9 +1,11 @@
-#include "RESTAPI_device_memory_summary_handler.h"
+#include "RESTAPI_device_availability_summary_handler.h"
 
 #include "RESTAPI_mcp_helpers.h"
 #include "RouterIdResolver.h"
 #include "StorageService.h"
 #include "framework/MicroServiceFuncs.h"
+#include "framework/utils.h"
+
 
 namespace OpenWifi {
 
@@ -17,7 +19,7 @@ namespace OpenWifi {
 		}
 	} // namespace
 
-	void RESTAPI_device_memory_summary_handler::DoGet() {
+	void RESTAPI_device_availability_summary_handler::DoGet() {
 		MCP::Error Error;
 		if (!MCP::AuthenticateBearerToken(*this, Error))
 			return MCP::SendError(*this, Error);
@@ -46,36 +48,25 @@ namespace OpenWifi {
 						  "Router was not found");
 			return MCP::SendError(*this, Error);
 		}
-		if (!MCP::ValidateRetention(Window, Resolved.retention, Utils::Now(), ClockSkewSeconds, Error))
+		if (!MCP::ValidateRetention(Window, Resolved.retention, Utils::Now(), ClockSkewSeconds,
+									Error))
 			return MCP::SendError(*this, Error);
 
-		uint64_t MaxSamples = 0;
-		auto ConfiguredMaxSamples =
-			MicroServiceConfigGetInt("mcp.max_samples", MCP::DefaultMaxSamples);
-		if (!MCP::ValidateConfiguredMaxSamples(ConfiguredMaxSamples, MaxSamples, Error))
-			return MCP::SendError(*this, Error);
-
-		if (!MCP::ValidateExpectedSampleCount(Window, Resolved.interval, MaxSamples, Error))
-			return MCP::SendError(*this, Error);
-
-		std::vector<AnalyticsObjects::DeviceTimePoint> Records;
-		bool LimitExceeded = false;
-		if (!StorageService()->TimePointsDB().SelectResourceRecordsBySerial(
-				Resolved.resolvedBoardId, routerId, Window.startTime, Window.endTime, Records,
-				MaxSamples, &LimitExceeded)) {
-			poco_error(Logger(), "Failed to query timepoints for memory summary");
+		uint64_t OfflineCount = 0;
+		std::optional<uint64_t> ObservedStartTime;
+		std::optional<uint64_t> ObservedEndTime;
+		if (!StorageService()->DeviceAvailabilityEventsDB().CountOfflineEventsByBoardAndSerial(
+				Resolved.resolvedBoardId, routerId, Window.startTime, Window.endTime,
+				OfflineCount, ObservedStartTime, ObservedEndTime)) {
+			poco_error(Logger(), "Failed to query availability events for gateway summary");
 			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR,
-						  "memory_summary_query_failed",
-						  "Unable to retrieve gateway memory history");
-			return MCP::SendError(*this, Error);
-		}
-		if (LimitExceeded) {
-			MCP::SetError(Error, Poco::Net::HTTPResponse::HTTP_BAD_REQUEST, "exceeds_max_samples",
-						  "Requested query window exceeds maximum allowed telemetry sample count");
+						  "availability_query_failed",
+						  "Unable to retrieve gateway availability history");
 			return MCP::SendError(*this, Error);
 		}
 
-		auto Summary = MCP::CalculateMemorySummary(Records, Window);
+		auto Summary = MCP::CalculateGatewayAvailabilitySummary(
+			routerId, Window, OfflineCount, ObservedStartTime, ObservedEndTime);
 		return Object(Summary);
 	}
 

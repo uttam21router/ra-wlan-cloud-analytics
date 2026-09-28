@@ -50,6 +50,7 @@ namespace OpenWifi {
 			std::string type;
 			std::string serialNumber;
 			std::string deviceType;
+			std::string platform;
 			uint64_t lastContact = 0;
 			uint64_t lastPing = 0;
 			uint64_t lastState = 0;
@@ -120,6 +121,8 @@ namespace OpenWifi {
 			int64_t rssi = 0;
 			uint64_t tx_bytes = 0, rx_bytes = 0, tx_duration = 0, rx_packets = 0, tx_packets = 0,
 					 tx_retries = 0, tx_failed = 0, connected = 0, inactive = 0;
+			bool tx_bytes_present = false;
+			bool rx_bytes_present = false;
 
 			double tx_bytes_bw = 0.0, rx_bytes_bw = 0.0, tx_packets_bw = 0.0, rx_packets_bw = 0.0,
 				   tx_failed_pct = 0.0, tx_retries_pct = 0.0, tx_duration_pct = 0.0;
@@ -186,7 +189,8 @@ namespace OpenWifi {
 			uint64_t band = 0, channel_width = 0;
 			uint64_t active_ms = 0, busy_ms = 0, receive_ms = 0, transmit_ms = 0, tx_power = 0,
 					 channel = 0;
-			int64_t temperature = 0, noise = 0;
+			std::optional<double> temperature;
+			int64_t noise = 0;
 
 			double active_pct = 0.0, busy_pct = 0.0, receive_pct = 0.0, transmit_pct = 0.0;
 
@@ -392,6 +396,109 @@ namespace OpenWifi {
 		struct MCPGatewayMemorySummary {
 			MCPMemorySummaryData data;
 			MCPMemorySummaryMeta meta;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPGatewayWifiTemperatureSummaryData {
+			std::optional<double> min_wifi_temp_2_4G;
+			std::optional<double> max_wifi_temp_2_4G;
+			std::optional<double> avg_wifi_temp_2_4G;
+			std::optional<double> latest_wifi_temp_2_4G;
+			std::optional<double> min_wifi_temp_5G;
+			std::optional<double> max_wifi_temp_5G;
+			std::optional<double> avg_wifi_temp_5G;
+			std::optional<double> latest_wifi_temp_5G;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPGatewayWifiTemperatureSummary {
+			MCPGatewayWifiTemperatureSummaryData data;
+			MCPMemorySummaryMeta meta;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPClientUsageItem {
+			std::string mac;
+			uint64_t rx_bytes = 0;
+			uint64_t tx_bytes = 0;
+			uint64_t total_bytes = 0;
+			std::string data_consume_rx;
+			std::string data_consume_tx;
+			std::string total_data_usage;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPClientUsageSummaryData {
+			std::vector<MCPClientUsageItem> items;
+			uint64_t totalClients = 0;
+			bool truncated = false;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPDeviceBandwidthConsumptionSummary {
+			MCPClientUsageSummaryData data;
+			MCPMemorySummaryMeta meta;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPClientRssiItem {
+			std::string mac;
+			double rssi_excellent_pct = 0.0;
+			double rssi_good_pct = 0.0;
+			double rssi_fair_pct = 0.0;
+			double rssi_poor_pct = 0.0;
+			uint64_t rssi_total_samples = 0;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPClientRssiQualitySummary {
+			MCPRequestedWindow requestedWindow;
+			MCPObservedWindow observedWindow;
+			std::vector<MCPClientRssiItem> items;
+			uint64_t totalClients = 0;
+			bool truncated = false;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct DeviceAvailabilityEvent {
+			std::string id;
+			std::string board_id;
+			std::string serialNumber;
+			std::string event_type;
+			uint64_t event_time = 0;
+			std::string reason;
+			std::string connection_ip;
+			std::string session_id;
+			std::string event_id;
+			std::string idempotency_key;
+		};
+
+		struct MCPGatewayAvailabilityData {
+			std::string gw_uuid;
+			std::string fetch_status = "success";
+			uint64_t offlineEventCount = 0;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPGatewayAvailabilityMeta {
+			MCPRequestedWindow requestedWindow;
+			MCPObservedWindow observedWindow;
+
+			void to_json(Poco::JSON::Object &Obj) const;
+		};
+
+		struct MCPGatewayAvailabilitySummary {
+			MCPGatewayAvailabilityMeta meta;
+			MCPGatewayAvailabilityData data;
 
 			void to_json(Poco::JSON::Object &Obj) const;
 		};
